@@ -88,5 +88,13 @@ add_test(NAME change_dylib_test
 # over a committed fixture and compare the digest. Native-on-10.9 and
 # cross-from-a-modern-host must agree, which is the equivalence claim made
 # checkable rather than asserted.
+# Covers patch_macho's chained-fixups conversion, which the characterization
+# above cannot: its fixture is 10.9-built and has no chained fixups to convert.
+# SKIPs (77) on hosts that cannot emit them -- 10.9 included -- so it is real
+# coverage on a modern host and an honest no-op on the target.
+add_test(NAME chained_fixups
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/chained-fixups.sh" "$<TARGET_FILE_DIR:patch_macho>")
+set_tests_properties(chained_fixups PROPERTIES SKIP_RETURN_CODE 77)
+
 add_test(NAME characterize
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/characterize.sh" "$<TARGET_FILE_DIR:change_dylib>" check)
