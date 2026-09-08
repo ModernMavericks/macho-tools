@@ -6,13 +6,15 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 10.9 CACHE STRING "runs on 10.9")
 set(CMAKE_OSX_ARCHITECTURES x86_64 CACHE STRING "Intel-only (10.9)")
 
-# FIRST-PARTY versioning, following mavericks-magic-trackpad2 rather than the
-# upstream-tracking siblings. macho-tools has no upstream: there is no
-# UPSTREAM_VERSION for Renovate to bump, no `<upstream>-mavericks.N` suffix, and
-# no gitignored VERSION written by the workflow -- because nothing external
-# releases and triggers a rebuild. Single source of truth, bumped by hand, tag
-# v<MAVERICKS_VERSION> to match.
-set(MAVERICKS_VERSION "0.1.0")
+# Versioning: this repo is its OWN upstream, in ed25519's sense of the phrase --
+# the thing it exists to port is itself. So UPSTREAM_VERSION is the family's
+# usual file and the family's usual `<version>-mavericks.N` shape still applies;
+# what differs is only that no Renovate customManager watches it, because nothing
+# external releases and bumps it. Bumped by hand; the release cuts the -mavericks.N.
+#
+# Read from the file rather than duplicated here: the conventions gate requires a
+# computable version, and two declarations would be one too many.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/UPSTREAM_VERSION" MAVERICKS_VERSION LIMIT_COUNT 1)
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" MAVERICKS_VERSION_NUMERIC "${MAVERICKS_VERSION}")
 
 project(MachOTools VERSION ${MAVERICKS_VERSION_NUMERIC} LANGUAGES C)

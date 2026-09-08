@@ -4,8 +4,8 @@ name: release
 # equivalent to a native 10.9 build. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
-#   - v* tag: the release model is tag-only-publish, because macho-tools is
-#     first-party -- there is no upstream bump to auto-cut on
+#   - *-mavericks.* tag: tag-only-publish, because this repo is its own upstream
+#     -- there is no external bump to auto-cut on, so a release is deliberate
 #
 # There is no 10.9 runner here, or anywhere in the family. What makes that safe
 # is the "Prove build equivalence" step below, not optimism.
@@ -13,10 +13,15 @@ name: release
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['*-mavericks.*']   # the family's tag shape
   pull_request:
     branches: [main]          # the status check Renovate automerge waits on
   workflow_dispatch:
+    inputs:
+      local_release:
+        description: "Cut the next -mavericks.(N+1) for the current UPSTREAM_VERSION"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,6 +36,8 @@ jobs:
     runs-on: macos-26   # Apple Silicon; cross-builds the x86_64/10.9 slice. Use macos-15 if 26 is unavailable.
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # a release counts existing tags to pick N
 
       - name: Install mavericks-shipyard
         uses: ModernMavericks/shipyard/.github/actions/install@v1

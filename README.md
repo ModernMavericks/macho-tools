@@ -104,10 +104,10 @@ didn't.
 
 - Not yet a drop-in replacement for `insert_dylib` on 32-bit or fat inputs, or on
   a binary whose export trie needs a wider ULEB. See `docs/prior-art.md`.
-- Versioning is first-party: `MAVERICKS_VERSION` in `CMakeLists.txt` is the
-  single source of truth, bumped by hand, tag `v<version>` to match. There is no
-  `UPSTREAM_VERSION` because there is no upstream — nothing external releases and
-  triggers a rebuild. Same shape as `magic-trackpad2`.
+- This repo is its **own upstream**: the tools are not a port of somebody else's
+  project. `UPSTREAM_VERSION` is still the family's file and the version is still
+  `<version>-mavericks.N`; what differs is that no Renovate customManager watches
+  it, because nothing external releases it. See `INGREDIENTS.md`.
 
 ## Provenance
 
