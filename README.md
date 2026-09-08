@@ -27,10 +27,39 @@ cmake -S ../mavericks-shipyard -B /tmp/sy -DCMAKE_INSTALL_PREFIX="$HOME/.local"
 cmake --install /tmp/sy
 ```
 
+Presets pick the build mode:
+
+```sh
+cmake --preset native   # on 10.9, with its own clang
+cmake --preset cross    # on a modern host, against the pinned 10.9 SDK
+```
+
 Every tool is gated by shipyard's compat guard, which fails the build if a
 binary declares a floor above 10.9 or links a symbol 10.9 lacks. That matters
 more here than elsewhere in the family: these are the tools that make *other*
 binaries loadable on 10.9, so they had better load there themselves.
+
+## Build equivalence
+
+There is no 10.9 runner in CI, so a cross-build has to be shown equivalent to a
+native one rather than assumed to be. Comparing the tool binaries is the wrong
+test — a 2014 clang and a 2026 one will never emit the same bytes.
+
+These tools are **deterministic file transformers**, so what they *produce* is
+the invariant worth pinning. `tests/characterize.sh` runs the whole pipeline
+over a committed fixture and compares the output digest against
+`tests/EXPECTED`; `ctest` runs it. Build natively and cross, and the digests
+must match.
+
+Two properties make that runnable in CI: the pipeline is deterministic (verified
+— same input, same flags, identical output), and a cross-built tool is x86_64
+with a 10.9 *floor*, which still runs on a modern host, so the runner can
+execute what it just built.
+
+Known gap: the committed fixture is a 10.9-built binary, so it has no chained
+fixups and does not exercise `patch_macho`'s conversion — the heaviest transform
+in the pipeline. A fixture from a modern toolchain should be added; 10.9's clang
+cannot emit one.
 
 ## Why not install_name_tool
 
