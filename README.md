@@ -15,10 +15,22 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 ## Building
 
 ```sh
-./build.sh
+cmake -S . -B build && cmake --build build && ctest --test-dir build
 ```
 
-Builds everything into `build/` and runs both test suites.
+Needs [shipyard](https://github.com/ModernMavericks/shipyard), the family's
+shared CMake helpers — install it once and it self-registers, so `find_package`
+finds it with no `CMAKE_PREFIX_PATH`:
+
+```sh
+cmake -S ../mavericks-shipyard -B /tmp/sy -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+cmake --install /tmp/sy
+```
+
+Every tool is gated by shipyard's compat guard, which fails the build if a
+binary declares a floor above 10.9 or links a symbol 10.9 lacks. That matters
+more here than elsewhere in the family: these are the tools that make *other*
+binaries loadable on 10.9, so they had better load there themselves.
 
 ## Why not install_name_tool
 
@@ -63,8 +75,10 @@ didn't.
 
 - Not yet a drop-in replacement for `insert_dylib` on 32-bit or fat inputs, or on
   a binary whose export trie needs a wider ULEB. See `docs/prior-art.md`.
-- `build.sh` is a deviation: the ModernMavericks family builds with CMake against
-  [shared-cmake](https://github.com/ModernMavericks/shared-cmake). Tracked.
+- Versioning is first-party: `MAVERICKS_VERSION` in `CMakeLists.txt` is the
+  single source of truth, bumped by hand, tag `v<version>` to match. There is no
+  `UPSTREAM_VERSION` because there is no upstream — nothing external releases and
+  triggers a rebuild. Same shape as `magic-trackpad2`.
 
 ## Provenance
 
