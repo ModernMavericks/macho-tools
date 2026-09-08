@@ -13,6 +13,17 @@
 set -e
 cd "$(dirname "$0")"
 CC="${CC:-clang}"
+
+# The FIXTURES must be 10.9-targeted, not host-targeted. A modern linker emits
+# LC_DYLD_CHAINED_FIXUPS by default, and change_dylib refuses those on purpose --
+# 10.9's dyld cannot read them, which is why patch_macho exists. Without this the
+# suite passes on 10.9 and fails on a modern runner, having silently changed what
+# it tests. -mmacosx-version-min=10.9 gets the classic LC_DYLD_INFO_ONLY form on
+# either host, so the test asks the same question everywhere.
+#
+# Note this applies only to the fixtures. change_dylib itself (line below) is a
+# host tool and is built for the host.
+FIXTURE_FLAGS="-mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/change_dylib_test.$$"
 mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -38,12 +49,12 @@ int a_sym(void); int b_sym(void);
 int main(void) { int v = a_sym() + b_sym(); printf("%d\n", v); return v == 33 ? 0 : 1; }
 EOF
 for l in a b spare; do
-    "$CC" -dynamiclib -O2 -install_name "@loader_path/lib$l.dylib" \
+    "$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/lib$l.dylib" \
         "$T/$l.c" -o "$T/lib$l.dylib"
 done
 
 # ordinals as linked: 1=liba, 2=libb  (link order sets load-command order)
-build_main() { "$CC" -O2 "$T/main.c" "$T/liba.dylib" "$T/libb.dylib" -o "$1"; }
+build_main() { "$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/liba.dylib" "$T/libb.dylib" -o "$1"; }
 
 # --- baseline ----------------------------------------------------------------
 build_main "$T/main"
@@ -68,7 +79,7 @@ fi
 # --- 2. -delete of an EARLIER dylib renumbers the survivors -------------------
 # libspare is linked first but unreferenced; deleting it shifts liba 2->1,
 # libb 3->2. Without renumbering, a_sym would be looked up in libb.
-"$CC" -O2 "$T/main.c" "$T/libspare.dylib" "$T/liba.dylib" "$T/libb.dylib" -o "$T/main_del"
+"$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libspare.dylib" "$T/liba.dylib" "$T/libb.dylib" -o "$T/main_del"
 out=$(cd "$T" && ./main_del) && [ "$out" = "33" ] \
     || bad "delete fixture" "fixture itself broken: '$out'"
 "$T/change_dylib" "$T/main_del" -delete "@loader_path/libspare.dylib" >/dev/null || bad "tool run" "change_dylib failed"
@@ -121,11 +132,11 @@ int dup_sym(void);
 int main(void) { int v = dup_sym(); printf("%d\n", v); return v == 1 ? 0 : 1; }
 EOF
 for l in dup1 dup2; do
-    "$CC" -dynamiclib -O2 -install_name "@loader_path/lib$l.dylib" \
+    "$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/lib$l.dylib" \
         "$T/$l.c" -o "$T/lib$l.dylib"
 done
 # ordinals: 1=libspare, 2=libdup1 (the one we bind to), 3=libdup2
-"$CC" -O2 "$T/dupmain.c" "$T/libspare.dylib" "$T/libdup1.dylib" "$T/libdup2.dylib" \
+"$CC" -O2 $FIXTURE_FLAGS "$T/dupmain.c" "$T/libspare.dylib" "$T/libdup1.dylib" "$T/libdup2.dylib" \
     -o "$T/main_dup"
 "$T/change_dylib" "$T/main_dup" -delete "@loader_path/libspare.dylib" >/dev/null \
     || bad "tool run" "change_dylib failed"
