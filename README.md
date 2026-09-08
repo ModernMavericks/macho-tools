@@ -72,7 +72,8 @@ Extracted with full history from
 [Wowfunhappy/Mavericks-Porting-Resources](https://github.com/Wowfunhappy/Mavericks-Porting-Resources).
 `patch_macho` and `fix_macho` are substantially Wowfunhappy's; header growth, the
 re-basers, ordinal renumbering and verification are Amitai Schleier's. The commit
-log is the accurate record.
+log is the accurate record. Details, including what was extracted and from where:
+[`PROVENANCE.md`](PROVENANCE.md).
 
 Four commits in that history also touched files that stayed behind, so their
 messages mention unrelated work. The changes are correct; only the messages are
