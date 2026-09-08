@@ -1,0 +1,30 @@
+macho-tools is dedicated to the public domain.
+
+The authors waive all copyright and related or neighboring rights to this
+work, worldwide, under CC0 1.0 Universal:
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Where that dedication is not legally possible, this work is licensed under
+the WTFPL: http://www.wtfpl.net/
+
+Authors: Wowfunhappy <Wowfunhappy@gmail.com>
+         Amitai Schleier <schmonz-web-git@schmonz.com>
+
+Extracted from Wowfunhappy/Mavericks-Porting-Resources, whose author stated
+the terms above for all original code in that repository
+(https://github.com/Wowfunhappy/Mavericks-Porting-Resources/issues/4).
+
+Third-party material
+--------------------
+
+No code from another project is copied here. One acknowledgement is worth
+making explicit: macho_grow.h says its approach was "studied from LIEF
+(src/MachO/Binary.cpp `shift`) and llvm-objcopy (MachOLayoutBuilder)", and
+that the exhaustive list of Mach-O file-offset fields was taken from LIEF.
+
+That list is a factual enumeration of the file format rather than expression,
+and the algorithm here is independent — LIEF and llvm-objcopy raise every later
+segment to a higher vm address, whereas this lowers the image base so no vm
+address changes at all. LIEF is Apache-2.0; llvm-objcopy is Apache-2.0 with
+LLVM exceptions. Recorded so the acknowledgement in the source is not mistaken
+for an undisclosed dependency.
