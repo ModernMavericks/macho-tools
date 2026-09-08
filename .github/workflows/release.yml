@@ -1,0 +1,85 @@
+name: release
+
+# Cross-builds the x86_64/10.9 tools on a modern runner and proves the result is
+# equivalent to a native 10.9 build. Entry points:
+#   - push to main / PR to main: build + gate, never publish (the PR build is the
+#     status check Renovate automerge waits on)
+#   - v* tag: the release model is tag-only-publish, because macho-tools is
+#     first-party -- there is no upstream bump to auto-cut on
+#
+# There is no 10.9 runner here, or anywhere in the family. What makes that safe
+# is the "Prove build equivalence" step below, not optimism.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]          # the status check Renovate automerge waits on
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: macos-26   # Apple Silicon; cross-builds the x86_64/10.9 slice. Use macos-15 if 26 is unavailable.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mavericks-shipyard
+        uses: ModernMavericks/shipyard/.github/actions/install@v1
+
+      - name: Verify shipyard installed
+        run: |
+          [ -d "$SHIPYARD_SCRIPTS" ] || { echo "::error::SHIPYARD_SCRIPTS not set by install@v1"; exit 1; }
+          echo "shipyard scripts: $SHIPYARD_SCRIPTS"
+
+      # The cross preset asserts it is NOT on 10.9 and pins CMAKE_OSX_SYSROOT to
+      # the fetched 10.9 SDK. Building against the runner's own SDK with only
+      # -mmacosx-version-min=10.9 would accept declarations 10.9 never had.
+      - name: Configure (cross, against the pinned 10.9 SDK)
+        run: cmake --preset cross
+
+      # Every tool is gated POST_BUILD by shipyard's compat guard: fails if a
+      # binary declares a floor above 10.9 or imports a symbol 10.9 lacks.
+      - name: Build + compat guard
+        run: cmake --build --preset cross
+
+      # The shared runner takes the whole suite, so a newly added test runs the
+      # day it lands rather than when someone remembers a CI line. Includes
+      # `characterize`, which is the equivalence gate.
+      - name: Run the repo's tests
+        run: sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross
+
+      # Stated separately so a failure reads as what it is. tests/EXPECTED was
+      # recorded from a NATIVE build on real 10.9 hardware; this compares the
+      # cross build's pipeline output against it. Matching digests are the claim
+      # "cross ≡ native" made checkable. These tools are deterministic file
+      # transformers, and a cross-built tool is x86_64 with a 10.9 FLOOR -- so it
+      # still runs on this runner, which is what lets CI execute what it built.
+      - name: Prove build equivalence against the native 10.9 reference
+        run: |
+          set -eu
+          echo "reference digest (recorded natively on 10.9): $(cat tests/EXPECTED)"
+          sh tests/characterize.sh "$PWD/build-cross" check
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macho-tools
+          path: |
+            build-cross/patch_macho
+            build-cross/change_dylib
+            build-cross/add_version_min
+            build-cross/fix_macho
+            build-cross/rename_segment
+            build-cross/retag_swift_classes
+
+  # No publish job yet: there is no .pkg or Sparkle updater to ship. When there
+  # is, it goes here gated on `github.ref_type == 'tag'`, calling shipyard's
+  # publish-release.yml the way ed25519 does.
