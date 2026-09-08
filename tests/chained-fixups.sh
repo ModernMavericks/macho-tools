@@ -19,9 +19,13 @@ cat > "$T/t.c" <<'CEOF'
 int main(void) { printf("chained\n"); return 0; }
 CEOF
 
-# A modern deployment target is what makes the linker choose chained fixups.
-if ! "${CC:-cc}" -O0 -mmacosx-version-min=11.0 -o "$T/in" "$T/t.c" 2>/dev/null; then
-    echo "chained-fixups: host cannot build for macOS 11 — SKIP"
+# CMake exports SDKROOT / MACOSX_DEPLOYMENT_TARGET for the 10.9 cross build, and
+# inheriting those here would defeat the point: we want the HOST's own defaults,
+# which is what makes its linker choose chained fixups. Unset rather than
+# override, so the host decides.
+unset SDKROOT MACOSX_DEPLOYMENT_TARGET CMAKE_OSX_SYSROOT CMAKE_OSX_DEPLOYMENT_TARGET 2>/dev/null || true
+if ! "${CC:-cc}" -O0 -o "$T/in" "$T/t.c" 2>/dev/null; then
+    echo "chained-fixups: host cc cannot build a plain binary — SKIP"
     exit 77
 fi
 if ! otool -l "$T/in" | grep -q LC_DYLD_CHAINED_FIXUPS; then

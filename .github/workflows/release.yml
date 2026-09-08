@@ -70,6 +70,20 @@ jobs:
       # "cross ≡ native" made checkable. These tools are deterministic file
       # transformers, and a cross-built tool is x86_64 with a 10.9 FLOOR -- so it
       # still runs on this runner, which is what lets CI execute what it built.
+      # Run separately as well as under ctest. ctest hides a skipped test's
+      # output, so a SKIP here would be indistinguishable from a pass -- exactly
+      # the silent no-op this test exists to avoid. On a modern runner it must
+      # actually run; a skip is a failure of the check, not of the tools.
+      - name: Cover patch_macho's chained-fixups conversion
+        run: |
+          set -eu
+          sh tests/chained-fixups.sh "$PWD/build-cross" && rc=0 || rc=$?
+          if [ "$rc" = 77 ]; then
+            echo "::error::chained-fixups SKIPPED on a modern runner — it should be able to emit them"
+            exit 1
+          fi
+          exit "$rc"
+
       - name: Prove build equivalence against the native 10.9 reference
         run: |
           set -eu
