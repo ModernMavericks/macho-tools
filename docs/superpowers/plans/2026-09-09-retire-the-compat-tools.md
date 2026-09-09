@@ -16,6 +16,62 @@ recommends doing both, in that order, as a deprecation ladder.
 "Migration" section is why `macho9 --capabilities` exists: so the tool and its
 wrappers never have to move in lockstep.
 
+## STOP — read this before Task 0. The dependency runs the WRONG WAY.
+
+**`macho9` does not implement `dylib`, `rpath`, `lc` or `minos`. It `fork`s and
+`exec`s the sibling `change_dylib` / `add_version_min` binaries**, and
+`--capabilities` gates each of those verbs on `access(sibling, X_OK)`.
+
+So replacing the compat tools with wrappers onto `macho9` is a **cycle**:
+
+```
+change_dylib (wrapper)  ->  macho9  ->  change_dylib (binary)   <-- does not exist any more
+```
+
+`macho9` must gain NATIVE implementations of those verbs before any wrapper can
+exist. That is not a detail to discover during Task 1 — it is a prerequisite
+task, and it is larger than everything else in this plan.
+
+- [ ] **Task 0.5 (before the argument sweep): give `macho9` native `dylib`,
+      `rpath`, `lc` and `minos`.** The library is already there —
+      `src/ordinals.c`, `src/grow.c`, `src/linkedit.c`, `src/image.c` — so this
+      is wiring the CLI to the library rather than to a subprocess. `characterize`
+      is the gate: native output must be byte-identical to the delegated output.
+
+**Three of the six tools have NO `macho9` verb at all.** Not edge flags —
+whole tools:
+
+| tool | `macho9` verb | state |
+|---|---|---|
+| `change_dylib` | `dylib` / `rpath` / `lc` | delegates (Task 0.5) |
+| `add_version_min` | `minos` | delegates (Task 0.5) |
+| `patch_macho` | `declassify` | **stub — errors out** |
+| `rename_segment` | `segment` | **does not exist** |
+| `retag_swift_classes` | `retag-swift` | **does not exist** |
+| `fix_macho` | — | **no verb, and see below** |
+
+`docs/PROPOSAL.md` names `segment` and `retag-swift`; neither was built.
+
+**`fix_macho` is the hardest of the six.** Its `-rename_seg` has no verb, and —
+more fundamentally — **every `macho9` verb is thin-only**: `verify`, `info` and
+`grow` on a fat file return `EX_REFUSED` with "not a readable 64-bit Mach-O".
+`fix_macho` is the only tool that iterates fat slices. Wrapping it requires fat
+support in `macho9` first.
+
+**Two behaviour deltas any wrapper must consciously preserve or break:**
+- `compat/rename_segment.c:125` exits **2** when nothing matched. A wrapper onto
+  a `macho9` verb must reproduce that or deliberately change it.
+- `compat/retag_swift_classes.c:227` **always exits 0**, even on write failure.
+  A wrapper will either faithfully reproduce a silent success or quietly fix it.
+  Decide which, and say so.
+
+**Also blocking, separately:** `src/live.h` has no install or export rule.
+`CMakeLists.txt` installs `RUNTIME DESTINATION bin` only — no headers, no
+INTERFACE target, no `find_package` package — so avxemu cannot consume it today
+except by copying it. `docs/PROPOSAL.md` requires one. Packaging was explicitly
+out of scope for the convergence plan, so this is a gap to schedule, not a
+defect, but it belongs on someone's list.
+
 ## The thing that makes this harder than it looks
 
 **The old grammar was deliberately not adopted.** `docs/PROPOSAL.md` rejected
