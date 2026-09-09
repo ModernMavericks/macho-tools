@@ -30,15 +30,17 @@ trap 'rm -rf "$T"' EXIT INT TERM
 
 # Builds change_dylib from source rather than consuming a CMake target, so this
 # script keeps working standalone (`./change_dylib_test.sh`, clang + otool only).
-# That means it must track what change_dylib includes: macho_grow.h now pulls in
-# src/uleb.h and src/trie.h (the export-trie rebuild, for a widening ULEB) and
-# src/linkedit.h (the __LINKEDIT offset-bump table), change_dylib.c itself now
-# includes src/ordinals.h and src/fat.h (the shared fat_header/fat_arch
-# validator both it and fix_macho use), src/lc_kinds.h (the -strip-lc KIND
-# table, shared with macho9's `lc -delete`), and src/atomic_write.h
-# (write_atomic's mkstemp+rename replace, shared with `macho9 grow`), so the
-# toolkit sources it needs are listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c
+# That means it must track what change_dylib includes: src/grow.h (formerly the
+# header-only macho_grow.h; now grow.c is a real translation unit that must be
+# compiled and linked in, not merely #include'd) pulls in src/uleb.h and
+# src/trie.h (the export-trie rebuild, for a widening ULEB) and src/linkedit.h
+# (the __LINKEDIT offset-bump table), change_dylib.c itself now includes
+# src/ordinals.h and src/fat.h (the shared fat_header/fat_arch validator both
+# it and fix_macho use), src/lc_kinds.h (the -strip-lc KIND table, shared with
+# macho9's `lc -delete`), and src/atomic_write.h (write_atomic's mkstemp+rename
+# replace, shared with `macho9 grow`), so the toolkit sources it needs are
+# listed here too.
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
@@ -486,7 +488,7 @@ else
     # happens to occupy slot 1 in a table that disagreed with the map.
     #
     # This fixture's plain __TEXT layout doesn't satisfy mg_plausible's
-    # LC_FUNCTION_STARTS heuristic (macho_grow.h) on this host regardless of
+    # LC_FUNCTION_STARTS heuristic (src/grow.h) on this host regardless of
     # any rewrite -- confirmed by running mg_plausible on a copy of this file
     # untouched by change_dylib, so it's not something the ordinal fix
     # introduces. MACHO_NO_VERIFY=1 opts out of that unrelated gate so this
@@ -1049,7 +1051,7 @@ fi
 # this codebase's renumbering has actually been exercised against -- but
 # NOT LC_LAZY_LOAD_DYLIB (cmd 0x20, the legacy -lazy_library form), even
 # though dyld gives it a library ordinal exactly like LC_LOAD_DYLIB does.
-# mg_classify (macho_grow.h, used by -grow) already accepts it as inert
+# mg_classify (src/grow.h, used by -grow) already accepts it as inert
 # under a base move, which is a different question -- ordinal renumbering,
 # not rebasing -- so that acceptance says nothing about renumbering safety.
 # Before the fix, mo_map_build simply skipped it while building the old-

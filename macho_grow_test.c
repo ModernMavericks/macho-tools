@@ -14,7 +14,7 @@
  * address lists), so the test is host-agnostic. Build:
  *   clang -O2 -Wno-unused-function -o /tmp/mgtest macho_grow_test.c && /tmp/mgtest
  */
-#include "macho_grow.h"
+#include "grow.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -921,7 +921,7 @@ static void test_grow_refuses_unknown_section_type(void) {
  * mg_grow_header's check and mi_wrap's still refuses (r stays -1) but with ITS
  * message ("fails validation... refusing to guess the header pad boundary"),
  * which does not contain that phrase -- so the message assertion below is what
- * flips to FAIL. Confirmed by hand: mutating macho_grow.h's check flips this
+ * flips to FAIL. Confirmed by hand: mutating src/grow.c's check flips this
  * exact CHECK, though not `r == -1`. */
 static int stderr_contains_during(int (*call)(uint8_t **, size_t *, uint32_t),
                                    uint8_t **pbuf, size_t *pfsize, uint32_t grow,
@@ -1018,7 +1018,7 @@ static void test_plausible_rejects_an_unrebased_initializer(void) {
     free(buf);
 }
 
-/* ---- overflow refusal at macho_grow.h's other two ml_bump call sites ----
+/* ---- overflow refusal at src/grow.c's other two ml_bump call sites ----
  * (a code review round found ml_bump/ml_bump_all's overflow guard, but noted
  * the SAME class of bug still lived at the two ml_bump call sites left
  * inside mg_grow_header itself: a section's offset/reloff, and LC_MAIN's

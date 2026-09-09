@@ -56,7 +56,7 @@
 
 #include "image.h"
 #include "ordinals.h"
-#include "macho_grow.h"
+#include "grow.h"
 #include "lc_kinds.h"
 #include "atomic_write.h"
 #include "mach_compat.h"
@@ -427,7 +427,7 @@ static int cmd_info(const char *path) {
 /* ---- grow: a thin shell over mg_grow_header -----------------------------
  *
  * mg_grow_header already runs mg_verify + mg_plausible internally before it
- * reports success (macho_grow.h "Phase 4: prove it"), so there is nothing
+ * reports success (src/grow.h "Phase 4: prove it"), so there is nothing
  * left for this verb to check on top -- it opens, calls the real primitive,
  * and writes back only on success. On failure mg_grow_header has already
  * explained why on stderr and left *pbuf as whatever is safe to discard;

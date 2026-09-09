@@ -4,7 +4,7 @@
  * By default the new load commands must fit in the header padding between the
  * last load command and the first section's file data; if they don't, the tool
  * fails (unchanged behavior). Pass -grow to opt in to enlarging that padding
- * first (see macho_grow.h) — that resize only works on a PIE executable and is
+ * first (see src/grow.h) — that resize only works on a PIE executable and is
  * rejected otherwise.
  *
  * Usage: change_dylib input [-grow] [-change old new] [-delete path]
@@ -60,7 +60,7 @@
 #include <mach-o/nlist.h>
 
 #include "image.h"
-#include "macho_grow.h"
+#include "grow.h"
 #include "ordinals.h"
 #include "fat.h"
 #include "lc_kinds.h"
@@ -726,7 +726,7 @@ static uint32_t cd_swap32(uint32_t v) {
  *
  * A slice this tool cannot understand (anything process_one reports PO_SKIP
  * for -- today that means anything but a 64-bit Mach-O; 32-bit stays
- * deliberately unsupported, see macho_grow.h) is passed through byte-for-byte
+ * deliberately unsupported, see src/grow.h) is passed through byte-for-byte
  * unchanged, exactly like fix_macho's own per-arch loop already does ("Not
  * 64-bit Mach-O ... Skipping arch"). A slice that IS a 64-bit Mach-O but
  * where the requested edit itself fails (PO_ERROR) aborts the WHOLE
