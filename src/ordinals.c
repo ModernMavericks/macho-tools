@@ -1,11 +1,4 @@
-/* ordinals.c -- library-ordinal renumbering, moved out of change_dylib.c.
- *
- * Verbatim move (Task 3, step 2): renumber_ordinals, renumber_bind_stream and
- * uleb_skip are unchanged from change_dylib.c except for becoming file-scope
- * here instead of static in change_dylib.c (renumber_ordinals needs external
- * linkage to be callable from there now). Reshaping into the mo_* interface
- * described in the toolkit plan happens in a follow-up commit.
- */
+/* ordinals.c -- the library-ordinal map. See ordinals.h. */
 #include <stdio.h>
 #include <stdint.h>
 #include <mach-o/loader.h>
@@ -22,7 +15,53 @@
 #define LC_DYLD_CHAINED_FIXUPS 0x80000034
 #endif
 
-static const uint8_t *uleb_skip(const uint8_t *p, const uint8_t *end) {
+int mo_is_ordinal_lc(uint32_t cmd) {
+    return cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB ||
+           cmd == LC_REEXPORT_DYLIB || cmd == LC_LOAD_UPWARD_DYLIB;
+}
+
+int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
+                  int (*is_deleted)(const char *name, void *ctx), void *ctx,
+                  mo_map *map, int *out_nnew) {
+    int nold = 0, nnew = base;
+    const uint8_t *p = buf + sizeof(struct mach_header_64);
+
+    for (uint32_t i = 0; i < ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)p;
+        if (mo_is_ordinal_lc(lc->cmd)) {
+            const struct dylib_command *dc = (const struct dylib_command *)p;
+            const char *name = (const char *)p + dc->dylib.name.offset;
+            if (++nold > MO_MAX_DYLIBS) {
+                fprintf(stderr, "ERROR: more than %d dylibs\n", MO_MAX_DYLIBS);
+                return -1;
+            }
+            map->old_to_new[nold] = is_deleted(name, ctx) ? 0 : ++nnew;
+        }
+        p += lc->cmdsize;
+    }
+
+    map->n = nold;
+    *out_nnew = nnew;
+    return 0;
+}
+
+int mo_map_validate(const mo_map *map, int max_new) {
+    if (map->n < 0 || map->n > MO_MAX_DYLIBS) {
+        fprintf(stderr, "ERROR: ordinal map: n=%d out of range\n", map->n);
+        return -1;
+    }
+    for (int i = 1; i <= map->n; i++) {
+        int v = map->old_to_new[i];
+        if (v < 0 || v > max_new) {
+            fprintf(stderr, "ERROR: ordinal map: old_to_new[%d]=%d out of "
+                            "range (max %d)\n", i, v, max_new);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static const uint8_t *mo_uleb_skip(const uint8_t *p, const uint8_t *end) {
     while (p < end && (*p & 0x80)) p++;
     return p < end ? p + 1 : end;
 }
@@ -34,7 +73,7 @@ static const uint8_t *uleb_skip(const uint8_t *p, const uint8_t *end) {
  * can't safely rewrite (unknown opcode, or a new ordinal that no longer fits the
  * encoding the linker chose — both refuse rather than corrupt).
  */
-static int renumber_bind_stream(uint8_t *base, uint32_t size, const int *map,
+static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
                                 int nold, const char *what) {
     uint8_t *p = base, *end = base + size;
     while (p < end) {
@@ -108,11 +147,11 @@ static int renumber_bind_stream(uint8_t *base, uint32_t size, const int *map,
         case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
         case BIND_OPCODE_ADD_ADDR_ULEB:
         case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
-            p = (uint8_t *)uleb_skip(p + 1, end);
+            p = (uint8_t *)mo_uleb_skip(p + 1, end);
             break;
         case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
-            p = (uint8_t *)uleb_skip(p + 1, end);
-            p = (uint8_t *)uleb_skip(p, end);
+            p = (uint8_t *)mo_uleb_skip(p + 1, end);
+            p = (uint8_t *)mo_uleb_skip(p, end);
             break;
         default:
             fprintf(stderr, "ERROR: %s: unknown bind opcode 0x%02x\n", what, op);
@@ -122,12 +161,9 @@ static int renumber_bind_stream(uint8_t *base, uint32_t size, const int *map,
     return 0;
 }
 
-/*
- * Apply `map` (old 1-based ordinal -> new ordinal, or 0 for "deleted") to every
- * place an image records one. Must run on the committed buffer, so the load
- * commands already carry their final LINKEDIT offsets.
- */
-int renumber_ordinals(uint8_t *buf, const int *map, int nold, int verbose) {
+int mo_map_apply(uint8_t *buf, const mo_map *m, int verbose) {
+    const int *map = m->old_to_new;
+    int nold = m->n;
     struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
     uint8_t *lcp = buf + sizeof(struct mach_header_64);
     struct symtab_command *st = NULL;
@@ -185,13 +221,13 @@ int renumber_ordinals(uint8_t *buf, const int *map, int nold, int verbose) {
 
     if (di) {
         if (di->bind_size &&
-            renumber_bind_stream(buf + di->bind_off, di->bind_size, map, nold, "bind") != 0)
+            mo_bind_stream(buf + di->bind_off, di->bind_size, map, nold, "bind") != 0)
             return -1;
         if (di->weak_bind_size &&
-            renumber_bind_stream(buf + di->weak_bind_off, di->weak_bind_size, map, nold, "weak bind") != 0)
+            mo_bind_stream(buf + di->weak_bind_off, di->weak_bind_size, map, nold, "weak bind") != 0)
             return -1;
         if (di->lazy_bind_size &&
-            renumber_bind_stream(buf + di->lazy_bind_off, di->lazy_bind_size, map, nold, "lazy bind") != 0)
+            mo_bind_stream(buf + di->lazy_bind_off, di->lazy_bind_size, map, nold, "lazy bind") != 0)
             return -1;
     }
 

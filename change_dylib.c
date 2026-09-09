@@ -87,8 +87,6 @@ static const struct { const char *name; uint32_t cmd; } strippable[] = {
 #define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
 #endif
 
-#define CD_MAX_DYLIBS 253   /* MAX_LIBRARY_ORDINAL */
-
 /* Caps on how many times one option may repeat. Each option accumulates into a
  * fixed-size array; nothing reads a length back, so an unchecked write past the
  * end corrupts whatever follows instead of failing. Check every one. */
@@ -102,19 +100,25 @@ static const struct { const char *name; uint32_t cmd; } strippable[] = {
         }                                                                \
     } while (0)
 
-/* Load commands that consume a library ordinal, in load order. LC_ID_DYLIB is
- * deliberately absent: it names the image itself and is not addressable, and so
- * is LC_RPATH, which is a search path rather than a dependency. */
-static int is_ordinal_lc(uint32_t cmd) {
-    return cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB ||
-           cmd == LC_REEXPORT_DYLIB || cmd == LC_LOAD_UPWARD_DYLIB;
-}
-
 struct change {
     const char *old_path;
     const char *new_path;   /* NULL = delete; "" = in-place, no path change */
     int reexport;           /* 1 = promote LC_LOAD_DYLIB -> LC_REEXPORT_DYLIB */
 };
+
+/* mo_map_build's is_deleted callback: true if `name` matches a -delete in
+ * `changes`. This is the SAME test build_lcs uses (via `matched`/`new_path ==
+ * NULL`) to decide which LC_LOAD_DYLIB commands to drop, which is what keeps
+ * the load-command rewrite and the ordinal map from being able to disagree
+ * about which dylib went away. */
+struct ord_delete_ctx { const struct change *changes; int n; };
+static int ord_is_deleted(const char *name, void *ctx_) {
+    const struct ord_delete_ctx *ctx = ctx_;
+    for (int c = 0; c < ctx->n; c++)
+        if (ctx->changes[c].new_path == NULL && strcmp(name, ctx->changes[c].old_path) == 0)
+            return 1;
+    return 0;
+}
 
 /* Emit one LC_LOAD_DYLIB naming `path` at `dst`; returns its cmdsize. */
 static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
@@ -176,7 +180,7 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
          * the inserted libraries become ordinals 1..n and load (and initialize)
          * ahead of everything the image already depended on. Nothing strippable
          * bears an ordinal, so the strip pass above cannot move this boundary. */
-        if (!placed_inserts && ninserts && is_ordinal_lc(lc->cmd)) {
+        if (!placed_inserts && ninserts && mo_is_ordinal_lc(lc->cmd)) {
             for (int s = 0; s < ninserts; s++) {
                 uint32_t cs = emit_dylib_lc(new_lcs + new_off, inserts[s]);
                 new_off += cs;
@@ -441,35 +445,29 @@ int main(int argc, char **argv) {
     for (int a = 0; a < nradds; a++)
         add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(radds[a]) + 1 + 7) & ~7UL);
 
-    /* Map each existing 1-based library ordinal to its new value (0 = deleted).
-     * Inserts take 1..ninserts, so every survivor shifts up by that much; each
-     * deletion shifts the ones after it back down. */
-    int ord_map[CD_MAX_DYLIBS + 1];
-    int nold = 0, nnew = ninserts, needs_renumber = (ninserts > 0);
+    /* Map each existing 1-based library ordinal to its new value (0 = deleted),
+     * built once by mo_map_build so this rewrite and the ordinal renumbering
+     * below (mo_map_apply) can't independently disagree about which dylib
+     * landed where -- see ordinals.h. Inserts take 1..ninserts, so every
+     * survivor shifts up by that much; each deletion shifts the ones after it
+     * back down. */
+    int ord_map[MO_MAX_DYLIBS + 1];
     memset(ord_map, 0, sizeof ord_map);
-    {
-        const uint8_t *p = buf + sizeof(struct mach_header_64);
-        for (uint32_t i = 0; i < hdr->ncmds; i++) {
-            const struct load_command *lc = (const struct load_command *)p;
-            if (is_ordinal_lc(lc->cmd)) {
-                const struct dylib_command *dc = (const struct dylib_command *)p;
-                const char *name = (const char *)p + dc->dylib.name.offset;
-                int deleted = 0;
-                for (int c = 0; c < nchanges; c++)
-                    if (changes[c].new_path == NULL && strcmp(name, changes[c].old_path) == 0)
-                        { deleted = 1; break; }
-                if (++nold > CD_MAX_DYLIBS) {
-                    fprintf(stderr, "ERROR: more than %d dylibs\n", CD_MAX_DYLIBS);
-                    return 1;
-                }
-                if (deleted) { ord_map[nold] = 0; needs_renumber = 1; }
-                else         { ord_map[nold] = ++nnew; }
-            }
-            p += lc->cmdsize;
-        }
+    mo_map omap = { ord_map, 0 };
+    struct ord_delete_ctx dctx = { changes, nchanges };
+    int nnew;
+    if (mo_map_build(buf, hdr->ncmds, ninserts, ord_is_deleted, &dctx, &omap, &nnew) != 0)
+        return 1;
+    int nold = omap.n;
+    /* A survivor count below nold means at least one dylib was deleted; that
+     * and any -insert are the only reasons a rewrite needs to renumber. */
+    int needs_renumber = (ninserts > 0) || (nnew - ninserts < nold);
+    if (mo_map_validate(&omap, nnew) != 0) {
+        fprintf(stderr, "ERROR: internal: ordinal map failed validation\n");
+        return 1;
     }
-    if (nnew + nadds > CD_MAX_DYLIBS) {
-        fprintf(stderr, "ERROR: result would exceed %d dylibs\n", CD_MAX_DYLIBS);
+    if (nnew + nadds > MO_MAX_DYLIBS) {
+        fprintf(stderr, "ERROR: result would exceed %d dylibs\n", MO_MAX_DYLIBS);
         return 1;
     }
 
@@ -526,7 +524,7 @@ int main(int argc, char **argv) {
 
     /* Ordinals last, against the committed table — and before any write, so a
      * refusal leaves the input untouched rather than half-rewritten. */
-    if (needs_renumber && renumber_ordinals(buf, ord_map, nold, 1) != 0) {
+    if (needs_renumber && mo_map_apply(buf, &omap, 1) != 0) {
         fprintf(stderr, "ERROR: %s left unmodified\n", path);
         return 1;
     }
