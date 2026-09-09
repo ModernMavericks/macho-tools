@@ -1067,19 +1067,17 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
              * other rewriter in this toolkit does: this transform edits file
              * bytes a signature covers. That is a pre-existing, documented
              * limitation (`-strip-lc codesig`), not something new here.) */
-            uint8_t *lcp2 = buf + sizeof(struct mach_header_64);
             long linkedit_lc_off = -1;
-            struct mach_header_64 *hh2 = (struct mach_header_64 *)buf;
-            for (uint32_t i = 0; i < hh2->ncmds; i++) {
-                struct load_command *lc2 = (struct load_command *)lcp2;
-                if (lc2->cmd == LC_SEGMENT_64) {
-                    struct segment_command_64 *seg2 = (struct segment_command_64 *)lcp2;
-                    if (strcmp(seg2->segname, "__LINKEDIT") == 0) {
-                        linkedit_lc_off = lcp2 - buf;
-                        break;   /* first (and only well-formed) __LINKEDIT */
-                    }
+            {
+                /* mi_find_segment already IS "first (and only well-formed)
+                 * match" -- same finder every other converted walk in this
+                 * toolkit uses. Its offset (not a pointer: the realloc just
+                 * below can move buf) is what this path actually needs. */
+                mi_image le_im;
+                if (mi_wrap(buf, final_size, &le_im) == 0) {
+                    struct segment_command_64 *le = mi_find_segment(&le_im, "__LINKEDIT");
+                    if (le) linkedit_lc_off = (uint8_t *)le - buf;
                 }
-                lcp2 += lc2->cmdsize;
             }
             /* The export LC is looked up through mg_find_trie_lc, the same
              * function mg_find_trie used just above to locate toff/tsize --
