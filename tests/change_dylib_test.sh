@@ -42,8 +42,9 @@ trap 'rm -rf "$T"' EXIT INT TERM
 #
 # The standalone build used to hand-enumerate macho9core's source list right
 # here -- a SECOND place deciding what the library contains, independent of
-# CMakeLists.txt's own `add_library(macho9core ...)` list, which had already
-# needed hand-updating five times (uleb, image, ordinals, fat, trie, lc_kinds,
+# CMakeLists.txt's own `add_library(macho9core ...)` list (still a hand
+# enumeration itself, CMakeLists.txt:57), which had already needed
+# hand-updating five times (uleb, image, ordinals, fat, trie, lc_kinds,
 # atomic_write, linkedit, grow) as the toolkit grew. Two places independently
 # deciding one thing is this repo's signature bug class (two deletion
 # predicates, two fat parsers, two export-LC scans, two LC-kind tables, all
@@ -51,20 +52,41 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # let this exact path -- the one a standalone `sh change_dylib_test.sh` run
 # actually exercises -- silently drift out of sync while ctest itself stayed
 # green, because ctest (below) never took this branch at all. Globbing
-# src/*.c instead means it cannot drift: whatever CMakeLists.txt's
-# macho9core target compiles is exactly what this glob also picks up, both
-# reading the same directory.
-BIN="${1:-}"
-if [ -n "$BIN" ] && [ -x "$BIN/change_dylib" ] && [ -x "$BIN/fix_macho" ]; then
-    echo "change_dylib_test: using the CMake-built binaries in $BIN"
-    CHANGE_DYLIB="$BIN/change_dylib"
-    FIX_MACHO="$BIN/fix_macho"
-else
-    echo "change_dylib_test: no usable bindir given -- compiling standalone from source"
+# src/*.c kills that historical drift (a new library file forgotten here
+# stops being possible), but it is NOT the same list CMakeLists.txt compiles
+# -- it is a superset by construction, since CMakeLists.txt's own list is
+# still hand-enumerated. A future src/something_else.c deliberately kept OUT
+# of macho9core would still be silently pulled into this standalone build.
+# A real fix (glob macho9core's own sources in CMakeLists.txt too, or have
+# this script read that list back out of CMake) is a follow-up, not this
+# round -- the glob here only trades the demonstrated failure mode (a file
+# added to macho9core and forgotten here) for a theoretical one (a file
+# deliberately excluded from macho9core that this glob doesn't know to
+# exclude), which has never happened in this repo's history.
+#
+# A bindir argument, once given, MUST be honored or the run must fail loudly
+# -- never silently fall back to a from-source build. A wrong or stale bindir
+# (a typo, a build that didn't finish, a renamed preset) falling back here
+# would make ctest pass green while never once exercising the shipped
+# binary -- exactly the "green while broken" failure class Step 2 exists to
+# close. So: no argument at all means standalone (compile from source, the
+# documented, intentional fallback); a NON-EMPTY argument is a hard
+# requirement, exactly like the other four suites' `BIN="${1:?usage...}"`.
+if [ $# -eq 0 ]; then
+    echo "change_dylib_test: no bindir given -- compiling standalone from source"
     CHANGE_DYLIB="$T/change_dylib"
     FIX_MACHO="$T/fix_macho"
     "$CC" -O2 -I "$SRC_DIR" -o "$CHANGE_DYLIB" "$COMPAT_DIR/change_dylib.c" "$SRC_DIR"/*.c
     "$CC" -O2 -I "$SRC_DIR" -o "$FIX_MACHO" "$COMPAT_DIR/fix_macho.c" "$SRC_DIR"/*.c
+else
+    BIN="$1"
+    if [ ! -x "$BIN/change_dylib" ] || [ ! -x "$BIN/fix_macho" ]; then
+        echo "change_dylib_test: bindir '$BIN' given but change_dylib/fix_macho not found (or not executable) there -- refusing to silently fall back to a from-source build" >&2
+        exit 1
+    fi
+    echo "change_dylib_test: using the CMake-built binaries in $BIN"
+    CHANGE_DYLIB="$BIN/change_dylib"
+    FIX_MACHO="$BIN/fix_macho"
 fi
 fails=0
 ok()   { echo "PASS $1"; }
@@ -520,7 +542,16 @@ EOF
 if ! otool -l "$T/libupd_a.dylib" | grep -q LC_LOAD_UPWARD_DYLIB; then
     bad "upward fixture" "linker did not produce LC_LOAD_UPWARD_DYLIB; skipping case 8"
 else
-    before=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>"$T/ordinal_before.err")
+    # `|| true`: without it, a genuinely failing ordinal_of (nonzero exit) would
+    # trip `set -e` on this bare assignment and abort the WHOLE script right
+    # here -- no bad(), no FAIL line, the EXIT trap deletes ordinal_before.err
+    # before anyone reads it, and the only visible symptom is the script's own
+    # exit code. Loud in exit status, silent in diagnostics. `|| true` lets
+    # execution reach the equality check below, which already turns a failed
+    # (empty/wrong) $before into a bad() call with the stderr file's content
+    # folded in -- so a genuine failure now actually fails LOUDLY, with a
+    # message, instead of just stopping.
+    before=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>"$T/ordinal_before.err") || true
     [ "$before" = "3" ] || bad "upward fixture" "fixture itself not as expected before any rewrite: _getpid ordinal is '$before', wanted 3$( [ -s "$T/ordinal_before.err" ] && echo "; stderr: $(cat "$T/ordinal_before.err")")"
     # ordinals as linked: 1=libspare, 2=libupd_b (upward), 3=libSystem, so
     # _getpid (a real libSystem call, not foldable by the optimizer) starts
@@ -545,7 +576,11 @@ else
     else
         ok "-delete: an LC_LOAD_UPWARD_DYLIB is matched/deleted like any other dylib LC"
     fi
-    after=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>"$T/ordinal_after.err")
+    # `|| true`: same reason as $before above -- otherwise a failing ordinal_of
+    # here would trip `set -e` and abort the script before the `case` below
+    # (which already treats a non-numeric $after, stderr folded in, as a
+    # loud bad()) ever runs.
+    after=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>"$T/ordinal_after.err") || true
     case "$after" in
         [0-9]*)
             if [ "$after" = "1" ]; then
