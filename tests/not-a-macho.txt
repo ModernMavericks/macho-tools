@@ -1,0 +1,6 @@
+This is a purpose-built junk file for image_test.c's "refuses a non-Mach-O
+input" case. It exists so that test does not have to reuse tests/EXPECTED
+(a characterization reference for a different test, characterize.sh) just
+because it happened to also be a convenient non-Mach-O file lying around --
+coupling one test's fixture to another test's unrelated reference file. Any
+content works; what matters is that this file's only job is "not a Mach-O".

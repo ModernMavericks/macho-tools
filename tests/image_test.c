@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <malloc/malloc.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -56,8 +57,19 @@ static void test_open_reports_its_capacity(void) {
 static void test_open_slack_allocates_real_headroom(void) {
     /* patch_macho appends rebase/bind streams into the tail of its buffer, so it
      * over-allocates. That need is why mi_open alone could not serve it. The
-     * headroom must be genuinely writable, not merely promised -- hence the
-     * write to the last byte and the read back. */
+     * headroom must be genuinely writable, not merely promised.
+     *
+     * Writing to the last byte and reading it back (kept below) cannot fail
+     * even if `cap` over-reports the real allocation: it only proves the
+     * process didn't crash and memory equals what was just stored into it,
+     * which is true of any writable address, promised headroom or not. The
+     * real check is malloc_size(im.buf) -- the allocator's own record of how
+     * many bytes it actually granted this pointer -- against `cap`: if
+     * mi_open_slack ever recorded a `cap` larger than what it actually
+     * malloc'd (e.g. a slack computation that overflowed, or a stale `cap`
+     * after a bug in the malloc-size arithmetic), the allocator's own answer
+     * would come back smaller and this fails where the write-and-read-back
+     * could not. */
     const size_t slack = 2u * 1024 * 1024;
     mi_image im;
     int rc = mi_open_slack(FIXTURE, slack, &im);
@@ -68,6 +80,20 @@ static void test_open_slack_allocates_real_headroom(void) {
     CHECK(im.cap >= im.size + slack, "  cap >= size + slack (got %lu, want >= %lu)",
           (unsigned long)im.cap, (unsigned long)(im.size + slack));
     CHECK(im.hdr->magic == MH_MAGIC_64, "  and it is still a valid image");
+    /* malloc_size BEFORE the raw write below, deliberately: it is the check
+     * that can actually fail on a `cap` that over-reports the allocation, so
+     * it must get to run (and report a clean FAIL) even in that case, rather
+     * than the unchecked write at im.cap-1 running first and segfaulting the
+     * whole test binary before this ever gets a chance to speak. Confirmed by
+     * mutation: inflating the recorded `cap` by 64KB beyond what
+     * mi_open_slack actually malloc'd makes this CHECK fail cleanly; with the
+     * write-and-read-back running first instead (the original order), the
+     * same mutation crashes the test binary (SIGSEGV) before either
+     * assertion reports anything. */
+    size_t usable = malloc_size(im.buf);
+    CHECK(usable >= im.cap,
+          "  the allocator actually granted cap bytes: malloc_size == %lu, cap == %lu",
+          (unsigned long)usable, (unsigned long)im.cap);
     im.buf[im.cap - 1] = 0xA5;
     CHECK(im.buf[im.cap - 1] == 0xA5, "  the last slack byte is writable");
     mi_close(&im);
@@ -98,10 +124,14 @@ static void test_open_refuses_a_missing_file(void) {
 }
 
 static void test_open_refuses_a_non_macho(void) {
-    /* tests/EXPECTED is a committed text file — the cheapest honest non-Mach-O.
-     * A tool that accepts this would go on to read a header out of ASCII. */
+    /* tests/not-a-macho.txt is a purpose-built junk file with no job other
+     * than "not a Mach-O" -- it used to be tests/EXPECTED, which is
+     * characterize.sh's characterization reference (see tests/README.md):
+     * reusing it here coupled a unit test's fixture to a different test's
+     * unrelated reference file for no reason but convenience. A tool that
+     * accepts this file would go on to read a header out of ASCII. */
     mi_image im;
-    CHECK(mi_open("tests/EXPECTED", &im) != 0, "mi_open(text file) refuses");
+    CHECK(mi_open("tests/not-a-macho.txt", &im) != 0, "mi_open(text file) refuses");
 }
 
 /* ---- wrap ---- */
@@ -219,6 +249,27 @@ static void test_wrap_refuses_a_cmdsize_striding_past_sizeofcmds(void) {
           "mi_wrap(cmdsize striding past sizeofcmds) refuses");
 }
 
+static void test_wrap_refuses_unaligned_cmdsize(void) {
+    /* 64-bit Mach-O requires every load command to be a multiple of 8 bytes,
+     * so the 64-bit fields inside whatever command follows stay naturally
+     * aligned. Before this was checked, a cmdsize like 17 -- large enough to
+     * be a load command, and small enough to fit inside sizeofcmds -- was
+     * accepted and walked, misaligning every command after it. */
+    uint8_t buf[sizeof(struct mach_header_64) + 24];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 24;
+    struct load_command *lc = (struct load_command *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    lc->cmdsize = 17;   /* well-formed size, but not a multiple of 8 */
+
+    mi_image im;
+    CHECK(mi_wrap(buf, sizeof buf, &im) != 0,
+          "mi_wrap(cmdsize not 8-byte aligned) refuses");
+}
+
 static void test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct(void) {
     /* Reviewer's second repro: a 40-byte buffer holding one LC_SEGMENT_64
      * whose cmdsize (8) doesn't even cover sizeof(segment_command_64) (72).
@@ -275,6 +326,18 @@ static void test_wrap_does_not_copy(void) {
     uint8_t stackbuf[8528];
     mi_image src;
     if (mi_open(FIXTURE, &src) != 0) { CHECK(0, "wrap: fixture would not open"); return; }
+    /* stackbuf is sized to the fixture's CURRENT byte count, hard-coded, with
+     * nothing to keep the two in sync. A regenerated tests/fixture.macho even
+     * one byte larger turns the memcpy below into a stack-buffer overflow --
+     * this guard catches that as a clean, reported test failure instead of
+     * however the corrupted stack happens to fail (or silently doesn't). */
+    if (src.size > sizeof stackbuf) {
+        CHECK(0, "wrap_does_not_copy: fixture is %lu bytes but stackbuf only holds %lu -- "
+                 "grow stackbuf to match (do not just memcpy past it)",
+              (unsigned long)src.size, (unsigned long)sizeof stackbuf);
+        mi_close(&src);
+        return;
+    }
     memcpy(stackbuf, src.buf, src.size);
     mi_close(&src);
 
@@ -359,6 +422,7 @@ int main(void) {
     test_wrap_refuses_32bit_mach_header();
     test_wrap_refuses_load_commands_past_the_end();
     test_wrap_refuses_zero_cmdsize();
+    test_wrap_refuses_unaligned_cmdsize();
     test_wrap_refuses_a_cmdsize_striding_past_sizeofcmds();
     test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct();
     test_wrap_refuses_nsects_disagreeing_with_cmdsize();
