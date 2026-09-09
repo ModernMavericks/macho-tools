@@ -507,23 +507,15 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
     return r;
 }
 
-int mg_classify(const uint8_t *buf, size_t fsize) {
-    mi_image im;
-    /* Same reasoning as mg_first_sect_off's identical cast above: mi_wrap's
-     * signature is non-const only because some OTHER caller needs a
-     * writable view; this function only reads im.buf/im.hdr (via `sp`)
-     * below, never writes, so casting away const here does not let this
-     * function violate its own `const uint8_t *buf` promise to callers. */
-    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
-        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
-                        "that don't fit); refusing to classify\n");
-        return -1;
-    }
-    const uint8_t *sp = im.buf + sizeof(*im.hdr);
-    for (uint32_t i = 0; i < im.hdr->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        const char *why = NULL;
-        switch (lc->cmd) {
+/* mg_classify's mi_each_lc callback: classify one load command (and, for
+ * LC_SEGMENT_64, every one of its sections), refusing to stop the walk the
+ * instant something unclassified turns up. Every `return -1` here is exactly
+ * the hand-rolled loop's early `return -1` -- "unknown means unsafe", never
+ * widened to keep going. */
+static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
+    (void)ctx_;
+    const char *why = NULL;
+    switch (lc->cmd) {
         /* Handled by a re-baser above. */
         case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE:
         case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY: case LC_DYLD_EXPORTS_TRIE:
@@ -590,8 +582,8 @@ int mg_classify(const uint8_t *buf, size_t fsize) {
         }
 
         if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            const struct section_64 *sect = (const struct section_64 *)(sp + sizeof *seg);
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            const struct section_64 *sect = (const struct section_64 *)(seg + 1);
             for (uint32_t j = 0; j < seg->nsects; j++) {
                 uint32_t type = sect[j].flags & SECTION_TYPE;
                 if (type > S_INIT_FUNC_OFFSETS) {
@@ -602,9 +594,22 @@ int mg_classify(const uint8_t *buf, size_t fsize) {
                 }
             }
         }
-        sp += lc->cmdsize;
-    }
     return 0;
+}
+
+int mg_classify(const uint8_t *buf, size_t fsize) {
+    mi_image im;
+    /* Same reasoning as mg_first_sect_off's identical cast above: mi_wrap's
+     * signature is non-const only because some OTHER caller needs a
+     * writable view; mg_classify_cb only reads through `lc`, never writes,
+     * so casting away const here does not let this function itself violate
+     * its own `const uint8_t *buf` promise to callers. */
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
+                        "that don't fit); refusing to classify\n");
+        return -1;
+    }
+    return mi_each_lc(&im, mg_classify_cb, NULL) ? 0 : -1;
 }
 
 int mg_addr_known(const uint64_t *sorted, int n, uint64_t a) {
