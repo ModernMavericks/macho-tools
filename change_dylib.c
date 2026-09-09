@@ -124,47 +124,196 @@ static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
     return cs;
 }
 
+/* build_lcs's per-load-command work, as an mi_each_lc callback. Every mutable
+ * local the old hand-rolled loop threaded through each iteration (new_off,
+ * ncmds, mods, placed_inserts) lives in this ctx instead; adds/radds are NOT
+ * here because build_lcs only needs them AFTER the walk (appended past the
+ * existing table), so they never had to be part of the per-command state.
+ *
+ * Returns 0 to continue, 1 to stop the walk -- the two cases below where a
+ * dylib or LC_RPATH command's own name offset is out of bounds for its
+ * cmdsize (mo_lc_str_at, ordinals.h). Stopping here is exactly what the
+ * stop-capable mi_each_lc exists for: without it, the walk would keep
+ * calling this callback for every later load command after the refusal
+ * fires, each one still writing into new_lcs -- corrupting/overrunning a
+ * buffer build_lcs's caller believes was never touched, instead of leaving
+ * the input provably unmodified the way a refusal here must. */
+struct build_lcs_ctx {
+    const struct change *changes; int nchanges;
+    const char *const *inserts; int ninserts;
+    const uint32_t *strip; int nstrip;
+    const struct change *rchanges; int nrchanges;
+    uint8_t *new_lcs;
+    uint32_t new_off;
+    uint32_t ncmds;
+    int mods;
+    int placed_inserts;
+    int verbose;
+};
+
+static int build_lcs_lc(const struct load_command *lc, void *ctx_) {
+    struct build_lcs_ctx *ctx = ctx_;
+    uint32_t cmdsize = lc->cmdsize;
+    uint32_t write_size = cmdsize;
+    int matched = -1;
+    int deleted = 0;
+
+    /* Dropping a command reclaims its bytes for the rest of the table.
+     * Any __LINKEDIT payload it referenced simply stops being reachable;
+     * nothing moves, so no offset anywhere needs fixing up. */
+    int stripped = 0;
+    for (int s = 0; s < ctx->nstrip; s++)
+        if (lc->cmd == ctx->strip[s]) { stripped = 1; break; }
+    if (stripped) {
+        if (ctx->verbose) printf("  Strip [%u bytes]: load command 0x%x\n", cmdsize, lc->cmd);
+        ctx->ncmds--;
+        ctx->mods++;
+        return 0;
+    }
+
+    /* -insert goes immediately before the first ordinal-bearing dylib LC, so
+     * the inserted libraries become ordinals 1..n and load (and initialize)
+     * ahead of everything the image already depended on. Nothing strippable
+     * bears an ordinal, so the strip pass above cannot move this boundary. */
+    if (!ctx->placed_inserts && ctx->ninserts && mo_is_ordinal_lc(lc->cmd)) {
+        for (int s = 0; s < ctx->ninserts; s++) {
+            uint32_t cs = emit_dylib_lc(ctx->new_lcs + ctx->new_off, ctx->inserts[s]);
+            ctx->new_off += cs;
+            ctx->ncmds++;
+            ctx->mods++;
+            if (ctx->verbose) printf("  Insert [%u bytes]: LC_LOAD_DYLIB %s (now ordinal %d)\n",
+                                cs, ctx->inserts[s], s + 1);
+        }
+        ctx->placed_inserts = 1;
+    }
+
+    /* mo_is_ordinal_lc() here (rather than a locally re-listed set) is
+     * what keeps this "which dylib LCs can be matched/renamed/deleted"
+     * set in sync with mo_map_build's "which dylib LCs carry an ordinal"
+     * set -- they used to disagree about LC_LOAD_UPWARD_DYLIB. LC_ID_DYLIB
+     * is added back in because it names the image itself: it has to be
+     * recognized as dylib-shaped so `dc`/`name` below are valid, but it's
+     * excluded from matching just below, same as before. */
+    if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
+        const struct dylib_command *dc = (const struct dylib_command *)lc;
+        if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
+            const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+            if (!name) {
+                fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
+                                "exceeds cmdsize %u); refusing\n",
+                        dc->dylib.name.offset, cmdsize);
+                return 1;
+            }
+            for (int c = 0; c < ctx->nchanges; c++)
+                if (strcmp(name, ctx->changes[c].old_path) == 0) { matched = c; break; }
+            /* Deletion is decided by ord_is_deleted -- the SAME predicate
+             * passed to mo_map_build below -- not by whichever `changes`
+             * entry happens to match first. Without this, a path named
+             * in both a -change and a -delete could be kept here while
+             * mo_map_build's map (which scans every -delete, not just the
+             * first match) marks it gone: exactly the "renumberer and
+             * emitter disagree" bug this module exists to rule out. A
+             * -delete anywhere in the arguments now always wins, no
+             * matter where it falls relative to a conflicting -change. */
+            deleted = ord_is_deleted(name, &(struct ord_delete_ctx){ ctx->changes, ctx->nchanges });
+        }
+        if (!deleted && matched >= 0 && ctx->changes[matched].new_path != NULL) {
+            size_t base = dc->dylib.name.offset;
+            size_t new_len = strlen(ctx->changes[matched].new_path) + 1;
+            uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+            if (needed < cmdsize) needed = cmdsize;
+            write_size = needed;
+        }
+    }
+
+    /* LC_RPATH carries a single lc_str exactly like a dylib command, so
+     * the same grow-the-command-and-rewrite-in-place logic applies. */
+    int rmatched = -1;
+    if (lc->cmd == LC_RPATH) {
+        const struct rpath_command *rc = (const struct rpath_command *)lc;
+        const char *rp = mo_lc_str_at(lc, rc->path.offset);
+        if (!rp) {
+            fprintf(stderr, "ERROR: malformed LC_RPATH command (path offset %u "
+                            "exceeds cmdsize %u); refusing\n",
+                    rc->path.offset, cmdsize);
+            return 1;
+        }
+        for (int c = 0; c < ctx->nrchanges; c++)
+            if (strcmp(rp, ctx->rchanges[c].old_path) == 0) { rmatched = c; break; }
+        if (rmatched >= 0 && ctx->rchanges[rmatched].new_path != NULL) {
+            size_t base = rc->path.offset;
+            size_t new_len = strlen(ctx->rchanges[rmatched].new_path) + 1;
+            uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+            if (needed < cmdsize) needed = cmdsize;
+            write_size = needed;
+        }
+    }
+
+    if (rmatched >= 0) {
+        if (ctx->rchanges[rmatched].new_path == NULL) {
+            if (ctx->verbose) printf("  Delete rpath [%u bytes]: %s\n", cmdsize,
+                                ctx->rchanges[rmatched].old_path);
+            ctx->ncmds--;
+        } else {
+            memcpy(ctx->new_lcs + ctx->new_off, lc, cmdsize);
+            struct rpath_command *nrc = (struct rpath_command *)(ctx->new_lcs + ctx->new_off);
+            nrc->cmdsize = write_size;
+            size_t base = nrc->path.offset;
+            memset(ctx->new_lcs + ctx->new_off + base, 0, write_size - base);
+            strcpy((char *)(ctx->new_lcs + ctx->new_off + base), ctx->rchanges[rmatched].new_path);
+            if (ctx->verbose)
+                printf("  Change rpath [%u->%u bytes]: %s -> %s\n", cmdsize, write_size,
+                       ctx->rchanges[rmatched].old_path, ctx->rchanges[rmatched].new_path);
+            ctx->new_off += write_size;
+        }
+        ctx->mods++;
+    } else if (deleted) {
+        if (ctx->verbose) printf("  Delete [%u bytes]: %s\n", cmdsize, ctx->changes[matched].old_path);
+        ctx->ncmds--;
+        ctx->mods++;
+    } else {
+        memcpy(ctx->new_lcs + ctx->new_off, lc, cmdsize);
+        if (matched >= 0) {
+            struct dylib_command *ndc = (struct dylib_command *)(ctx->new_lcs + ctx->new_off);
+            ndc->cmdsize = write_size;
+            if (ctx->changes[matched].reexport) {
+                ndc->cmd = LC_REEXPORT_DYLIB;
+                if (ctx->verbose) printf("  Reexport: %s\n", ctx->changes[matched].old_path);
+            }
+            if (ctx->changes[matched].new_path[0] != '\0') {
+                size_t base = ndc->dylib.name.offset;
+                memset(ctx->new_lcs + ctx->new_off + base, 0, write_size - base);
+                strcpy((char *)(ctx->new_lcs + ctx->new_off + base), ctx->changes[matched].new_path);
+                if (ctx->verbose)
+                    printf("  Change [%u->%u bytes]: %s -> %s\n", cmdsize, write_size,
+                           ctx->changes[matched].old_path, ctx->changes[matched].new_path);
+            }
+            ctx->mods++;
+        }
+        ctx->new_off += write_size;
+    }
+    return 0;
+}
+
 /*
- * Build the new load-command table into `new_lcs` from the current header in
- * `buf`. Returns the new total size (sizeofcmds) via *out_off, the new command
- * count via *out_ncmds, and how many changes applied via *out_mods. Does NOT
- * mutate the header, so it is safe to call more than once (e.g. again after the
- * header pad has been grown). `verbose` prints the per-change diagnostics once.
- * Returns 0 on success, -1 (message already on stderr) if a dylib or LC_RPATH
- * command's name offset is out of bounds for its own cmdsize -- see
- * mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are unspecified on
- * failure; the caller must not use them.
+ * Build the new load-command table into `new_lcs` from the current header
+ * `im` wraps. Returns the new total size (sizeofcmds) via *out_off, the new
+ * command count via *out_ncmds, and how many changes applied via *out_mods.
+ * Does NOT mutate `im`'s buffer, so it is safe to call more than once (e.g.
+ * again after the header pad has been grown, against a freshly mi_wrap'd `im`
+ * over the relocated buffer -- see process_one's second call site). `verbose`
+ * prints the per-change diagnostics once.
  *
- * Left as a hand-rolled walk, not mi_each_lc -- and not merely because it
- * threads several mutable locals through every iteration (new_off, ncmds,
- * mods, placed_inserts): a context struct would absorb those trivially.
- * The actual blocker is control flow mi_each_lc cannot express:
- *
- *   1. This loop has two hard early exits (a malformed dylib or LC_RPATH
- *      name offset, "ERROR: ... refusing" -> return -1, just below and at
- *      the LC_RPATH case). mi_lc_fn returns void, with no way for a
- *      callback to signal "stop -- and do not trust anything written so
- *      far." A converted version would keep calling the callback for every
- *      later load command after the refusal fires, each one still writing
- *      into new_lcs -- corrupting/overrunning a buffer the caller (and the
- *      caller's caller) believes was never touched, instead of leaving the
- *      input provably unmodified the way a refusal here must.
- *   2. build_lcs runs TWICE in the -grow path (process_one calls it once to
- *      size the table, grows the header via mg_grow_header if needed, then
- *      calls it again against the POST-realloc buffer to rebuild against
- *      the relocated header). The second call has no live mi_image to walk
- *      -- mg_grow_header reallocs the raw buffer, not through image.h, so
- *      there is nothing here to hand mi_each_lc even if the above were
- *      fixed.
- *
- * Task 2 (docs/superpowers/plans/2026-09-08-macho9-toolkit.md) is where a
- * stop-capable mi_each_lc variant belongs, if this walk is revisited; doing
- * that here was explicitly out of scope for Task 1. Until then, resist
- * "fixing" this into a callback -- it would either drop the abort behavior
- * silently or need re-deriving an mi_image from a buffer image.h no longer
- * owns.
- */
-static int build_lcs(const uint8_t *buf, const struct change *changes, int nchanges,
+ * Returns 0 on success, -1 (message already on stderr, via build_lcs_lc) if a
+ * dylib or LC_RPATH command's name offset is out of bounds for its own
+ * cmdsize -- see mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are
+ * unspecified on failure; the caller must not use them. The per-command work
+ * is build_lcs_lc, walked via the stop-capable mi_each_lc so that refusal
+ * can abort before writing another byte into new_lcs; everything below
+ * (placing not-yet-placed inserts, then -add/-add-rpath) runs only once, in
+ * whatever state the walk left ncmds/new_off/mods, so it stays hand-written
+ * here rather than folded into the per-command callback. */
+static int build_lcs(const mi_image *im, const struct change *changes, int nchanges,
                       const char *const *adds, int nadds,
                       const char *const *inserts, int ninserts,
                       const uint32_t *strip, int nstrip,
@@ -172,159 +321,24 @@ static int build_lcs(const uint8_t *buf, const struct change *changes, int nchan
                       const char *const *radds, int nradds,
                       uint8_t *new_lcs, uint32_t *out_off, uint32_t *out_ncmds,
                       int *out_mods, int verbose) {
-    const struct mach_header_64 *hdr = (const struct mach_header_64 *)buf;
-    uint32_t new_off = 0, ncmds = hdr->ncmds;
-    int mods = 0, placed_inserts = 0;
+    struct build_lcs_ctx ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.changes = changes;   ctx.nchanges = nchanges;
+    ctx.inserts = inserts;   ctx.ninserts = ninserts;
+    ctx.strip = strip;       ctx.nstrip = nstrip;
+    ctx.rchanges = rchanges; ctx.nrchanges = nrchanges;
+    ctx.new_lcs = new_lcs;
+    ctx.ncmds = im->hdr->ncmds;
+    ctx.verbose = verbose;
 
-    const uint8_t *lcp = buf + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)lcp;
-        uint32_t cmdsize = lc->cmdsize;
-        uint32_t write_size = cmdsize;
-        int matched = -1;
-        int deleted = 0;
+    if (!mi_each_lc(im, build_lcs_lc, &ctx)) return -1;   /* refused; see build_lcs_lc */
 
-        /* Dropping a command reclaims its bytes for the rest of the table.
-         * Any __LINKEDIT payload it referenced simply stops being reachable;
-         * nothing moves, so no offset anywhere needs fixing up. */
-        int stripped = 0;
-        for (int s = 0; s < nstrip; s++)
-            if (lc->cmd == strip[s]) { stripped = 1; break; }
-        if (stripped) {
-            if (verbose) printf("  Strip [%u bytes]: load command 0x%x\n", cmdsize, lc->cmd);
-            ncmds--;
-            mods++;
-            lcp += cmdsize;
-            continue;
-        }
-
-        /* -insert goes immediately before the first ordinal-bearing dylib LC, so
-         * the inserted libraries become ordinals 1..n and load (and initialize)
-         * ahead of everything the image already depended on. Nothing strippable
-         * bears an ordinal, so the strip pass above cannot move this boundary. */
-        if (!placed_inserts && ninserts && mo_is_ordinal_lc(lc->cmd)) {
-            for (int s = 0; s < ninserts; s++) {
-                uint32_t cs = emit_dylib_lc(new_lcs + new_off, inserts[s]);
-                new_off += cs;
-                ncmds++;
-                mods++;
-                if (verbose) printf("  Insert [%u bytes]: LC_LOAD_DYLIB %s (now ordinal %d)\n",
-                                    cs, inserts[s], s + 1);
-            }
-            placed_inserts = 1;
-        }
-
-        /* mo_is_ordinal_lc() here (rather than a locally re-listed set) is
-         * what keeps this "which dylib LCs can be matched/renamed/deleted"
-         * set in sync with mo_map_build's "which dylib LCs carry an ordinal"
-         * set -- they used to disagree about LC_LOAD_UPWARD_DYLIB. LC_ID_DYLIB
-         * is added back in because it names the image itself: it has to be
-         * recognized as dylib-shaped so `dc`/`name` below are valid, but it's
-         * excluded from matching just below, same as before. */
-        if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
-            const struct dylib_command *dc = (const struct dylib_command *)lcp;
-            if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
-                const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
-                if (!name) {
-                    fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
-                                    "exceeds cmdsize %u); refusing\n",
-                            dc->dylib.name.offset, cmdsize);
-                    return -1;
-                }
-                for (int c = 0; c < nchanges; c++)
-                    if (strcmp(name, changes[c].old_path) == 0) { matched = c; break; }
-                /* Deletion is decided by ord_is_deleted -- the SAME predicate
-                 * passed to mo_map_build below -- not by whichever `changes`
-                 * entry happens to match first. Without this, a path named
-                 * in both a -change and a -delete could be kept here while
-                 * mo_map_build's map (which scans every -delete, not just the
-                 * first match) marks it gone: exactly the "renumberer and
-                 * emitter disagree" bug this module exists to rule out. A
-                 * -delete anywhere in the arguments now always wins, no
-                 * matter where it falls relative to a conflicting -change. */
-                deleted = ord_is_deleted(name, &(struct ord_delete_ctx){ changes, nchanges });
-            }
-            if (!deleted && matched >= 0 && changes[matched].new_path != NULL) {
-                size_t base = dc->dylib.name.offset;
-                size_t new_len = strlen(changes[matched].new_path) + 1;
-                uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
-                if (needed < cmdsize) needed = cmdsize;
-                write_size = needed;
-            }
-        }
-
-        /* LC_RPATH carries a single lc_str exactly like a dylib command, so
-         * the same grow-the-command-and-rewrite-in-place logic applies. */
-        int rmatched = -1;
-        if (lc->cmd == LC_RPATH) {
-            const struct rpath_command *rc = (const struct rpath_command *)lcp;
-            const char *rp = mo_lc_str_at(lc, rc->path.offset);
-            if (!rp) {
-                fprintf(stderr, "ERROR: malformed LC_RPATH command (path offset %u "
-                                "exceeds cmdsize %u); refusing\n",
-                        rc->path.offset, cmdsize);
-                return -1;
-            }
-            for (int c = 0; c < nrchanges; c++)
-                if (strcmp(rp, rchanges[c].old_path) == 0) { rmatched = c; break; }
-            if (rmatched >= 0 && rchanges[rmatched].new_path != NULL) {
-                size_t base = rc->path.offset;
-                size_t new_len = strlen(rchanges[rmatched].new_path) + 1;
-                uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
-                if (needed < cmdsize) needed = cmdsize;
-                write_size = needed;
-            }
-        }
-
-        if (rmatched >= 0) {
-            if (rchanges[rmatched].new_path == NULL) {
-                if (verbose) printf("  Delete rpath [%u bytes]: %s\n", cmdsize,
-                                    rchanges[rmatched].old_path);
-                ncmds--;
-            } else {
-                memcpy(new_lcs + new_off, lcp, cmdsize);
-                struct rpath_command *nrc = (struct rpath_command *)(new_lcs + new_off);
-                nrc->cmdsize = write_size;
-                size_t base = nrc->path.offset;
-                memset(new_lcs + new_off + base, 0, write_size - base);
-                strcpy((char *)(new_lcs + new_off + base), rchanges[rmatched].new_path);
-                if (verbose)
-                    printf("  Change rpath [%u->%u bytes]: %s -> %s\n", cmdsize, write_size,
-                           rchanges[rmatched].old_path, rchanges[rmatched].new_path);
-                new_off += write_size;
-            }
-            mods++;
-        } else if (deleted) {
-            if (verbose) printf("  Delete [%u bytes]: %s\n", cmdsize, changes[matched].old_path);
-            ncmds--;
-            mods++;
-        } else {
-            memcpy(new_lcs + new_off, lcp, cmdsize);
-            if (matched >= 0) {
-                struct dylib_command *ndc = (struct dylib_command *)(new_lcs + new_off);
-                ndc->cmdsize = write_size;
-                if (changes[matched].reexport) {
-                    ndc->cmd = LC_REEXPORT_DYLIB;
-                    if (verbose) printf("  Reexport: %s\n", changes[matched].old_path);
-                }
-                if (changes[matched].new_path[0] != '\0') {
-                    size_t base = ndc->dylib.name.offset;
-                    memset(new_lcs + new_off + base, 0, write_size - base);
-                    strcpy((char *)(new_lcs + new_off + base), changes[matched].new_path);
-                    if (verbose)
-                        printf("  Change [%u->%u bytes]: %s -> %s\n", cmdsize, write_size,
-                               changes[matched].old_path, changes[matched].new_path);
-                }
-                mods++;
-            }
-            new_off += write_size;
-        }
-        lcp += cmdsize;
-    }
+    uint32_t new_off = ctx.new_off, ncmds = ctx.ncmds;
+    int mods = ctx.mods;
 
     /* An image with no dylib load commands at all still honours -insert; there
      * was simply nothing to insert in front of. */
-    if (!placed_inserts) {
+    if (!ctx.placed_inserts) {
         for (int s = 0; s < ninserts; s++) {
             uint32_t cs = emit_dylib_lc(new_lcs + new_off, inserts[s]);
             new_off += cs;
@@ -373,7 +387,7 @@ struct cgb_ctx {
     const struct change *rchanges; int nrchanges;
 };
 
-static void cgb_lc(const struct load_command *lc, void *ctx_) {
+static int cgb_lc(const struct load_command *lc, void *ctx_) {
     struct cgb_ctx *ctx = ctx_;
     uint32_t cmdsize = lc->cmdsize;
 
@@ -408,6 +422,7 @@ static void cgb_lc(const struct load_command *lc, void *ctx_) {
             }
         }
     }
+    return 0;   /* pure accumulation; never needs to stop early */
 }
 
 /*
@@ -567,7 +582,7 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
     /* Build the new table once to learn its size (and print diagnostics). */
     uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
     uint32_t new_off, new_ncmds; int modifications;
-    if (build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+    if (build_lcs(&im, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
                    rchanges, nrchanges, radds, nradds,
                    new_lcs, &new_off, &new_ncmds, &modifications, 1) != 0) {
         free(new_lcs);
@@ -608,11 +623,25 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
         }
         printf("%s: grew header pad: first sect now at %u (%u bytes available)\n",
                label, first_sect_off, first_sect_off - cur_lc_end);
+        /* mg_grow_header reallocs the raw buffer, not through image.h, so the
+         * `im` wrapped at the top of this function is stale here (it still
+         * points at whatever `buf` was before the realloc). Re-wrap it over
+         * the relocated buffer -- mi_wrap never allocates or frees (im.owned
+         * stays 0), so overwriting `im` in place is safe, and this re-wrap
+         * cannot fail in practice: mg_first_sect_off just above ran the same
+         * mi_wrap validation against this exact buf/fsize and already
+         * returned success. Handled defensively anyway, same as every other
+         * "provably unreachable, checked anyway" spot in this codebase. */
+        if (mi_wrap(buf, fsize, &im) != 0) {
+            fprintf(stderr, "ERROR: %s: grown header fails validation; refusing\n", label);
+            free(new_lcs);
+            return PO_ERROR;
+        }
         /* Rebuild against the relocated header so segment/linkedit offsets in
          * the copied load commands reflect the shift. */
         free(new_lcs);
         new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-        if (build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+        if (build_lcs(&im, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
                        rchanges, nrchanges, radds, nradds,
                        new_lcs, &new_off, &new_ncmds, &modifications, 0) != 0) {
             free(new_lcs);

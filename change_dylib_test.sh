@@ -1380,6 +1380,107 @@ else
     skip "dup-install-name -change (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
+# --- 19. CRITICAL: build_lcs's malformed-LC_RPATH refusal must still ---------
+#     refuse, and refuse WITHOUT writing anything, now that its walk runs
+#     through the stop-capable mi_each_lc (Task 2a) instead of a hand-rolled
+#     loop with its own `return -1`.
+#
+# build_lcs_lc (change_dylib.c) calls mo_lc_str_at on every LC_RPATH's own
+# path.offset and refuses the whole rewrite if the offset is out of bounds
+# for that command's cmdsize -- BEFORE this task, that early exit worked
+# because the walk was hand-rolled and could just `return -1` straight out
+# of the loop. After converting it to an mi_each_lc callback, "stop" means
+# the callback returns 1 and mi_each_lc reports incomplete; build_lcs then
+# has to translate that into its own -1. If that translation were wrong (or
+# missing -- e.g. build_lcs treating "stopped early" the same as "finished
+# normally"), the tool would use whatever partial `new_lcs` the callback had
+# written up to the point it detected the corruption, and either write a
+# truncated/corrupt load-command table or silently continue past a load
+# command it could not safely interpret. This is exactly the failure mode
+# the task brief calls out as "the worst possible outcome here".
+#
+# The fixture: link a real binary with one valid LC_RPATH (through
+# change_dylib itself, so the command is genuinely well-formed to start),
+# then use a tiny C patcher to corrupt ONLY that command's path.offset field
+# in place to a value >= its own cmdsize -- everything else about the file,
+# including cmdsize/ncmds/alignment, stays exactly what a real link produced,
+# so mi_open's own structural validation still accepts it (offset-into-a-
+# command bounds is deliberately NOT something mi_validate checks -- that is
+# mo_lc_str_at's job, at the point something actually tries to read the
+# string). Any op that reaches build_lcs's per-command walk (a plain
+# -add-rpath here) must then hit this LC_RPATH and refuse, regardless of
+# whether that op targets the corrupted command at all -- the check in
+# build_lcs_lc fires unconditionally for every LC_RPATH it walks past, not
+# just ones matched by name.
+cat > "$T/corrupt_rpath_offset.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+/* Rewrites the FIRST LC_RPATH's path.offset to cmdsize (one byte past the
+ * command's own end -- mo_lc_str_at's bound is `offset >= cmdsize`, so this
+ * is minimally out of range, not wildly so). Exit 0 on success, 2 if no
+ * LC_RPATH was found (a fixture-building bug, not the thing under test). */
+int main(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "usage: %s file\n", argv[0]); return 2; }
+    int fd = open(argv[1], O_RDWR);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); return 2; }
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+    uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_RPATH) {
+            struct rpath_command *rc = (struct rpath_command *)lcp;
+            rc->path.offset = rc->cmdsize;   /* out of bounds by exactly 1 */
+            if (pwrite(fd, buf, (size_t)st.st_size, 0) != (ssize_t)st.st_size) {
+                perror("pwrite"); return 2;
+            }
+            close(fd);
+            return 0;
+        }
+        lcp += lc->cmdsize;
+    }
+    fprintf(stderr, "no LC_RPATH found\n");
+    return 2;
+}
+EOF
+"$CC" -O2 -o "$T/corrupt_rpath_offset" "$T/corrupt_rpath_offset.c"
+
+build_main "$T/bad_rpath_fixture"
+"$T/change_dylib" "$T/bad_rpath_fixture" -add-rpath /orig/rp >/dev/null \
+    || bad "bad-rpath-offset fixture setup" "-add-rpath failed unexpectedly"
+rpath_present "$T/bad_rpath_fixture" "/orig/rp" \
+    && ok "bad-rpath-offset fixture: starts with one well-formed LC_RPATH" \
+    || bad "bad-rpath-offset fixture" "the LC_RPATH -add-rpath just wrote is not there"
+"$T/corrupt_rpath_offset" "$T/bad_rpath_fixture" \
+    || bad "bad-rpath-offset fixture" "corrupt_rpath_offset helper failed"
+
+before_md5=$(md5 -q "$T/bad_rpath_fixture" 2>/dev/null || md5sum "$T/bad_rpath_fixture" | awk '{print $1}')
+rc=0
+"$T/change_dylib" "$T/bad_rpath_fixture" -add-rpath /another/rp \
+    >"$T/bad_rpath.out" 2>"$T/bad_rpath.err" || rc=$?
+after_md5=$(md5 -q "$T/bad_rpath_fixture" 2>/dev/null || md5sum "$T/bad_rpath_fixture" | awk '{print $1}')
+
+[ "$rc" -ne 0 ] \
+    && ok "bad-rpath-offset: build_lcs still refuses (exit $rc)" \
+    || bad "bad-rpath-offset" "change_dylib exited 0 against a malformed LC_RPATH offset"
+grep -qi "malformed LC_RPATH" "$T/bad_rpath.err" \
+    && ok "bad-rpath-offset: refusal names the malformed LC_RPATH, not a generic error" \
+    || bad "bad-rpath-offset" "refused without naming the malformed LC_RPATH: $(cat "$T/bad_rpath.err")"
+[ "$before_md5" = "$after_md5" ] \
+    && ok "bad-rpath-offset: input left completely untouched on refusal" \
+    || bad "bad-rpath-offset" "input was modified despite the refusal"
+
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
 echo "change_dylib_test: $fails FAILED"; exit 1
