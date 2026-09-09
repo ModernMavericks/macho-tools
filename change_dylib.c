@@ -61,6 +61,7 @@
 #include "image.h"
 #include "macho_grow.h"
 #include "ordinals.h"
+#include <mach-o/fat.h>
 
 /* Load commands safe to drop: purely informational, or invalidated the moment
  * the binary is rewritten. Deliberately excludes LC_FUNCTION_STARTS (avxemu
@@ -333,6 +334,379 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
     *out_mods = mods;
 }
 
+/* process_one's return codes. PO_SKIP is not an error: it means `label` is not
+ * a (recognizable) 64-bit Mach-O, so this rewriter has nothing to do to it --
+ * the caller's job is to leave those bytes exactly as it found them. That is
+ * what lets a fat binary carrying a slice this tool cannot understand (32-bit,
+ * or any other format) still get its OTHER slices rewritten, matching how
+ * fix_macho's per-arch loop already treats an unrecognized slice: skip it,
+ * don't fail the whole file. PO_ERROR is a real failure -- the label WAS a
+ * 64-bit Mach-O but the requested edit could not be made -- and the caller
+ * must treat that as fatal to the whole operation (see main()'s fat path):
+ * partially rewriting a multi-arch binary would leave its slices disagreeing
+ * about the edit, which is worse than refusing outright. */
+#define PO_SKIP  (-2)
+#define PO_ERROR (-1)
+
+/*
+ * Apply every requested change to the single (thin) 64-bit Mach-O in
+ * *pbuf, *pfsize, in place except that mg_grow_header may realloc *pbuf (its
+ * usual contract: on success *pbuf, *pfsize are updated to the new buffer/size
+ * and the caller owns it; on failure of the grow itself the caller still owns
+ * whatever *pbuf now points to). `label` names this image only for diagnostic
+ * printf's -- a file path for the thin case, an "arch N (cputype ...)" string
+ * for a fat slice.
+ *
+ * Returns PO_SKIP if *pbuf is not a 64-bit Mach-O at all (buffer untouched),
+ * PO_ERROR if it is one but the edit failed (message already printed on
+ * stderr; buffer contents are unspecified beyond "still the caller's to
+ * free"), or 0 on success with *out_modified reporting whether anything
+ * actually changed.
+ */
+static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
+                        const struct change *changes, int nchanges,
+                        const char *const *adds, int nadds,
+                        const char *const *inserts, int ninserts,
+                        const uint32_t *strip, int nstrip,
+                        const struct change *rchanges, int nrchanges,
+                        const char *const *radds, int nradds,
+                        int allow_grow, int *out_modified) {
+    *out_modified = 0;
+    uint8_t *buf = *pbuf;
+    size_t fsize = *pfsize;
+
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return PO_SKIP;
+    struct mach_header_64 *hdr = im.hdr;
+    /* mi_wrap never allocates or takes ownership (im.owned == 0), so there is
+     * nothing to release here -- buf/fsize above already ARE the buffer. */
+
+    uint32_t first_sect_off = mg_first_sect_off(buf, fsize);
+    if (first_sect_off == UINT32_MAX) {
+        fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", label);
+        return PO_ERROR;
+    }
+    uint32_t cur_lc_end = sizeof(struct mach_header_64) + hdr->sizeofcmds;
+    uint32_t pad_avail = first_sect_off > cur_lc_end ? first_sect_off - cur_lc_end : 0;
+    printf("%s: header pad %u bytes available (LC end=%u, first sect=%u)\n",
+           label, pad_avail, cur_lc_end, first_sect_off);
+
+    /* Upper bound on bytes the -add/-insert commands contribute, so the scratch
+     * buffer can hold the full new table even before the header pad is grown. */
+    uint32_t add_bytes = 0;
+    for (int a = 0; a < nadds; a++)
+        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(adds[a]) + 1 + 7) & ~7UL);
+    for (int s = 0; s < ninserts; s++)
+        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(inserts[s]) + 1 + 7) & ~7UL);
+    for (int a = 0; a < nradds; a++)
+        add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(radds[a]) + 1 + 7) & ~7UL);
+
+    /* Map each existing 1-based library ordinal to its new value (0 = deleted),
+     * built once by mo_map_build so this rewrite and the ordinal renumbering
+     * below (mo_map_apply) can't independently disagree about which dylib
+     * landed where -- see ordinals.h. Inserts take 1..ninserts, so every
+     * survivor shifts up by that much; each deletion shifts the ones after it
+     * back down. */
+    int ord_map[MO_MAX_DYLIBS + 1];
+    memset(ord_map, 0, sizeof ord_map);
+    mo_map omap = { ord_map, 0 };
+    struct ord_delete_ctx dctx = { changes, nchanges };
+    int nnew;
+    if (mo_map_build(buf, hdr->ncmds, ninserts, ord_is_deleted, &dctx, &omap, &nnew) != 0)
+        return PO_ERROR;
+    int nold = omap.n;
+    /* A survivor count below nold means at least one dylib was deleted; that
+     * and any -insert are the only reasons a rewrite needs to renumber. */
+    int needs_renumber = (ninserts > 0) || (nnew - ninserts < nold);
+    if (nnew + nadds > MO_MAX_DYLIBS) {
+        fprintf(stderr, "ERROR: %s: result would exceed %d dylibs\n", label, MO_MAX_DYLIBS);
+        return PO_ERROR;
+    }
+
+    /* Build the new table once to learn its size (and print diagnostics). */
+    uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
+    uint32_t new_off, new_ncmds; int modifications;
+    build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+              rchanges, nrchanges, radds, nradds,
+              new_lcs, &new_off, &new_ncmds, &modifications, 1);
+
+    if (modifications == 0) { printf("%s: nothing to change.\n", label); free(new_lcs); return 0; }
+
+    /* The new table must fit before the first section's data. The boundary is
+     * sizeof(mach_header_64) + sizeofcmds; using new_off alone would understate
+     * it by the 32-byte header and allow a 16-byte overlap into the section. */
+    uint32_t need_end = (uint32_t)sizeof(struct mach_header_64) + new_off;
+    if (need_end > first_sect_off) {
+        if (!allow_grow) {
+            /* Default, unchanged behavior: refuse rather than resize. */
+            fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail); "
+                            "pass -grow to enlarge it\n", label, new_off, pad_avail);
+            free(new_lcs);
+            return PO_ERROR;
+        }
+        uint32_t grow_req = need_end - first_sect_off;
+        printf("%s: load commands need %u more bytes than the %u-byte pad; growing header...\n",
+               label, grow_req, pad_avail);
+        if (mg_grow_header(&buf, &fsize, grow_req) != 0) {
+            fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit and header could not be grown\n",
+                    label, new_off);
+            *pbuf = buf; *pfsize = fsize;
+            free(new_lcs);
+            return PO_ERROR;
+        }
+        *pbuf = buf; *pfsize = fsize;   /* mg_grow_header may have realloc'd */
+        hdr = (struct mach_header_64 *)buf;
+        first_sect_off = mg_first_sect_off(buf, fsize);
+        if (first_sect_off == UINT32_MAX) {
+            fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
+            free(new_lcs);
+            return PO_ERROR;
+        }
+        printf("%s: grew header pad: first sect now at %u (%u bytes available)\n",
+               label, first_sect_off, first_sect_off - cur_lc_end);
+        /* Rebuild against the relocated header so segment/linkedit offsets in
+         * the copied load commands reflect the shift. */
+        free(new_lcs);
+        new_lcs = calloc(1, first_sect_off + add_bytes + 64);
+        build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+                  rchanges, nrchanges, radds, nradds,
+                  new_lcs, &new_off, &new_ncmds, &modifications, 0);
+    }
+
+    /* Check the map against what build_lcs actually emitted -- not just
+     * against its own arithmetic -- before committing anything. This is the
+     * cross-check that catches the map and the load-command rewrite having
+     * independently disagreed about which dylib survived, which the map's
+     * own internal consistency (checked inside mo_map_build) cannot: that
+     * only proves the map is self-consistent, not that it matches reality. */
+    if (mo_map_validate(&omap, ninserts, nnew, nadds, new_lcs, new_ncmds) != 0) {
+        fprintf(stderr, "ERROR: %s left unmodified\n", label);
+        free(new_lcs);
+        return PO_ERROR;
+    }
+
+    /* Commit: zero the whole LC area, write the new table, fix up the header. */
+    memset(buf + sizeof(struct mach_header_64), 0, first_sect_off - sizeof(struct mach_header_64));
+    memcpy(buf + sizeof(struct mach_header_64), new_lcs, new_off);
+    hdr->ncmds = new_ncmds;
+    hdr->sizeofcmds = new_off;
+    free(new_lcs);
+
+    /* Ordinals last, against the committed table — and before any write, so a
+     * refusal leaves the input untouched rather than half-rewritten. */
+    if (needs_renumber && mo_map_apply(buf, &omap, 1) != 0) {
+        fprintf(stderr, "ERROR: %s left unmodified\n", label);
+        return PO_ERROR;
+    }
+
+    /* Last gate before the bytes reach disk. change_dylib is the FINAL stage of
+     * the wrapper's chain (patch_macho -> add_version_min -> change_dylib), so a
+     * check here covers the cumulative end state of all of them -- including
+     * patch_macho's chained-fixups conversion, which has ~94,900 rebases and no
+     * self-check of its own. It needs no "before" image, which is what makes it
+     * usable across process boundaries.
+     *
+     * This is the difference between "binary replaced, re-download that version"
+     * and "patch refused, nothing lost". MACHO_NO_VERIFY=1 opts out. */
+    if (!getenv("MACHO_NO_VERIFY") && mg_plausible(buf, fsize) != 0) {
+        fprintf(stderr, "ERROR: refusing to modify %s -- it would carry base-relative "
+                        "offsets that name no known function. Left unmodified.\n", label);
+        return PO_ERROR;
+    }
+
+    *pbuf = buf; *pfsize = fsize;
+    *out_modified = 1;
+    printf("%s: updated (sizeofcmds=%u, %zu bytes)\n", label, new_off, fsize);
+    return 0;
+}
+
+static uint32_t cd_swap32(uint32_t v) {
+    return ((v & 0xffu) << 24) | ((v & 0xff00u) << 8) |
+           ((v & 0xff0000u) >> 8) | ((v >> 24) & 0xffu);
+}
+
+/*
+ * Apply every requested change to every slice of a fat (universal) binary in
+ * *pbuf, *pfsize, reassembling the fat container afterward. This is what
+ * closes the fat gap in the rewrite path: fix_macho already walks fat/thin,
+ * change_dylib until now only understood thin.
+ *
+ * A slice this tool cannot understand (anything process_one reports PO_SKIP
+ * for -- today that means anything but a 64-bit Mach-O; 32-bit stays
+ * deliberately unsupported, see macho_grow.h) is passed through byte-for-byte
+ * unchanged, exactly like fix_macho's own per-arch loop already does ("Not
+ * 64-bit Mach-O ... Skipping arch"). A slice that IS a 64-bit Mach-O but
+ * where the requested edit itself fails (PO_ERROR) aborts the WHOLE
+ * operation: a fat binary's slices are all meant to carry the same edit
+ * (the same -change, the same -insert, ...), and writing some of them but
+ * not others would leave the result internally inconsistent -- worse than
+ * refusing outright, and not what a "delete succeeded, or nothing was
+ * touched" contract can allow. See process_one's own comment for why PO_SKIP
+ * and PO_ERROR need different treatment.
+ *
+ * Sizes: without -grow, or when growth was not needed, every slice keeps its
+ * original size, and this reassembly places every slice back at its ORIGINAL
+ * file offset -- so a fat binary edited without size changes ends up with
+ * exactly the same layout it started with. Only once some earlier slice's
+ * size actually changes does a later slice's offset get recomputed, packed
+ * tightly against the slice before it at that slice's own (preserved)
+ * alignment. That is what keeps an unmodified multi-arch binary's on-disk
+ * shape untouched while still supporting the resize -grow needs.
+ */
+static int process_fat(uint8_t **pbuf, size_t *pfsize,
+                        const struct change *changes, int nchanges,
+                        const char *const *adds, int nadds,
+                        const char *const *inserts, int ninserts,
+                        const uint32_t *strip, int nstrip,
+                        const struct change *rchanges, int nrchanges,
+                        const char *const *radds, int nradds,
+                        int allow_grow, int *out_modified) {
+    *out_modified = 0;
+    uint8_t *buf = *pbuf;
+    size_t fsize = *pfsize;
+
+    uint32_t magic = *(uint32_t *)buf;
+    int swap = (magic == FAT_CIGAM);
+    if (fsize < sizeof(struct fat_header)) {
+        fprintf(stderr, "ERROR: fat header truncated\n");
+        return 1;
+    }
+    const struct fat_header *fh = (const struct fat_header *)buf;
+    uint32_t narch = swap ? cd_swap32(fh->nfat_arch) : fh->nfat_arch;
+    uint64_t arch_region = (uint64_t)sizeof(struct fat_header) +
+                            (uint64_t)narch * sizeof(struct fat_arch);
+    if (arch_region > fsize) {
+        fprintf(stderr, "ERROR: fat_arch table (%u entries) runs past the file\n", narch);
+        return 1;
+    }
+    const struct fat_arch *ar = (const struct fat_arch *)(buf + sizeof(struct fat_header));
+
+    /* Per-slice working state, gathered up front so a mid-loop failure can
+     * free exactly what has been allocated so far. */
+    uint8_t **sbuf   = calloc(narch, sizeof(uint8_t *));
+    size_t   *ssize  = calloc(narch, sizeof(size_t));
+    uint64_t *ooff   = calloc(narch, sizeof(uint64_t));
+    uint64_t *osize  = calloc(narch, sizeof(uint64_t));
+    uint32_t *cputype = calloc(narch, sizeof(uint32_t));
+    uint32_t *cpusubtype = calloc(narch, sizeof(uint32_t));
+    uint32_t *align  = calloc(narch, sizeof(uint32_t));
+    if (narch && (!sbuf || !ssize || !ooff || !osize || !cputype || !cpusubtype || !align)) {
+        fprintf(stderr, "ERROR: out of memory\n");
+        free(sbuf); free(ssize); free(ooff); free(osize);
+        free(cputype); free(cpusubtype); free(align);
+        return 1;
+    }
+
+    int aborted = 0;
+    uint32_t i;
+    for (i = 0; i < narch; i++) {
+        uint32_t o  = swap ? cd_swap32((uint32_t)ar[i].offset) : (uint32_t)ar[i].offset;
+        uint32_t s  = swap ? cd_swap32((uint32_t)ar[i].size)   : (uint32_t)ar[i].size;
+        uint32_t ct = swap ? cd_swap32((uint32_t)ar[i].cputype) : (uint32_t)ar[i].cputype;
+        uint32_t cs = swap ? cd_swap32((uint32_t)ar[i].cpusubtype) : (uint32_t)ar[i].cpusubtype;
+        uint32_t al = swap ? cd_swap32(ar[i].align) : ar[i].align;
+        if ((uint64_t)o + s > fsize) {
+            fprintf(stderr, "ERROR: fat arch %u (offset %u, size %u) runs past the file\n", i, o, s);
+            aborted = 1;
+            break;
+        }
+        ooff[i] = o; osize[i] = s;
+        cputype[i] = ct; cpusubtype[i] = cs; align[i] = al;
+
+        sbuf[i] = malloc(s ? s : 1);
+        if (!sbuf[i]) { fprintf(stderr, "ERROR: out of memory\n"); aborted = 1; break; }
+        memcpy(sbuf[i], buf + o, s);
+        ssize[i] = s;
+
+        char label[64];
+        snprintf(label, sizeof label, "arch %u (cputype 0x%x)", i, ct);
+
+        int mod = 0;
+        int rc = process_one(&sbuf[i], &ssize[i], label, changes, nchanges,
+                              adds, nadds, inserts, ninserts, strip, nstrip,
+                              rchanges, nrchanges, radds, nradds, allow_grow, &mod);
+        if (rc == PO_SKIP) {
+            printf("%s: not a 64-bit Mach-O; leaving this slice unchanged\n", label);
+            /* sbuf[i]/ssize[i] already hold the untouched original bytes. */
+        } else if (rc == PO_ERROR) {
+            fprintf(stderr, "ERROR: %s: refusing the whole fat file -- a partial "
+                            "rewrite would leave its slices inconsistent\n", label);
+            i++;   /* this slice's buffer was still allocated; free it too */
+            aborted = 1;
+            break;
+        } else if (mod) {
+            *out_modified = 1;
+        }
+    }
+
+    if (aborted) {
+        for (uint32_t j = 0; j < i; j++) free(sbuf[j]);
+        free(sbuf); free(ssize); free(ooff); free(osize);
+        free(cputype); free(cpusubtype); free(align);
+        return 1;
+    }
+
+    if (!*out_modified) {
+        for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
+        free(sbuf); free(ssize); free(ooff); free(osize);
+        free(cputype); free(cpusubtype); free(align);
+        printf("Nothing to change.\n");
+        return 0;
+    }
+
+    /* Reassemble: each slice keeps its original offset until some earlier
+     * slice's size actually changed; from then on later slices pack
+     * sequentially, honoring each slice's own (preserved) alignment. */
+    uint64_t *noff = calloc(narch, sizeof(uint64_t));
+    int shift = 0;
+    uint64_t cursor = 0;
+    for (uint32_t j = 0; j < narch; j++) {
+        uint64_t want;
+        if (!shift) {
+            want = ooff[j];
+        } else {
+            uint64_t a = (uint64_t)1 << align[j];
+            want = (cursor + a - 1) & ~(a - 1);
+        }
+        noff[j] = want;
+        cursor = want + ssize[j];
+        if (ssize[j] != osize[j]) shift = 1;
+    }
+
+    uint8_t *newbuf = calloc(1, (size_t)cursor);
+    if (!newbuf) {
+        fprintf(stderr, "ERROR: out of memory reassembling the fat file\n");
+        for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
+        free(sbuf); free(ssize); free(ooff); free(osize);
+        free(cputype); free(cpusubtype); free(align); free(noff);
+        return 1;
+    }
+    struct fat_header *nfh = (struct fat_header *)newbuf;
+    nfh->magic = swap ? cd_swap32(FAT_MAGIC) : FAT_MAGIC;
+    nfh->nfat_arch = swap ? cd_swap32(narch) : narch;
+    struct fat_arch *nar = (struct fat_arch *)(newbuf + sizeof(struct fat_header));
+    for (uint32_t j = 0; j < narch; j++) {
+        uint32_t o = (uint32_t)noff[j], s = (uint32_t)ssize[j];
+        nar[j].cputype    = swap ? (cpu_type_t)cd_swap32((uint32_t)cputype[j]) : (cpu_type_t)cputype[j];
+        nar[j].cpusubtype = swap ? (cpu_subtype_t)cd_swap32((uint32_t)cpusubtype[j]) : (cpu_subtype_t)cpusubtype[j];
+        nar[j].offset = swap ? cd_swap32(o) : o;
+        nar[j].size   = swap ? cd_swap32(s) : s;
+        nar[j].align  = swap ? cd_swap32(align[j]) : align[j];
+        memcpy(newbuf + noff[j], sbuf[j], ssize[j]);
+        printf("arch %u: placed at %llu (%llu bytes)\n", j,
+               (unsigned long long)noff[j], (unsigned long long)ssize[j]);
+    }
+
+    for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
+    free(sbuf); free(ssize); free(ooff); free(osize);
+    free(cputype); free(cpusubtype); free(align); free(noff);
+
+    free(buf);
+    *pbuf = newbuf;
+    *pfsize = (size_t)cursor;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) {
         fprintf(stderr, "Usage: %s input [-grow] [-change old new] [-delete path] "
@@ -425,153 +799,59 @@ int main(int argc, char **argv) {
     /* The O_RDWR fd is opened up front, as before, and held for the write-back
      * at the end. That ordering is load-bearing: it is what makes an unwritable
      * file fail immediately instead of after all the analysis has run and
-     * printed. mi_open reads and validates separately. */
+     * printed. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
 
-    /* mi_release, not the image, owns the buffer from here: mg_grow_header
-     * below reallocs it, which would leave an mi_image dangling. The hand-off
-     * is explicit so the ownership is readable rather than implied. */
-    mi_image im;
-    if (mi_open(path, &im) != 0) {
-        fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 1; }
+    if (st.st_size < 4) {
+        fprintf(stderr, "%s: too small to be a Mach-O\n", path);
         close(fd);
         return 1;
     }
-    size_t fsize = im.size;
-    struct mach_header_64 *hdr = im.hdr;
-    uint8_t *buf = mi_release(&im);
-
-    uint32_t first_sect_off = mg_first_sect_off(buf, fsize);
-    if (first_sect_off == UINT32_MAX) {
-        fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", path);
-        return 1;
-    }
-    uint32_t cur_lc_end = sizeof(struct mach_header_64) + hdr->sizeofcmds;
-    uint32_t pad_avail = first_sect_off > cur_lc_end ? first_sect_off - cur_lc_end : 0;
-    printf("Header pad: %u bytes available (LC end=%u, first sect=%u)\n",
-           pad_avail, cur_lc_end, first_sect_off);
-
-    /* Upper bound on bytes the -add/-insert commands contribute, so the scratch
-     * buffer can hold the full new table even before the header pad is grown. */
-    uint32_t add_bytes = 0;
-    for (int a = 0; a < nadds; a++)
-        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(adds[a]) + 1 + 7) & ~7UL);
-    for (int s = 0; s < ninserts; s++)
-        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(inserts[s]) + 1 + 7) & ~7UL);
-    for (int a = 0; a < nradds; a++)
-        add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(radds[a]) + 1 + 7) & ~7UL);
-
-    /* Map each existing 1-based library ordinal to its new value (0 = deleted),
-     * built once by mo_map_build so this rewrite and the ordinal renumbering
-     * below (mo_map_apply) can't independently disagree about which dylib
-     * landed where -- see ordinals.h. Inserts take 1..ninserts, so every
-     * survivor shifts up by that much; each deletion shifts the ones after it
-     * back down. */
-    int ord_map[MO_MAX_DYLIBS + 1];
-    memset(ord_map, 0, sizeof ord_map);
-    mo_map omap = { ord_map, 0 };
-    struct ord_delete_ctx dctx = { changes, nchanges };
-    int nnew;
-    if (mo_map_build(buf, hdr->ncmds, ninserts, ord_is_deleted, &dctx, &omap, &nnew) != 0)
-        return 1;
-    int nold = omap.n;
-    /* A survivor count below nold means at least one dylib was deleted; that
-     * and any -insert are the only reasons a rewrite needs to renumber. */
-    int needs_renumber = (ninserts > 0) || (nnew - ninserts < nold);
-    if (nnew + nadds > MO_MAX_DYLIBS) {
-        fprintf(stderr, "ERROR: result would exceed %d dylibs\n", MO_MAX_DYLIBS);
-        return 1;
+    size_t fsize = (size_t)st.st_size;
+    uint8_t *buf = (uint8_t *)malloc(fsize);
+    if (!buf) { fprintf(stderr, "out of memory\n"); close(fd); return 1; }
+    if (read(fd, buf, fsize) != (ssize_t)fsize) {
+        perror("read"); close(fd); free(buf); return 1;
     }
 
-    /* Build the new table once to learn its size (and print diagnostics). */
-    uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-    uint32_t new_off, new_ncmds; int modifications;
-    build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
-              rchanges, nrchanges, radds, nradds,
-              new_lcs, &new_off, &new_ncmds, &modifications, 1);
+    /* Read the raw bytes ourselves (rather than mi_open) because a fat file's
+     * magic isn't MH_MAGIC_64 -- mi_open would refuse it outright, and this
+     * is the one place that has to tell "fat" from "thin" apart before
+     * either mi_wrap (thin, inside process_one) or the fat_header/fat_arch
+     * walk (process_fat) can run. */
+    uint32_t magic = *(uint32_t *)buf;
+    int modified = 0;
+    int rc;
 
-    if (modifications == 0) { printf("Nothing to change.\n"); return 0; }
-
-    /* The new table must fit before the first section's data. The boundary is
-     * sizeof(mach_header_64) + sizeofcmds; using new_off alone would understate
-     * it by the 32-byte header and allow a 16-byte overlap into the section. */
-    uint32_t need_end = (uint32_t)sizeof(struct mach_header_64) + new_off;
-    if (need_end > first_sect_off) {
-        if (!allow_grow) {
-            /* Default, unchanged behavior: refuse rather than resize. */
-            fprintf(stderr, "ERROR: new LCs (%u bytes) don't fit in header pad (%u avail); "
-                            "pass -grow to enlarge it\n", new_off, pad_avail);
-            return 1;
+    if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
+        rc = process_fat(&buf, &fsize, changes, nchanges, adds, nadds,
+                          inserts, ninserts, strip, nstrip, rchanges, nrchanges,
+                          radds, nradds, allow_grow, &modified);
+    } else {
+        int po = process_one(&buf, &fsize, path, changes, nchanges, adds, nadds,
+                              inserts, ninserts, strip, nstrip, rchanges, nrchanges,
+                              radds, nradds, allow_grow, &modified);
+        if (po == PO_SKIP) {
+            fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
+            rc = 1;
+        } else {
+            rc = (po == PO_ERROR) ? 1 : 0;
         }
-        uint32_t grow_req = need_end - first_sect_off;
-        printf("Load commands need %u more bytes than the %u-byte pad; growing header...\n",
-               grow_req, pad_avail);
-        if (mg_grow_header(&buf, &fsize, grow_req) != 0) {
-            fprintf(stderr, "ERROR: new LCs (%u bytes) don't fit and header could not be grown\n",
-                    new_off);
-            return 1;
+    }
+
+    if (rc == 0 && modified) {
+        if (ftruncate(fd, fsize) != 0) { perror("ftruncate"); rc = 1; }
+        else {
+            lseek(fd, 0, SEEK_SET);
+            if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); rc = 1; }
+            else printf("Updated %s (%zu bytes)\n", path, fsize);
         }
-        hdr = (struct mach_header_64 *)buf;
-        first_sect_off = mg_first_sect_off(buf, fsize);
-        if (first_sect_off == UINT32_MAX) {
-            fprintf(stderr, "ERROR: header grow produced an image that fails validation\n");
-            return 1;
-        }
-        printf("Grew header pad: first sect now at %u (%u bytes available)\n",
-               first_sect_off, first_sect_off - cur_lc_end);
-        /* Rebuild against the relocated header so segment/linkedit offsets in
-         * the copied load commands reflect the shift. */
-        free(new_lcs);
-        new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-        build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
-                  rchanges, nrchanges, radds, nradds,
-                  new_lcs, &new_off, &new_ncmds, &modifications, 0);
     }
 
-    /* Check the map against what build_lcs actually emitted -- not just
-     * against its own arithmetic -- before committing anything. This is the
-     * cross-check that catches the map and the load-command rewrite having
-     * independently disagreed about which dylib survived, which the map's
-     * own internal consistency (checked inside mo_map_build) cannot: that
-     * only proves the map is self-consistent, not that it matches reality. */
-    if (mo_map_validate(&omap, ninserts, nnew, nadds, new_lcs, new_ncmds) != 0) {
-        fprintf(stderr, "ERROR: %s left unmodified\n", path);
-        return 1;
-    }
-
-    /* Commit: zero the whole LC area, write the new table, fix up the header. */
-    memset(buf + sizeof(struct mach_header_64), 0, first_sect_off - sizeof(struct mach_header_64));
-    memcpy(buf + sizeof(struct mach_header_64), new_lcs, new_off);
-    hdr->ncmds = new_ncmds;
-    hdr->sizeofcmds = new_off;
-
-    /* Ordinals last, against the committed table — and before any write, so a
-     * refusal leaves the input untouched rather than half-rewritten. */
-    if (needs_renumber && mo_map_apply(buf, &omap, 1) != 0) {
-        fprintf(stderr, "ERROR: %s left unmodified\n", path);
-        return 1;
-    }
-
-    /* Last gate before the bytes reach disk. change_dylib is the FINAL stage of
-     * the wrapper's chain (patch_macho -> add_version_min -> change_dylib), so a
-     * check here covers the cumulative end state of all of them -- including
-     * patch_macho's chained-fixups conversion, which has ~94,900 rebases and no
-     * self-check of its own. It needs no "before" image, which is what makes it
-     * usable across process boundaries.
-     *
-     * This is the difference between "binary replaced, re-download that version"
-     * and "patch refused, nothing lost". MACHO_NO_VERIFY=1 opts out. */
-    if (!getenv("MACHO_NO_VERIFY") && mg_plausible(buf, fsize) != 0) {
-        fprintf(stderr, "ERROR: refusing to write %s -- it would carry base-relative "
-                        "offsets that name no known function. Left unmodified.\n", path);
-        return 1;
-    }
-
-    if (ftruncate(fd, fsize) != 0) { perror("ftruncate"); return 1; }
-    lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); return 1; }
     close(fd);
-    printf("Updated %s (sizeofcmds=%u, %zu bytes)\n", path, new_off, fsize);
-    return 0;
+    free(buf);
+    return rc;
 }
