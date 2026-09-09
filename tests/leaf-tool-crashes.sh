@@ -59,6 +59,26 @@ cat > "$T/mkfixture.c" <<'EOF'
 #include <stdint.h>
 #include <mach-o/loader.h>
 
+/* segname/sectname are char[16], NOT required to be NUL-terminated -- a
+ * 16-character name fills the field completely, with no room for a
+ * terminator (src/image.c's name_eq comment, and now tests/README.md's
+ * host-portability section, explain why the real tools compare these
+ * fields with strncmp rather than strcmp/strlen). strcpy'ing a 16-character
+ * name into one of these fields writes a 17th byte -- the NUL -- past the
+ * field, into whatever struct member follows. 10.9's clang lets that
+ * happen silently; a modern clang's _FORTIFY_SOURCE turns strcpy into
+ * __strcpy_chk, which detects the overflow and aborts (SIGTRAP) before this
+ * helper ever gets to write the fixture file, failing this test on the
+ * cross runner while it passes natively. memcpy with an explicit,
+ * field-width-capped length has no such trap: it is also just the CORRECT
+ * operation for a fixed-width, not-necessarily-terminated field. */
+static void set_name16(char *field, const char *name) {
+    size_t len = strlen(name);
+    if (len > 16) len = 16;
+    memset(field, 0, 16);
+    memcpy(field, name, len);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: %s nosect|oobsection out\n", argv[0]); return 1; }
 
@@ -69,7 +89,7 @@ int main(int argc, char **argv) {
     h->ncmds = 1;
     struct segment_command_64 *seg = (struct segment_command_64 *)(buf + sizeof *h);
     seg->cmd = LC_SEGMENT_64;
-    strcpy(seg->segname, "__DATA");
+    set_name16(seg->segname, "__DATA");
 
     size_t fsize;
     if (strcmp(argv[1], "nosect") == 0) {
@@ -82,8 +102,11 @@ int main(int argc, char **argv) {
         seg->nsects = 1;
         h->sizeofcmds = seg->cmdsize;
         struct section_64 *s = (struct section_64 *)((uint8_t *)seg + sizeof *seg);
-        strcpy(s->sectname, "__objc_classlist");
-        strcpy(s->segname, "__DATA");
+        /* "__objc_classlist" is exactly 16 characters -- the case that
+         * actually exposed this: strcpy's 17th byte (the NUL) had nowhere
+         * to go but into s->segname, the very next field. */
+        set_name16(s->sectname, "__objc_classlist");
+        set_name16(s->segname, "__DATA");
         s->offset = 0x7000;
         s->size   = 0x8000;
         fsize = sizeof(*h) + seg->cmdsize;
@@ -156,33 +179,40 @@ else
     skip "retag_swift_classes: oobsection fixture (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
-# --- patch_macho: pm_collect_ctx's to_remove[4] must refuse, not overflow --
+# --- patch_macho: pm_collect_ctx's to_remove[] must refuse, not overflow ----
 #
 # Task 2a moved patch_macho.c's collecting walk into an mi_each_lc callback
-# and put its fixed-size `to_remove[4]` array into the SAME context struct
-# as `int n_remove`, with n_remove declared immediately after the array --
-# same layout hazard as segs[32]/nsegs just above it in that struct, but
-# without the matching `>= 32` style bound. A 5th push (any mix of
-# LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION -- this
-# fixture uses LC_BUILD_VERSION because it is trivial to repeat N times)
-# writes to_remove[4], one element past the array, landing on n_remove
-# itself; every push after that walks further off the struct into main()'s
-# locals. A malformed/pathological input the pre-Task-2a tool declined
-# cleanly (too many strippable commands is not something a real linker ever
-# produces, but nothing stopped a hand-built or hostile file from having it)
-# went from a clean refusal to a crash mid-run in a tool install.sh points at
-# user binaries.
+# and put its fixed-size `to_remove[]` array (originally sized [4]) into the
+# SAME context struct as `int n_remove`, with n_remove declared immediately
+# after the array -- same layout hazard as segs[32]/nsegs just above it in
+# that struct, but without the matching `>= 32` style bound. With the array
+# at its original size [4], a 5th push (any mix of LC_DYLD_EXPORTS_TRIE/
+# LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION -- this fixture uses LC_BUILD_
+# VERSION because it is trivial to repeat N times) wrote to_remove[4], one
+# element past the array, landing on n_remove itself; every push after that
+# walked further off the struct into main()'s locals. A malformed/
+# pathological input the pre-Task-2a tool declined cleanly went from a clean
+# refusal to a crash mid-run in a tool install.sh points at user binaries.
 #
-# N=3/N=4 stay under the cap and must still succeed structurally (this
-# fixture has no chained fixups, so patch_macho's own "No chained fixups
-# found" refusal fires afterward -- exit 1, but a CLEAN one, not a crash).
-# N=5 and N=6 are the reviewer's own reproduction: pre-fix, N=5 corrupted
-# n_remove into something that still looked like a small int (free() on a
-# bogus pointer -> exit 134, "pointer being freed was not allocated"); N=6
-# corrupted it into something that didn't -> exit 139 (SIGSEGV). Post-fix,
-# every N at or past the cap must refuse cleanly (exit 1, naming the
-# overflow) with the file left untouched, exactly like segs[32]'s existing
-# refusal just above.
+# The array was then enlarged from [4] to [16] (see patch_macho.c's own
+# comment on struct pm_collect_ctx): review found that [4] left ZERO margin
+# on a real, legitimate input -- a zippered (Mac Catalyst) binary carries two
+# LC_BUILD_VERSION commands plus at most one each of LC_DYLD_EXPORTS_TRIE/
+# LC_DYLD_CHAINED_FIXUPS, for 1+1+2 = 4, exactly the old cap. This fixture's
+# N values target the CURRENT [16] boundary, not the original [4] one the
+# bug was found at, so the test keeps testing the actual edge rather than an
+# arbitrary interior point.
+#
+# N=15/N=16 stay at-or-under the cap and must still succeed structurally
+# (this fixture has no chained fixups, so patch_macho's own "No chained
+# fixups found" refusal fires afterward -- exit 1, but a CLEAN one, not a
+# crash). N=17/N=18 sit one and two past the cap: pre-the-[4]-fix, values in
+# this shape corrupted n_remove into something that still looked like a
+# small int (free() on a bogus pointer -> exit 134, "pointer being freed was
+# not allocated") or into something that didn't (-> exit 139, SIGSEGV);
+# post-fix, every N at or past the cap must refuse cleanly (exit 1, naming
+# the overflow) with the file left untouched, exactly like segs[32]'s
+# existing refusal just above.
 cat > "$T/mkmanylc.c" <<'EOF'
 /* Writes a Mach-O with N x LC_BUILD_VERSION load commands (ntools=0, so each
  * is a fixed 24 bytes -- already 8-aligned, satisfying mi_validate's cmdsize
@@ -241,7 +271,7 @@ pm_manylc_case() {
         return
     fi
     if [ "$expect" = "cap" ]; then
-        if [ "$rc" -eq 1 ] && grep -q "more than 4 load commands to strip" "$T/manylc_$n.err"; then
+        if [ "$rc" -eq 1 ] && grep -q "more than 16 load commands to strip" "$T/manylc_$n.err"; then
             ok "patch_macho: N=$n LC_BUILD_VERSION refuses, naming the to_remove[] cap"
         else
             bad "patch_macho: N=$n LC_BUILD_VERSION" "expected exit 1 + cap message, got exit $rc: $(cat "$T/manylc_$n.err")"
@@ -256,13 +286,13 @@ pm_manylc_case() {
     fi
 }
 
-pm_manylc_case 3 clean
-pm_manylc_case 4 clean
-pm_manylc_case 5 cap
-pm_manylc_case 6 cap
+pm_manylc_case 15 clean
+pm_manylc_case 16 clean
+pm_manylc_case 17 cap
+pm_manylc_case 18 cap
 
 if [ -f /usr/lib/libgmalloc.dylib ]; then
-    for n in 5 6; do
+    for n in 17 18; do
         "$T/mkmanylc" "$n" "$T/manylc_gm_$n.macho"
         rc=0
         DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
@@ -275,7 +305,7 @@ if [ -f /usr/lib/libgmalloc.dylib ]; then
         fi
     done
 else
-    skip "patch_macho: N=5/6 LC_BUILD_VERSION (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
+    skip "patch_macho: N=17/18 LC_BUILD_VERSION (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
 echo "leaf-tool-crashes: $fails failure(s)"

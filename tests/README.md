@@ -134,6 +134,28 @@ reproducing the failure in new shapes:
   pinning an exact size or offset is fine — the risk is only when a
   compiler's own output feeds the assertion.
 
+- **Mach-O name fields (`segname`, `sectname`) are `char[16]` and are NOT
+  NUL-terminated.** A 16-character name legally fills the field with no room
+  left for a terminator — the same trap `src/image.c`'s `name_eq` comment
+  documents for the tools themselves, and it bites a fixture-building helper
+  exactly as hard. `strcpy`/`sprintf` into one of these fields is wrong
+  regardless of host (it writes past the field once the name is 16
+  characters), but the two hosts disagree about what happens next: 10.9's
+  clang lets the overflow silently land in the next struct member and
+  carries on, while a modern clang wraps `strcpy` as `__strcpy_chk` under
+  `_FORTIFY_SOURCE` and aborts (SIGTRAP) the instant it detects the
+  overflow — so the fixture generator itself dies before writing the file,
+  failing the test on the cross runner while it passes natively (this
+  suite's eighth cross-runner-only failure: `tests/leaf-tool-crashes.sh`'s
+  `mkfixture.c` wrote `"__objc_classlist"`, exactly 16 characters, via
+  `strcpy(s->sectname, ...)`). Use `memcpy` with a length capped at 16 and
+  zero-fill the rest, never `strcpy`/`sprintf`, for any `segname`/`sectname`
+  write in a fixture helper — and note that `-Wall -Wextra` catches this at
+  COMPILE time on any host (a `-Wfortify-source` "will always overflow"
+  diagnostic), even though the abort itself is modern-clang-only, so it is
+  worth compiling every hand-written fixture helper with those flags as a
+  check before trusting it.
+
 ## Known gap
 
 `fixture.macho` was built on 10.9, so it carries **no chained fixups** and does

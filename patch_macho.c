@@ -72,16 +72,26 @@ static void ob_str(struct opbuf *b, const char *s) {
  * FIXUPS/LC_DYLD_INFO_ONLY/LC_BUILD_VERSION, and records which commands the
  * rest of this tool will strip. Read-only w.r.t. the chain itself (never
  * touches lc->cmd, lc->cmdsize, or ncmds) except for the early stops below --
- * both of the fixed-size arrays here (segs[32], to_remove[4]) refuse rather
+ * both of the fixed-size arrays here (segs[32], to_remove[16]) refuse rather
  * than overflow when a malformed or pathological input would fill them past
- * capacity, which is exactly what the stop-capable mi_each_lc exists for. */
+ * capacity, which is exactly what the stop-capable mi_each_lc exists for.
+ *
+ * to_remove[16], not [4]: an ORDINARY modern binary carries at most one each
+ * of LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION (3 total),
+ * but a ZIPPERED (Mac Catalyst) binary carries TWO LC_BUILD_VERSION commands
+ * -- one per platform -- for 1+1+2 = 4. patch_macho's entire purpose is
+ * converting modern-toolchain binaries for 10.9, so a zippered binary is
+ * squarely in its real input class, not a pathological one; a cap of exactly
+ * 4 would refuse it with zero margin. 16 keeps the refusal for what it is
+ * actually for -- a genuinely absurd file -- without sitting one command away
+ * from a legitimate one. */
 struct pm_collect_ctx {
     struct segment_command_64 *segs[32];
     int nsegs;
     uint32_t exports_off, exports_size;
     uint32_t fixups_off, fixups_size;
     int has_dyld_info_only;
-    struct { uint8_t *pos; uint32_t size; } to_remove[4];
+    struct { uint8_t *pos; uint32_t size; } to_remove[16];
     int n_remove;
 };
 
@@ -94,17 +104,18 @@ struct pm_collect_ctx {
  * thing" bug class this conversion exists to retire, and it is also the
  * shape of bug that put this fix here in the first place: the nsegs >= 32
  * bound just above was applied to ONE fixed-size array in this struct;
- * to_remove[4], ten lines away in the same struct, was moved here without
- * the matching treatment. n_remove is declared immediately after
- * to_remove[4] -- a 5th unbounded push wrote element [4], one past the
- * array, directly over n_remove itself (the low bits of a heap pointer,
- * since the write reads as a pointer-sized `pos` first), and every
- * following write then walked off the struct into main()'s locals. A
- * hand-built fixture with 5+ LC_BUILD_VERSION commands reproduced this as
- * "pointer being freed was not allocated" (n_remove corrupted to something
- * that still looked small) or SIGSEGV (corrupted to something that didn't);
- * see tests/leaf-tool-crashes.sh. Returns 1 (stop the walk) on overflow, 0
- * on success. */
+ * to_remove[], ten lines away in the same struct, was moved here without
+ * the matching treatment. n_remove is declared immediately after to_remove[]
+ * -- when the array was still sized [4], an unbounded 5th push wrote
+ * element [4], one past the array, directly over n_remove itself (the low
+ * bits of a heap pointer, since the write reads as a pointer-sized `pos`
+ * first), and every following write then walked off the struct into
+ * main()'s locals. A hand-built fixture with 5+ LC_BUILD_VERSION commands
+ * reproduced this as "pointer being freed was not allocated" (n_remove
+ * corrupted to something that still looked small) or SIGSEGV (corrupted to
+ * something that didn't); see tests/leaf-tool-crashes.sh (which now targets
+ * the current [16] boundary, not the original [4] one this incident found
+ * it at). Returns 1 (stop the walk) on overflow, 0 on success. */
 static int pm_remove_push(struct pm_collect_ctx *ctx, uint8_t *pos, uint32_t size) {
     int cap = (int)(sizeof ctx->to_remove / sizeof ctx->to_remove[0]);
     if (ctx->n_remove >= cap) {
