@@ -1089,18 +1089,44 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             }
             struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
             for (uint32_t j = 0; j < seg->nsects; j++) {
-                ml_bump(&sect[j].offset, insert, grow);   /* addr stays fixed */
-                if (sect[j].reloff) ml_bump(&sect[j].reloff, insert, grow);
+                /* ml_bump refuses (returns -1, prints why) rather than wrap
+                 * a section offset/reloff that sits within `grow` of
+                 * UINT32_MAX -- same guard as src/linkedit.h's table, same
+                 * reason: a wrapped file offset is a corrupt binary that
+                 * still looks plausible. */
+                if (ml_bump(&sect[j].offset, insert, grow) != 0 ||   /* addr stays fixed */
+                    (sect[j].reloff && ml_bump(&sect[j].reloff, insert, grow) != 0)) {
+                    free(mg_new_trie);
+                    mg_snapshot_free(&snap);
+                    return -1;
+                }
             }
             break;
         }
         case LC_MAIN: {
             /* entryoff is a file offset within __TEXT; bumping it keeps the
-             * entry's vm address fixed (base went down by the same amount). */
+             * entry's vm address fixed (base went down by the same amount).
+             * entryoff is a uint64_t (entry_point_command), NOT uint32_t --
+             * bumped and overflow-checked directly at its own width, rather
+             * than through ml_bump's 32-bit-only guard, which would first
+             * silently truncate any entryoff at or past 4GB before ever
+             * checking anything. Real binaries never have an entryoff that
+             * large (it is a file offset within __TEXT), but "refuse rather
+             * than guess" means checking the real field, not an assumption
+             * about its range. */
             struct entry_point_command *c = (struct entry_point_command *)lcp;
-            uint32_t e = (uint32_t)c->entryoff;
-            ml_bump(&e, insert, grow);
-            c->entryoff = e;
+            if (c->entryoff >= (uint64_t)insert) {
+                if (c->entryoff > UINT64_MAX - (uint64_t)grow) {
+                    fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
+                                    "a 64-bit field after growing by %#x; refusing rather "
+                                    "than wrap\n",
+                            (unsigned long long)c->entryoff, grow);
+                    free(mg_new_trie);
+                    mg_snapshot_free(&snap);
+                    return -1;
+                }
+                c->entryoff += grow;
+            }
             break;
         }
         default:

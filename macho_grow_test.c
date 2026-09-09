@@ -209,6 +209,18 @@ static void test_init_offsets_rebase(void) {
 #define MG_T_LOH   16    /* LC_LINKER_OPTIMIZATION_HINT: base-relative, unhandled */
 #define MG_T_ODDSECT 32  /* a section whose TYPE we do not know */
 #define MG_T_FUNCSTARTS 64
+#define MG_T_MAIN 128    /* LC_MAIN: entryoff, a uint64_t base-relative-in-effect
+                           * file offset -- see test_grow_refuses_overflowing_entryoff */
+#define MG_T_PLAINSECT 256   /* an S_REGULAR section with an unremarkable name --
+                               * not __unwind_info (bounds-checked by mg_unwind_walk's
+                               * own pre-check before the segment loop ever runs),
+                               * not S_INIT_FUNC_OFFSETS (bounds-checked by mg_collect
+                               * the same way) -- so the segment loop's own section-
+                               * offset bump is the ONLY code that ever reads its
+                               * offset field. See
+                               * test_grow_refuses_overflowing_section_offset. Uses
+                               * the same section slot as MG_T_UNWIND; never combine
+                               * the two in one build_image() call. */
 #define FS_OFF 7680
 #define TRIE_OFF    7168
 static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts) {
@@ -230,15 +242,16 @@ static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts)
     pz->fileoff = 0;
     pz->filesize = 0;              /* filesize 0 keeps it out of the __TEXT probe */
 
+    int tx_nsects = 1 + ((opts & (MG_T_UNWIND | MG_T_PLAINSECT)) ? 1 : 0);
     struct segment_command_64 *tx = (struct segment_command_64 *)((uint8_t *)pz + pz->cmdsize);
     tx->cmd = LC_SEGMENT_64;
-    tx->cmdsize = sizeof *tx + (opts & MG_T_UNWIND ? 2 : 1) * sizeof(struct section_64);
+    tx->cmdsize = sizeof *tx + tx_nsects * sizeof(struct section_64);
     strcpy(tx->segname, "__TEXT");
     tx->vmaddr = 0x100000000ull;
     tx->vmsize = fsize;
     tx->fileoff = 0;
     tx->filesize = fsize;
-    tx->nsects = (opts & MG_T_UNWIND) ? 2 : 1;
+    tx->nsects = tx_nsects;
 
     struct section_64 *sc = (struct section_64 *)((uint8_t *)tx + sizeof *tx);
     strncpy(sc->sectname, "__init_offsets", sizeof sc->sectname);
@@ -249,6 +262,16 @@ static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts)
     sc->flags = S_INIT_FUNC_OFFSETS;   /* a real one carries both name and type */
 
     h->sizeofcmds = (uint32_t)(pz->cmdsize + tx->cmdsize);
+
+    if (opts & MG_T_PLAINSECT) {
+        struct section_64 *plain = sc + 1;   /* same slot MG_T_UNWIND uses -- never combine */
+        strncpy(plain->sectname, "__plain", sizeof plain->sectname);
+        strncpy(plain->segname, "__TEXT", sizeof plain->segname);
+        plain->addr = 0x100003000ull;
+        plain->size = 16;
+        plain->offset = 6144;   /* arbitrary in-bounds default; the test pokes it */
+        plain->flags = S_REGULAR;
+    }
 
     if (opts & MG_T_UNWIND) {
         struct section_64 *uw = sc + 1;
@@ -359,6 +382,14 @@ static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts)
          * two __init_offsets entries point. */
         static const uint8_t fsb[5] = { 0x80, 0x20, 0x80, 0x20, 0x00 };
         memcpy(buf + FS_OFF, fsb, sizeof fsb);
+    }
+    if (opts & MG_T_MAIN) {
+        struct entry_point_command *ep = (struct entry_point_command *)lcend;
+        ep->cmd = LC_MAIN;
+        ep->cmdsize = sizeof *ep;
+        ep->entryoff = 0x1000;   /* a plausible in-bounds default; tests poke it */
+        ep->stacksize = 0;
+        h->ncmds++; h->sizeofcmds += ep->cmdsize; lcend += ep->cmdsize;
     }
     if (opts & MG_T_ODDSECT) sc->flags = 0x7e;   /* unknown SECTION_TYPE */
 
@@ -987,6 +1018,105 @@ static void test_plausible_rejects_an_unrebased_initializer(void) {
     free(buf);
 }
 
+/* ---- overflow refusal at macho_grow.h's other two ml_bump call sites ----
+ * (a code review round found ml_bump/ml_bump_all's overflow guard, but noted
+ * the SAME class of bug still lived at the two ml_bump call sites left
+ * inside mg_grow_header itself: a section's offset/reloff, and LC_MAIN's
+ * entryoff. Fixing those before Task 3 relocates this code means Task 3
+ * moves already-correct code, not a known bug -- the mistake this project
+ * already made once with change_dylib/mi_open.) */
+
+static struct section_64 *find_section_struct(uint8_t *buf, const char *name) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *lcp = buf + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
+            struct section_64 *sect = (struct section_64 *)(lcp + sizeof *seg);
+            for (uint32_t j = 0; j < seg->nsects; j++)
+                if (strncmp(sect[j].sectname, name, sizeof sect[j].sectname) == 0)
+                    return &sect[j];
+        }
+        lcp += lc->cmdsize;
+    }
+    return NULL;
+}
+
+static struct load_command *find_lc(uint8_t *buf, uint32_t cmd) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *lcp = buf + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == cmd) return lc;
+        lcp += lc->cmdsize;
+    }
+    return NULL;
+}
+
+/* __plain (MG_T_PLAINSECT) rather than __unwind_info: __unwind_info's offset
+ * is bounds-checked by mg_unwind_walk's own pre-mutation audit (`offset +
+ * size > fsize` -> refuse) before the segment loop with the NEW guard ever
+ * runs, so poking IT would exercise the pre-existing bounds check, not the
+ * guard this test exists to pin. __plain is S_REGULAR with an unremarkable
+ * name: nothing walks its content, so the segment loop's own section-offset
+ * bump is the first and only code to read its offset field. */
+/* Unlike check_refused_unchanged's cases (mg_classify refuses before ANY
+ * byte moves, so "byte-identical" is trivially true there), these three
+ * guards fire mid-transformation -- after the memmove/realloc that inserts
+ * the header pad. Fields on commands walked before the one that overflows
+ * are already bumped in place and are NOT rolled back; that is the
+ * documented contract every internal failure path in mg_grow_header shares
+ * (see src/linkedit.h's ml_bump_all doc comment). What must hold, and is
+ * verified separately below via the real CLI (not exercised by this
+ * hermetic file), is that the OUTER caller never writes a refused buffer to
+ * disk -- confirmed by hand against `macho9 grow` on poked copies of
+ * tests/fixture.macho for all three guards (section offset, reloff,
+ * entryoff): exit 2, file left byte-for-byte unmodified on disk. So these
+ * three checks pin only what this translation unit can honestly promise:
+ * the refusal itself (r == -1). */
+static void test_grow_refuses_overflowing_section_offset(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    struct section_64 *plain = find_section_struct(buf, "__plain");
+    CHECK(plain != NULL, "setup: __plain section present");
+    if (!plain) { free(buf); return; }
+    plain->offset = 0xfffff000u;   /* + grow (0x1000) would overflow uint32_t */
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == -1, "grow refuses a section offset that would overflow (got %d)", r);
+    free(buf);
+}
+
+static void test_grow_refuses_overflowing_reloff(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    struct section_64 *plain = find_section_struct(buf, "__plain");
+    CHECK(plain != NULL, "setup: __plain section present");
+    if (!plain) { free(buf); return; }
+    plain->reloff = 0xfffff000u;   /* offset itself (4096, from build_image) stays
+                                     * fine; only reloff is poked, isolating this
+                                     * guard from the offset one above */
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == -1, "grow refuses a section reloff that would overflow (got %d)", r);
+    free(buf);
+}
+
+static void test_grow_refuses_overflowing_entryoff(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_MAIN);
+    struct load_command *lc = find_lc(buf, LC_MAIN);
+    CHECK(lc != NULL, "setup: LC_MAIN present");
+    if (!lc) { free(buf); return; }
+    struct entry_point_command *ep = (struct entry_point_command *)lc;
+    ep->entryoff = 0xfffffffffffff000ULL;   /* + grow (0x1000) would overflow uint64_t */
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == -1, "grow refuses an entryoff that would overflow (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -1013,6 +1143,9 @@ int main(void) {
     test_verify_accepts_a_correct_grow();
     test_verify_rejects_double_apply();
     test_verify_rejects_handler_that_never_ran();
+    test_grow_refuses_overflowing_section_offset();
+    test_grow_refuses_overflowing_reloff();
+    test_grow_refuses_overflowing_entryoff();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
