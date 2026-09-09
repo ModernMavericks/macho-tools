@@ -67,14 +67,39 @@
 #   new side   compat/translate.sh, then each line it printed, in order,
 #              stopping at the first nonzero exit
 #
-# What is compared is the OUTPUT BYTES and the EXIT CODE. Stdout is deliberately
-# NOT compared: mr_apply_file prints a "header pad"/"updated" pair per pass, so
-# one old invocation and a sequence of two or three macho9 ones cannot possibly
-# print the same thing, and the plan's Task 0 evidence found no caller that
-# parses these tools' stdout as data. The first line of each side's STDERR is
-# recorded in the row instead, so a reader can see whether the two refused for
-# the same reason -- which is the part that matters and the part a caller
-# (install.sh's wrapper puts it in front of a human) actually sees.
+# AFTER TASK 2, POINT <bindir> AT A PRE-TASK-2 BUILD. Five of the six tools
+# are /bin/sh wrappers around macho9 now, so running this against a current
+# build makes the "old side" a wrapper and the comparison close to
+# tautological. The bindir is recorded in the matrix header for exactly that
+# reason -- a reader has to be able to tell which of the two the rows
+# describe. The committed matrix was generated against a build of the last
+# commit that still had the C sources.
+#
+# What is compared is the OUTPUT BYTES, the EXIT CODE and, since Task 2, STDOUT.
+#
+# Stdout used to be left out on the grounds that mr_apply_file prints a "header
+# pad"/"updated" pair per pass, so one old invocation and a sequence of two or
+# three macho9 ones cannot possibly print the same thing, and that the plan's
+# Task 0 evidence found no caller parsing these tools' stdout as data. Both
+# statements are still true, but leaving it unmeasured meant nobody knew HOW
+# FAR apart the two sides' stdout was -- and Task 2's wrappers have to close
+# whatever part of that gap a caller or an in-repo test can see. A controller
+# ruling for that task therefore made this measurement a precondition of
+# writing them. So each row now carries a stdout verdict:
+#
+#   the class picks up a "+stdout" suffix when the two sides' stdout differs
+#   byte-for-byte, and the last two columns hold the FIRST LINE of each side's
+#   stdout, so a reader can see what kind of difference it was without
+#   re-running anything.
+#
+# A row WITHOUT "+stdout" is a positive result: that old invocation and its
+# translation printed the same bytes, so a wrapper that simply passes macho9's
+# stdout through is byte-identical there.
+#
+# The first line of each side's STDERR is recorded too, so a reader can see
+# whether the two refused for the same reason -- which is the part that matters
+# and the part a caller (install.sh's wrapper puts it in front of a human)
+# actually sees.
 #
 # A row's class is then:
 #
@@ -256,7 +281,7 @@ FM_FLAGS='-change -strip_build_version -rename_seg'
 # ---- the matrix ---------------------------------------------------------
 ROWS="$T/rows"; : > "$ROWS"
 total=0; n_preserved=0; n_bytes=0; n_blocked=0; n_bothref=0; n_improve=0
-n_nocmd=0; n_nocmdbad=0; n_partial=0
+n_nocmd=0; n_nocmdbad=0; n_partial=0; n_stdout=0
 old_mod=0; new_mod=0
 
 # run_case TOOL ARGV...
@@ -338,10 +363,23 @@ run_case() {
         class="$class+partial"; n_partial=$((n_partial + 1))
     fi
 
+    # STDOUT. Compared byte-for-byte, and the verdict goes on the class as a
+    # "+stdout" suffix rather than into a class of its own, because it is
+    # orthogonal to every one of them: a preserved row and a both-refuse row
+    # can each print matching or differing stdout. Task 2's wrappers have to
+    # know which rows are which.
+    if ! cmp -s "$T/a.out" "$T/b.out"; then
+        class="$class+stdout"; n_stdout=$((n_stdout + 1))
+    fi
+
     amsg=$(head -1 "$T/a.err" 2>/dev/null | tr '\t' ' ')
     bmsg=$(head -1 "$T/b.err" 2>/dev/null | tr '\t' ' ')
     [ -n "$amsg" ] || amsg='-'
     [ -n "$bmsg" ] || bmsg='-'
+    aout=$(head -1 "$T/a.out" 2>/dev/null | tr '\t' ' ')
+    bout=$(head -1 "$T/b.out" 2>/dev/null | tr '\t' ' ')
+    [ -n "$aout" ] || aout='-'
+    [ -n "$bout" ] || bout='-'
     tr_one=$(printf '%s' "$cmds" | tr '\n' ';' | sed 's/;$//')
     [ -n "$tr_one" ] || tr_one='-'
     # SHELL-QUOTED, not space-joined: a row has to be replayable from the
@@ -352,9 +390,9 @@ run_case() {
     argv=$(mt_qargs "$@"); argv=${argv# }
     [ -n "$argv" ] || argv='(no arguments)'
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$tool" "$class" "$argv" "$tr_one" "$arc" "$asha" "$brc" "$bsha" \
-        "$refuser" "$amsg" "$bmsg" >> "$ROWS"
+        "$refuser" "$amsg" "$bmsg" "$aout" "$bout" >> "$ROWS"
 }
 
 # Runs the emitted command lines in order, stopping at the first nonzero exit
@@ -556,8 +594,12 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#             + one appended LC_LOAD_DYLIB ($DY_OLD)"
     echo "#             sha256[0:16] = $BASESHA"
     echo "# generated:  $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(uname -srm)"
+    echo "# old side:   $BIN"
+    echo "#             (after Task 2 five of the six are shell wrappers; these"
+    echo "#              rows are only a record of the C binaries if that bindir"
+    echo "#              is a pre-Task-2 build -- see this script's header)"
     echo "#"
-    echo "# columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg"
+    echo "# columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg  old_out  new_out"
     echo "#   old_argv     the old tool's argv[1..], file named 'f'"
     echo "#   translation  the macho9 command lines, ';'-joined, or '-' for none"
     echo "#   *_sha        sha256[0:16] of that side's file AFTER the run; equal to the"
@@ -565,16 +607,22 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#   refuser      which side said no: translate (the old grammar's own"
     echo "#                refusal, reproduced), macho9, or '-'"
     echo "#   *_msg        first line of that side's stderr"
+    echo "#   *_out        first line of that side's stdout"
     echo "#"
     echo "# WHAT IS AND IS NOT COMPARED -- read this before drawing a conclusion"
     echo "# from a class name."
     echo "#"
-    echo "#   Only the OUTPUT BYTES and the EXIT-CODE SIGN are compared. Stdout is"
-    echo "#   deliberately NOT compared: mr_apply_file prints a header-pad/updated"
-    echo "#   pair per pass, so one old invocation and a sequence of two or three"
-    echo "#   macho9 ones cannot print the same thing, and the plan's Task 0"
-    echo "#   evidence found no caller that parses these tools' stdout as data."
-    echo "#   The first line of each side's stderr is in every row instead."
+    echo "#   The OUTPUT BYTES, the EXIT-CODE SIGN and STDOUT are compared."
+    echo "#"
+    echo "#   Stdout joined the comparison for Task 2: its wrappers have to"
+    echo "#   reproduce whatever part of the old tools' stdout a caller or an"
+    echo "#   in-repo test can see, and until this run nobody had measured how"
+    echo "#   far apart the two sides were. A row whose class carries a"
+    echo "#   \"+stdout\" suffix printed DIFFERENT stdout bytes on the two sides;"
+    echo "#   one without it printed identical bytes. The old_out/new_out columns"
+    echo "#   hold the first line of each side's stdout."
+    echo "#"
+    echo "#   The first line of each side's stderr is in every row too."
     echo "#"
     echo "#   The class ignores the EXACT exit code, only whether it was zero. Two"
     echo "#   rows differ there and say so in their columns rather than their class:"
@@ -608,6 +656,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     printf '#   %-20s %6d  the translation is empty (the old invocation was a no-op)\n' no-command "$n_nocmd"
     printf '#   %-20s %6d  empty translation, but the old tool did NOT no-op -- A DEFECT\n' no-command-MISMATCH "$n_nocmdbad"
     printf '#   %-20s %6d  (of the refusing rows above) the new side had already written\n' +partial "$n_partial"
+    printf '#   %-20s %6d  (of ALL rows above) the two sides printed different stdout\n' +stdout "$n_stdout"
     printf '#   %-20s %6d\n' TOTAL "$total"
     echo "#"
     printf '# inputs actually rewritten: old=%d new=%d (of %d)\n' "$old_mod" "$new_mod" "$total"
@@ -615,7 +664,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     cat "$ROWS"
 } > "$OUT"
 
-echo "compat-sweep: combinations=$total preserved=$n_preserved bytes-differ=$n_bytes blocked=$n_blocked both-refuse=$n_bothref improvement=$n_improve no-command=$n_nocmd no-command-MISMATCH=$n_nocmdbad partial-writes=$n_partial"
+echo "compat-sweep: combinations=$total preserved=$n_preserved bytes-differ=$n_bytes blocked=$n_blocked both-refuse=$n_bothref improvement=$n_improve no-command=$n_nocmd no-command-MISMATCH=$n_nocmdbad partial-writes=$n_partial stdout-differs=$n_stdout"
 echo "compat-sweep: inputs actually rewritten: old=$old_mod new=$new_mod"
 echo "compat-sweep: matrix written to $OUT"
 if [ "$old_mod" -eq 0 ] || [ "$new_mod" -eq 0 ]; then

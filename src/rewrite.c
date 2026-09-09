@@ -1,7 +1,8 @@
 /*
- * mr_ -- the dylib/rpath/load-command rewriter, shared by compat/change_dylib.c
- * and cli/macho9.c. See rewrite.h for the operation set and why this is a
- * library function rather than one tool's main().
+ * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/macho9.c and by
+ * the old change_dylib grammar that reaches it through compat/change_dylib.sh.
+ * See rewrite.h for the operation set and why this is a library function
+ * rather than one tool's main().
  *
  * A rewrite here does three things, in this order, and refuses before the
  * first byte reaches disk if any of them cannot be done:
@@ -291,10 +292,10 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
          * never cmdsize -- so it can be applied to the command already copied
          * into the new table, after the copy, without changing this command's
          * size or the table's shape. mseg_rename_lc (src/segname.h) is the
-         * same function compat/rename_segment.c applies to its own buffer, so
-         * the two front-ends cannot disagree about what a rename is; only
-         * getting here through mr_apply_file is what additionally gives this
-         * one fat containers and an atomic write-back. */
+         * one function every segment rename in this repo goes through, so no
+         * two front-ends can disagree about what a rename is; only getting
+         * here through mr_apply_file is what additionally gives this one fat
+         * containers and an atomic write-back. */
         /* BOTH pointers, matching rewrite.h's "Both NULL means no rename was
          * requested": a half-filled pair would otherwise reach
          * mseg_rename_lc's strncpy with a NULL source. No caller sets one

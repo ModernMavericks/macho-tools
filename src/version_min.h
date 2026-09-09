@@ -10,8 +10,10 @@
  * It was compat/add_version_min.c's whole main(). It lives here so that
  * cli/macho9.c's `minos` verb can do the work in-process instead of forking
  * and exec'ing add_version_min -- the same cycle mr_apply_file (src/rewrite.h)
- * breaks for `dylib`/`rpath`/`lc`. Both front-ends therefore print exactly the
- * same thing, because there is only one implementation left to print it.
+ * breaks for `dylib`/`rpath`/`lc`. That is also what let add_version_min
+ * become compat/add_version_min.sh, a /bin/sh wrapper that runs `macho9 minos
+ * FILE 10.9`: the old name and the verb print exactly the same thing, because
+ * there is only one implementation left to print it.
  */
 
 /*

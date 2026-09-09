@@ -7,12 +7,38 @@
  *
  * This is compat/retag_swift_classes.c's whole per-file process(), lifted out
  * of that tool so it is a library function rather than one program's static.
- * Two front-ends call it now and must keep behaving identically:
- * compat/retag_swift_classes.c (which keeps its multi-file argv loop, its
- * per-file "%s: retagged %d class record(s)" and "total: ..." messages, and
- * its `had_error ? 1 : 0` exit) and cli/macho9.c's `retag-swift` verb. See
- * that tool's header comment for why the two bits exist and what a mismatch
- * does at runtime.
+ * cli/macho9.c's `retag-swift` verb is the only C front-end left; the old
+ * grammar, `retag_swift_classes binary [binary ...]`, reaches this same code
+ * through compat/retag_swift_classes.sh, the /bin/sh wrapper that replaced
+ * compat/retag_swift_classes.c -- and that wrapper is what still keeps the
+ * multi-file argv loop, the per-file "%s: retagged %d class record(s)" and
+ * "total: ..." messages, and the `had_error ? 1 : 0` exit.
+ *
+ * WHY THE TWO BITS EXIST, and what a mismatch does at runtime. A class
+ * record's data word carries a tag in its low two bits saying whether the
+ * class is a Swift class, and which bit is used depends on the deployment
+ * target of whatever produced it:
+ *
+ *   bit 1 (value 2)  stable ABI  -- emitted when targeting macOS 10.14.4+
+ *   bit 0 (value 1)  legacy      -- emitted when targeting anything older
+ *
+ * The Swift runtime checks whichever bit its *own* deployment target implies.
+ * A runtime built for 10.9 therefore tests bit 0, while an application built
+ * for 10.15 tags its classes with bit 1. Nothing rejects the mismatch: the
+ * runtime simply concludes that none of the application's classes are Swift
+ * classes, treats each as a plain Objective-C class, and takes the
+ * ObjC-class-wrapper path in swift_getObjCClassMetadata. For a Swift class
+ * that overrides an Objective-C initialiser, that turns super.init() into a
+ * call to itself, and the process dies of an infinite recursion long before
+ * anything is drawn.
+ *
+ * Objective-C itself is indifferent: objc masks both bits off before using the
+ * pointer, and on 10.9 pure Objective-C classes leave them zero, so moving the
+ * tag from one bit to the other changes nothing for the Objective-C runtime.
+ *
+ * (This explanation lived in compat/retag_swift_classes.c's header until that
+ * file became a shell wrapper; it is here now because it is the reason the
+ * code is here, and it must outlive whichever front-end reaches it.)
  *
  * THIN ONLY, deliberately: retag_swift_classes never handled a fat container
  * and this task does not change what it does. A caller handed one gets

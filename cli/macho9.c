@@ -485,10 +485,11 @@ static int cmd_lc(int argc, char **argv) {
              * -strip-lc (max 16)"; repeating that here would leak the old
              * grammar's flag spellings out of a verb whose whole point is not
              * to expose them -- cli_test.sh asserts exactly that, for
-             * --allow-grow's own no-op message. FOR WHOEVER WRITES THE
-             * change_dylib SHELL WRAPPER (Task 2): the wrapper cannot get the
-             * origin message by passing this through, so it must enforce the
-             * 16 itself and print "too many -strip-lc (max 16)" on its own. */
+             * --allow-grow's own no-op message. THE change_dylib SHELL WRAPPER
+             * therefore cannot get the origin message by passing this through:
+             * it enforces the 16 itself, in compat/translate.sh's mt_room, and
+             * prints "too many -strip-lc (max 16)". tests/wrapper_test.sh pins
+             * that text. */
             if (nstrip == MR_MAX_STRIP) {
                 fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
                 return 1;
@@ -612,10 +613,10 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
          * 32)"; repeating that here would leak the old grammar's spellings
          * out of a verb whose whole point is not to expose them, which
          * cli_test.sh already asserts against for --allow-grow's no-op
-         * message. FOR WHOEVER WRITES THE change_dylib SHELL WRAPPER (Task
-         * 2): the wrapper cannot get the origin message by passing this
-         * through, so it must enforce the 32 itself and print "too many
-         * <old flag> (max 32)" on its own. */
+         * message. THE change_dylib SHELL WRAPPER therefore cannot get the
+         * origin message by passing this through: it enforces the 32 itself,
+         * in compat/translate.sh's mt_room, and prints "too many <old flag>
+         * (max 32)". tests/wrapper_test.sh pins that text. */
         if (full) {
             fprintf(stderr, "macho9 %s: too many %s operations (max %d)\n",
                     is_rpath ? "rpath" : "dylib", op->flag, MR_MAX_OPS);
@@ -647,9 +648,10 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
 
 /* ---- segment: a segment rename, routed through mr_apply_file -------------
  *
- * The rename itself is mseg_rename_lc (src/segname.h), shared with
- * compat/rename_segment.c so the two front-ends cannot disagree about what
- * renaming a segment means. This verb reaches it through an mr_ops rather than
+ * The rename itself is mseg_rename_lc (src/segname.h), the one function
+ * every segment rename in this repo goes through -- including the old
+ * `rename_segment` grammar, which reaches this very verb through
+ * compat/rename_segment.sh. This verb reaches it through an mr_ops rather than
  * calling it directly, and that is the whole reason the operation lives in
  * mr_ops at all: mr_apply_file already handles a classic fat container by
  * rewriting each slice and reassembling, already passes through a slice it
@@ -665,8 +667,11 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  * mseg_name_fits.
  *
  * THREE DELIBERATE DIVERGENCES FROM rename_segment, all of which a wrapper
- * author (Task 2) has to know about, because reproducing rename_segment's
- * observable behaviour on top of this verb means accounting for each:
+ * author has to know about, because reproducing rename_segment's observable
+ * behaviour on top of this verb means accounting for each. Each is closed (or
+ * knowingly not closed) in compat/rename_segment.sh, whose header says which
+ * and why -- and which names a FOURTH, found while writing it: this verb
+ * handles a fat container, and rename_segment never did.
  *
  *   - EXIT CODE WHEN NOTHING MATCHED. mr_apply_file reports "nothing to
  *     change" and exits 0; rename_segment exits 2. This verb hands back the
@@ -710,8 +715,9 @@ static int cmd_segment(const char *path, const char *oldname, const char *newnam
  * docs/PROPOSAL.md's `verify` section exists to rule out.
  *
  * TWO DELIBERATE DIVERGENCES FROM retag_swift_classes, both of which a
- * wrapper author (Task 2) has to know about, because in each case the two
- * front-ends return DIFFERENT codes for the same input:
+ * wrapper author has to know about, because in each case the two front-ends
+ * return DIFFERENT codes for the same input. Both are handled in
+ * compat/retag_swift_classes.sh, whose header says how:
  *
  *   - MSWIFT_NOT_MACHO. retag_swift_classes skips such an argument silently
  *     and keeps going through the rest of its argv, ending at 0; this verb
@@ -761,7 +767,8 @@ static int cmd_retag_swift(const char *path) {
  * trie and every LC_BUILD_VERSION stripped, __LINKEDIT extended over the
  * appended opcode streams -- is src/declassify.c, shared with
  * compat/patch_macho.c so the two front-ends cannot disagree about what
- * declassifying a binary means. Both write the very same buffer
+ * declassifying a binary means. The old `patch_macho IN OUT` grammar reaches
+ * this verb through compat/patch_macho.sh, and both write the very same buffer
  * md_declassify hands back, so their output files are byte-identical by
  * construction, not by two implementations happening to agree.
  *
@@ -772,8 +779,9 @@ static int cmd_retag_swift(const char *path) {
  * behaves as an in-place conversion.
  *
  * FOUR DELIBERATE DIVERGENCES FROM patch_macho, all of which a wrapper author
- * (Task 2) has to know about, because reproducing patch_macho's observable
- * behaviour on top of this verb means accounting for each:
+ * has to know about, because reproducing patch_macho's observable behaviour on
+ * top of this verb means accounting for each. compat/patch_macho.sh closes the
+ * first and the third and enumerates the other two:
  *
  *   - EXIT CODES. patch_macho returns a flat 1 for everything that goes
  *     wrong. This verb returns EX_REFUSED where it examined the input and

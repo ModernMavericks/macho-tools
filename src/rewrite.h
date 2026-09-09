@@ -4,16 +4,18 @@
  * mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs in place.
  *
  * This is change_dylib's whole operation set, lifted out of that tool's
- * main() so it is a library function rather than a program. Two front-ends
- * call it now and must keep behaving identically: compat/change_dylib.c
- * (the old grammar: -change/-delete/-reexport/-add/-insert/-strip-lc and the
- * -*-rpath twins) and cli/macho9.c's `dylib`/`rpath`/`lc`/`segment` verbs
- * (the new one: -replace/-delete/-append/-insert/-reexport, plus a segment
- * rename shared with compat/rename_segment.c via src/segname.h). macho9 used
- * to fork and exec change_dylib to get this work done; that made
- * `change_dylib` a runtime dependency of `macho9`, which is a cycle once
- * change_dylib becomes a wrapper around macho9. Sharing the code instead of
- * the binary breaks it.
+ * main() so it is a library function rather than a program. cli/macho9.c's
+ * `dylib`/`rpath`/`lc`/`segment` verbs are the only C front-end left
+ * (-replace/-delete/-append/-insert/-reexport, plus a segment rename shared
+ * with src/segname.h); the OLD grammar -- change_dylib's
+ * -change/-delete/-reexport/-add/-insert/-strip-lc and the -*-rpath twins --
+ * reaches exactly this code through compat/change_dylib.sh, the /bin/sh
+ * wrapper that replaced compat/change_dylib.c, and compat/translate.sh, which
+ * maps one grammar onto the other. macho9 used to fork and exec change_dylib
+ * to get this work done; that made `change_dylib` a runtime dependency of
+ * `macho9`, which is a cycle once change_dylib becomes a wrapper around
+ * macho9. Sharing the code instead of the binary broke it, and is what made
+ * the wrapper possible.
  *
  * The parsing stays in each front-end -- the two grammars are genuinely
  * different, and neither is this module's business. What crosses the boundary
@@ -97,7 +99,7 @@ typedef struct {
      * Both NULL means no rename was requested; the pair is scalar rather than
      * an array because the only grammar that spells it (macho9 segment FILE
      * OLD NEW) takes exactly one pair. The rename itself is mseg_rename_lc
-     * (src/segname.h), shared with compat/rename_segment.c. */
+     * (src/segname.h), shared with the rename_segment grammar. */
     const char      *segment_rename_old;
     const char      *segment_rename_new;
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */

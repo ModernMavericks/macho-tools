@@ -19,9 +19,13 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
   header growth, LC-kind tables, the atomic-write helper, the dylib/rpath
   load-command rewriter, the `LC_VERSION_MIN_MACOSX` appender, the segment
   rename, and the Swift class-record retag.
-- `compat/` — these six tools' own sources. They predate `macho9` and are kept
-  under their original names because `install.sh` builds some of them by
-  name; see `compat/README.md`.
+- `compat/` — these six tools' entry points. They predate `macho9` and keep
+  their original names because `install.sh` fetches some of them by name.
+  Five are now `/bin/sh` wrappers that print the `macho9` equivalent of what
+  they were asked to do and then do it through `macho9`; `fix_macho` is still
+  C, because it could not be wrapped without changing what it does. Also here:
+  `translate.sh`, the old-grammar-to-`macho9` translator the wrappers source,
+  and `macho9-compat.sh`, the machinery they share. See `compat/README.md`.
 - `cli/` — `macho9`, the multi-verb CLI built on `src/`.
 - `tests/` — everything `ctest` runs, plus the fixtures it reads.
 

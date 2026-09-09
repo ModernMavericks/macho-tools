@@ -6,17 +6,18 @@
  * 2021-and-later toolchain produced can be loaded on 10.9 at all.
  *
  * This is compat/patch_macho.c's whole conversion, lifted out of that tool's
- * main() so it is a library function rather than a program. Two front-ends
- * call it now and must keep behaving identically: compat/patch_macho.c (the
- * old grammar, `patch_macho IN OUT`, its own open/write of OUT at 0755, its
- * "Wrote ..." line only on the converting path, exit 1 for everything that
- * goes wrong) and cli/macho9.c's `declassify` verb. Only what genuinely
- * differs between the two -- argument parsing, the write path, the exit code
- * -- stays in each front-end. Everything the conversion itself PRINTS lives
- * down here, once, exactly as patch_macho has always printed it, for the same
- * reason rewrite.h keeps change_dylib's diagnostics down there: two copies of
- * a message drift, and tests/characterize.sh and tests/chained-fixups.sh both
- * run the conversion through patch_macho.
+ * main() so it is a library function rather than a program. cli/macho9.c's
+ * `declassify` verb is the only C front-end left; the old grammar,
+ * `patch_macho IN OUT`, reaches this same code through compat/patch_macho.sh,
+ * the /bin/sh wrapper that replaced compat/patch_macho.c. That wrapper is
+ * what still reproduces the old tool's observables -- exit 1 for everything
+ * that goes wrong, and no "Wrote ..." line on the pass-through path.
+ *
+ * Everything the conversion itself PRINTS lives down here, once, exactly as
+ * patch_macho has always printed it, for the same reason rewrite.h keeps
+ * change_dylib's diagnostics down there: two copies of a message drift, and
+ * tests/characterize.sh and tests/chained-fixups.sh both run the conversion
+ * through patch_macho.
  *
  * WHAT IT DOES, in the order the file is touched:
  *   - collects every LC_SEGMENT_64 (a chained-fixups entry names its segment

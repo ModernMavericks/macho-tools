@@ -72,12 +72,24 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # close. So: no argument at all means standalone (compile from source, the
 # documented, intentional fallback); a NON-EMPTY argument is a hard
 # requirement, exactly like the other four suites' `BIN="${1:?usage...}"`.
+#
+# STANDALONE, AFTER TASK 2: change_dylib is no longer a C program to compile.
+# It is compat/change_dylib.sh, a wrapper that needs macho9 and the two files
+# it sources sitting next to it -- so the standalone branch builds macho9 and
+# then assembles that layout in $T, under the installed names, exactly as
+# CMakeLists.txt stages it next to macho9 in a build tree. fix_macho is still
+# C and is still compiled here.
 if [ $# -eq 0 ]; then
     echo "change_dylib_test: no bindir given -- compiling standalone from source"
-    CHANGE_DYLIB="$T/change_dylib"
-    FIX_MACHO="$T/fix_macho"
-    "$CC" -O2 -I "$SRC_DIR" -o "$CHANGE_DYLIB" "$COMPAT_DIR/change_dylib.c" "$SRC_DIR"/*.c
-    "$CC" -O2 -I "$SRC_DIR" -o "$FIX_MACHO" "$COMPAT_DIR/fix_macho.c" "$SRC_DIR"/*.c
+    mkdir -p "$T/bin"
+    "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/macho9" "$ROOT_DIR/cli/macho9.c" "$SRC_DIR"/*.c
+    "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/fix_macho" "$COMPAT_DIR/fix_macho.c" "$SRC_DIR"/*.c
+    cp "$COMPAT_DIR/change_dylib.sh" "$T/bin/change_dylib"
+    cp "$COMPAT_DIR/macho9-compat.sh" "$T/bin/macho9-compat.sh"
+    cp "$COMPAT_DIR/translate.sh" "$T/bin/macho9-translate.sh"
+    chmod +x "$T/bin/change_dylib"
+    CHANGE_DYLIB="$T/bin/change_dylib"
+    FIX_MACHO="$T/bin/fix_macho"
 else
     BIN="$1"
     if [ ! -x "$BIN/change_dylib" ] || [ ! -x "$BIN/fix_macho" ]; then
@@ -710,6 +722,49 @@ if "$CHANGE_DYLIB" "$T/main_atcap" -grow "$@" >/dev/null 2>"$T/atcap.err"; then
     ok "-add exactly at capacity is accepted"
 else
     bad "-add at capacity" "refused at the cap: $(head -1 "$T/atcap.err")"
+fi
+
+# --- 9b. fix_macho's option arrays had NO bounds check at all ----------------
+# The same defect, in the other tool, unfixed until the compat-retirement
+# plan's Task 2. docs/PROPOSAL.md records it being found and fixed in
+# change_dylib -- "Repeated options wrote past their fixed-size arrays; 33
+# -change flags smashed the stack -- fixed, PR #9" -- and that fix only ever
+# covered change_dylib; fix_macho's changes[32] and renames[16] were still
+# filled by a loop that never checked. A 33rd -change made the pre-fix binary
+# die of SIGABRT (exit 134, stack-protector abort), measured on this host.
+#
+# Asserted as "refuses, saying too many, having modified nothing", not as a
+# particular exit code, per this suite's own rule about pinning the behaviour
+# rather than which guard fired.
+fm_cap_case() {
+    desc=$1; shift
+    build_main "$T/main_fmcap"
+    before_fm=$(shasum -a 256 < "$T/main_fmcap" | cut -d' ' -f1)
+    if "$FIX_MACHO" "$T/main_fmcap" "$@" >/dev/null 2>"$T/fmcap.err"; then
+        bad "$desc" "accepted more operations than the array holds"
+    elif grep -qi 'too many' "$T/fmcap.err"; then
+        ok "$desc"
+    else
+        bad "$desc" "refused, but without a 'too many' diagnostic: $(head -1 "$T/fmcap.err")"
+    fi
+    [ "$(shasum -a 256 < "$T/main_fmcap" | cut -d' ' -f1)" = "$before_fm" ] \
+        || bad "$desc" "the input was modified despite the refusal"
+}
+set -- ; i=0
+while [ $i -lt 33 ]; do set -- "$@" -change "@loader_path/liba.dylib" "@loader_path/libz.dylib"; i=$((i+1)); done
+fm_cap_case "fix_macho: -change beyond capacity is refused, not a stack smash" "$@"
+set -- ; i=0
+while [ $i -lt 17 ]; do set -- "$@" -rename_seg __DATA __DATA_R; i=$((i+1)); done
+fm_cap_case "fix_macho: -rename_seg beyond capacity is refused, not a stack smash" "$@"
+
+# Exactly at capacity must still be accepted, same reasoning as case 9's.
+build_main "$T/main_fmatcap"
+set -- ; i=0
+while [ $i -lt 32 ]; do set -- "$@" -change "@loader_path/liba.dylib" "@loader_path/libz.dylib"; i=$((i+1)); done
+if "$FIX_MACHO" "$T/main_fmatcap" "$@" >/dev/null 2>"$T/fmatcap.err"; then
+    ok "fix_macho: -change exactly at capacity is accepted"
+else
+    bad "fix_macho -change at capacity" "refused at the cap: $(head -1 "$T/fmatcap.err")"
 fi
 
 # --- 10/11. fat binaries in the rewrite path ---------------------------------

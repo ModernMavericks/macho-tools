@@ -4,6 +4,51 @@
  * Usage: fix_macho <file> [operations...]
  *   -change <old> <new>    Change a dylib path
  *   -strip_build_version   Remove LC_BUILD_VERSION commands
+ *   -rename_seg <old> <new>   Rename a segment. Listed here but NOT in the
+ *                             usage line main() prints, which has never
+ *                             mentioned it even though the parser has always
+ *                             accepted it. Left that way: the printed text is
+ *                             part of this tool's observable behaviour.
+ *
+ * WHY THIS ONE IS STILL C, WHEN THE OTHER FIVE ARE SHELL WRAPPERS.
+ *
+ * The compat-retirement plan's Task 2 replaced patch_macho, change_dylib,
+ * add_version_min, rename_segment and retag_swift_classes with /bin/sh
+ * wrappers around macho9 (compat/<tool>.sh). fix_macho was attempted and
+ * MEASURED, on real 10.9, against the binaries that shipped before that
+ * change, and it cannot be wrapped without changing what it does. Two cases,
+ * both reproduced by hand and both recorded as rows in
+ * tests/compat-matrix.tsv:
+ *
+ *   A REPLACEMENT PATH LONGER THAN THE EXISTING COMMAND. This tool refuses
+ *     ("new path '...' too long (320 > 32)", exit 1, file untouched) because
+ *     it writes the new path INTO the existing load command. `macho9 dylib
+ *     -replace` rebuilds the load-command table, so it fits the longer path
+ *     into the header pad and exits 0, having rewritten the file. Different
+ *     exit code AND different bytes -- the two things the plan's byte-identity
+ *     standard makes non-negotiable.
+ *   CHAINED -rename_seg (`-rename_seg __DATA __X -rename_seg __X __Y`). This
+ *     tool applies every pair in ONE pass and gives each segment its FIRST
+ *     match, so the second pair never fires; it exits 0 having produced __X.
+ *     The translation is one `macho9 segment` pass per pair, and the second
+ *     reads the first's output, so it would produce __Y. compat/translate.sh
+ *     refuses the shape outright rather than emit a command line that means
+ *     something else -- correct, and it means a wrapper would exit 2 where
+ *     this tool exits 0 and rewrites.
+ *
+ * Three more differences are smaller but real: this tool has no mg_plausible
+ * gate (mr_apply_file refuses images it would happily rewrite), it TOLERATES
+ * a fat slice it cannot handle where mr_apply_file refuses the whole file,
+ * and its stdout ("Processing thin Mach-O:", "  Changed: X -> Y", "File
+ * updated: F") is nothing a wrapper could reconstruct without knowing which
+ * operations matched.
+ *
+ * Task 0.5 reached the same conclusion from the other direction and backed
+ * out of converging this tool onto the shared drivers. Converging it in C is
+ * still the honest way to retire it -- it just changes behaviour, so it is a
+ * decision to take deliberately rather than a wrapper to slip in. Nothing
+ * outside this repo's own tests/change_dylib_test.sh is known to call it
+ * (mavericksforever.com/claude/install.sh does not).
  */
 
 #include <stdio.h>
@@ -19,6 +64,29 @@
 #include "image.h"
 #include "ordinals.h"
 #include "mach_compat.h"
+#include "rewrite.h"   /* MR_MAX_OPS: the cap change_dylib's -change uses */
+
+/* CAPS ON REPEATED OPTIONS. These arrays used to have none: `changes[32]` and
+ * `renames[16]` were filled by an argv loop that never checked, so a 33rd
+ * -change (or a 17th -rename_seg) wrote past the end of a stack array.
+ * docs/PROPOSAL.md records the same bug being found and fixed in
+ * change_dylib -- "Repeated options wrote past their fixed-size arrays; 33
+ * -change flags smashed the stack -- fixed, PR #9" -- and that fix only ever
+ * covered change_dylib. This is CD_ROOM, in this file, with change_dylib's
+ * exact wording, so the two tools refuse the same shape the same way.
+ *
+ * -change shares change_dylib's own MR_MAX_OPS rather than a second 32 spelled
+ * out here; the rename array keeps its own 16, since no shared header has an
+ * opinion about segment renames. */
+#define FM_MAX_CHANGES MR_MAX_OPS
+#define FM_MAX_RENAMES 16
+#define FM_ROOM(n, max, flag)                                            \
+    do {                                                                 \
+        if ((n) == (max)) {                                              \
+            fprintf(stderr, "too many %s (max %d)\n", (flag), (max));    \
+            return 1;                                                    \
+        }                                                                \
+    } while (0)
 
 struct change_entry {
     const char *old_path;
@@ -169,14 +237,15 @@ int main(int argc, char **argv) {
     const char *path = argv[1];
 
     /* Parse operations */
-    struct change_entry changes[32];
+    struct change_entry changes[FM_MAX_CHANGES];
     int nchanges = 0;
     int strip_bv = 0;
-    struct rename_seg_entry renames[16];
+    struct rename_seg_entry renames[FM_MAX_RENAMES];
     int nrenames = 0;
 
     for (int i = 2; i < argc; ) {
         if (strcmp(argv[i], "-change") == 0 && i + 2 < argc) {
+            FM_ROOM(nchanges, FM_MAX_CHANGES, "-change");
             changes[nchanges].old_path = argv[i+1];
             changes[nchanges].new_path = argv[i+2];
             nchanges++;
@@ -185,8 +254,9 @@ int main(int argc, char **argv) {
             strip_bv = 1;
             i++;
         } else if (strcmp(argv[i], "-rename_seg") == 0 && i + 2 < argc) {
-            /* segname is char[16]; compat/rename_segment.c:81 refuses a
-             * newname longer than that outright. Before this check,
+            /* segname is char[16]; mseg_name_fits (src/segname.h) is the
+             * shared predicate the rename_segment grammar refuses a longer
+             * newname with, before any I/O. Before this check,
              * process_macho's strncpy(seg->segname, ..., 16) below silently
              * truncated instead -- same operation, two disagreeing
              * implementations. Refuse here too, before any file I/O, same
@@ -195,6 +265,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "new segment name longer than 16 bytes: %s\n", argv[i+2]);
                 return 1;
             }
+            FM_ROOM(nrenames, FM_MAX_RENAMES, "-rename_seg");
             renames[nrenames].old_name = argv[i+1];
             renames[nrenames].new_name = argv[i+2];
             nrenames++;

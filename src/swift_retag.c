@@ -7,7 +7,7 @@
  * The one thing that did change is the return VALUE: process() collapsed "not
  * a Mach-O" and "raced" into the same 0 it uses for "nothing to retag", which
  * left a caller unable to tell a refusal from a silent success. Those two now
- * have their own codes (swift_retag.h). compat/retag_swift_classes.c maps them
+ * have their own codes (swift_retag.h). compat/retag_swift_classes.sh maps them
  * back onto the same "skip quietly, not an error" it always did, so nothing it
  * prints or returns moved; cli/macho9.c's `retag-swift` verb reports them.
  */
@@ -47,7 +47,7 @@ struct mswift_find_ctx {
  * section-name lookup within it. That is deliberately NOT the same as
  * mi_find_segment(im, want_seg) + mi_find_section: this toolkit's own segment
  * rename (src/segname.h) can leave a binary with two segments sharing a name
- * (see compat/rename_segment.c's header comment), and mi_find_segment only
+ * (see src/segname.h's header comment), and mi_find_segment only
  * ever returns the first. A binary that has been through that rename first
  * (__DATA_CONST -> __DATA) would then have the wanted section in the SECOND
  * "__DATA" segment, which mi_find_section's first-match-only search would miss
