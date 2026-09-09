@@ -12,6 +12,17 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 | `rename_segment` | `__DATA_CONST` → `__DATA`, so 10.9's libobjc finds the metadata |
 | `retag_swift_classes` | move the is-Swift tag from the stable-ABI bit to the legacy one |
 
+## Layout
+
+- `src/` — the shared toolkit library (`macho9core`): image parsing, ULEB,
+  ordinals, fat-arch validation, export-trie rebuild, `__LINKEDIT` bumping,
+  header growth, LC-kind tables, the atomic-write helper.
+- `compat/` — these six tools' own sources. They predate `macho9` and are kept
+  under their original names because `install.sh` builds some of them by
+  name; see `compat/README.md`.
+- `cli/` — `macho9`, the multi-verb CLI built on `src/`.
+- `tests/` — everything `ctest` runs, plus the fixtures it reads.
+
 ## Building
 
 ```sh

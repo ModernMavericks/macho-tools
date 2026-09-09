@@ -67,7 +67,12 @@ set(MACHO_TOOLS
   retag_swift_classes)
 
 foreach(tool IN LISTS MACHO_TOOLS)
-  add_executable(${tool} ${tool}.c)
+  # compat/: these six predate macho9 and are kept, under their original
+  # names, only because mavericksforever.com/claude/install.sh builds
+  # patch_macho, change_dylib and add_version_min BY THOSE NAMES -- a real
+  # external consumer of this repo. See compat/README.md. Only the source
+  # path moved (Task 5, "empty the root"); the installed binary name did not.
+  add_executable(${tool} compat/${tool}.c)
   target_compile_options(${tool} PRIVATE -O2 -Wall)
   # The compat guard is the in-CI equivalence proof: no 10.9 runner validates
   # these, so the build fails if a binary declares a floor above 10.9 or links a
