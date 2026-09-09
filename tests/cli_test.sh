@@ -234,7 +234,7 @@ rc=0
 [ "$rc" -eq 2 ] \
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 2" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 2"
-for v in verify info grow minos lc dylib rpath; do
+for v in verify info grow minos lc dylib rpath segment retag-swift; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
@@ -247,11 +247,13 @@ if echo "$caps" | grep -q "^verb declassify"; then
 else
     ok "capabilities: declassify correctly absent"
 fi
-# rpath -insert is NOT implemented; capabilities must not claim it.
+# rpath -insert IS implemented now; capabilities must claim it. A wrapper has
+# no other way to learn this build can place a search path FIRST, which
+# docs/PROPOSAL.md calls a new capability change_dylib never had.
 if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
-    bad "capabilities: rpath insert" "advertised but not implemented"
+    ok "capabilities: rpath insert advertised"
 else
-    ok "capabilities: rpath insert correctly absent"
+    bad "capabilities: rpath insert" "implemented but not advertised"
 fi
 
 # ----------------------------------------------------------------------------
@@ -292,9 +294,9 @@ IFS="$oldifs"
 
 # Same idea for dylib/rpath ops=: every op --capabilities advertises for a
 # verb must be recognized by that verb's own parser (never "unknown or
-# incomplete operation"), and dylib/rpath must each still refuse an op that
-# belongs to the OTHER's vocabulary but not its own (rpath has no -insert or
-# -reexport in change_dylib -- see DYLIB_OPS in cli/macho9.c).
+# incomplete operation"), and rpath must still refuse an op that belongs to
+# dylib's vocabulary but not its own (-reexport: LC_RPATH has only one kind
+# -- see DYLIB_OPS in cli/macho9.c).
 vocab_ops_fail=0
 check_ops_accepted() {
     # $1=verb (dylib|rpath)  $2=ops csv from capabilities
@@ -321,15 +323,17 @@ rpath_ops=$(echo "$caps" | sed -n 's/^verb rpath .*ops=\([^ ]*\).*/\1/p')
 check_ops_accepted dylib "$dylib_ops"
 check_ops_accepted rpath "$rpath_ops"
 [ "$vocab_ops_fail" -eq 0 ] && ok "capabilities vocab: every advertised dylib/rpath op is accepted by its own parser"
-# rpath's ops= must not include insert/reexport (change_dylib has neither
-# for rpath) -- if it ever did, the parser would refuse it (case above would
-# catch that), but this also confirms capabilities didn't just stop
-# advertising them for an unrelated reason.
+# rpath's ops= must not include reexport: LC_RPATH has exactly one kind, so
+# there is nothing for a reexport to promote it to. (insert used to be listed
+# here too; it is a real operation now, and the assertion further up requires
+# it to be advertised.) If reexport ever appeared the parser would refuse it
+# and the case above would catch that, but this also confirms capabilities
+# didn't just stop advertising it for an unrelated reason.
 case ",$rpath_ops," in
-    *,insert,*|*,reexport,*)
-        bad "capabilities vocab: rpath ops=" "unexpectedly advertises insert/reexport: $rpath_ops" ;;
+    *,reexport,*)
+        bad "capabilities vocab: rpath ops=" "unexpectedly advertises reexport: $rpath_ops" ;;
     *)
-        ok "capabilities vocab: rpath ops= correctly omits insert/reexport" ;;
+        ok "capabilities vocab: rpath ops= correctly omits reexport" ;;
 esac
 
 # declassify itself must error, not silently do nothing or crash.
@@ -359,7 +363,7 @@ mkdir -p "$T/alone"
 cp "$MACHO9" "$T/alone/macho9"
 alone_caps=$("$T/alone/macho9" --capabilities)
 alone_missing=""
-for v in verify info grow minos lc dylib rpath; do
+for v in verify info grow minos lc dylib rpath segment retag-swift; do
     echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
 done
 [ -z "$alone_missing" ] && ok "alone: --capabilities still advertises every verb with no sibling present" \
@@ -888,15 +892,485 @@ else
     ok "rpath: -delete removed the search path"
 fi
 
-# rpath -insert is a documented gap in this build, not a silent downgrade.
-if "$MACHO9" rpath "$T/rpath_fixture" -insert "/tmp/cli_test_inserted_rpath" \
-    >/dev/null 2>"$T/rpath_insert.err"; then
-    bad "rpath: -insert" "should be refused (not implemented)"
+# ============================================================================
+# rpath -insert: the search path lands FIRST, not last
+# ============================================================================
+# THE ONLY THING WORTH ASSERTING HERE IS ORDER. dyld takes the first rpath
+# that resolves, so an -insert whose result merely CONTAINS the new path is
+# indistinguishable from an -append that silently stood in for it -- which is
+# exactly the wrong answer this operation exists to rule out
+# (docs/PROPOSAL.md: "flipping their order flips which one loads"). Every
+# assertion below therefore compares POSITIONS in `macho9 info`'s rpath list,
+# never mere presence.
+#
+# `grep -n` over info's own stable "  rpath=" lines gives those positions
+# without parsing otool.
+rpath_positions() { "$MACHO9" info "$1" | grep -n "^  rpath=" | sed 's/:.*rpath=/ /'; }
+rpath_first() { rpath_positions "$1" | head -1 | sed 's/^[0-9]* //'; }
+rpath_last()  { rpath_positions "$1" | tail -1 | sed 's/^[0-9]* //'; }
+
+# Two rpaths baked in at link time, so "first" is a real position among
+# several rather than the only one there is.
+"$CC" -O2 $FIXTURE_FLAGS \
+    -Xlinker -rpath -Xlinker "/tmp/cli_test_ins_existing_one" \
+    -Xlinker -rpath -Xlinker "/tmp/cli_test_ins_existing_two" \
+    "$T/main.c" "$T/liba.dylib" -o "$T/rpath_insert_fixture"
+[ "$(rpath_first "$T/rpath_insert_fixture")" = "/tmp/cli_test_ins_existing_one" ] \
+    && ok "rpath -insert: fixture starts with the linker's first rpath" \
+    || bad "rpath -insert: precondition" "expected /tmp/cli_test_ins_existing_one first, got: $(rpath_positions "$T/rpath_insert_fixture")"
+
+"$MACHO9" rpath "$T/rpath_insert_fixture" -insert "/tmp/cli_test_inserted_rpath" \
+    >"$T/rpath_insert.out" 2>&1 || bad "rpath: -insert exit" "$(cat "$T/rpath_insert.out")"
+[ "$(rpath_first "$T/rpath_insert_fixture")" = "/tmp/cli_test_inserted_rpath" ] \
+    && ok "rpath: -insert put the new search path FIRST" \
+    || bad "rpath: -insert" "inserted path is not first: $(rpath_positions "$T/rpath_insert_fixture")"
+# ...and did not eat either existing one, in either order.
+ins_all=$(rpath_positions "$T/rpath_insert_fixture" | sed 's/^[0-9]* //' | tr '\n' ' ')
+[ "$ins_all" = "/tmp/cli_test_inserted_rpath /tmp/cli_test_ins_existing_one /tmp/cli_test_ins_existing_two " ] \
+    && ok "rpath: -insert kept both existing search paths, in their original order, behind it" \
+    || bad "rpath: -insert order" "unexpected rpath order: $ins_all"
+
+# THE ASSERTION THAT MAKES THE ONE ABOVE MEAN SOMETHING: -append on the SAME
+# fixture must put its path LAST. If -insert were quietly implemented as
+# -append, this pair could not both hold -- and the "first" assertion alone
+# would pass against a fixture whose new path happened to sort first.
+"$CC" -O2 $FIXTURE_FLAGS \
+    -Xlinker -rpath -Xlinker "/tmp/cli_test_ins_existing_one" \
+    -Xlinker -rpath -Xlinker "/tmp/cli_test_ins_existing_two" \
+    "$T/main.c" "$T/liba.dylib" -o "$T/rpath_append_cmp_fixture"
+"$MACHO9" rpath "$T/rpath_append_cmp_fixture" -append "/tmp/cli_test_inserted_rpath" \
+    >"$T/rpath_append_cmp.out" 2>&1 || bad "rpath: -append (comparison) exit" "$(cat "$T/rpath_append_cmp.out")"
+[ "$(rpath_last "$T/rpath_append_cmp_fixture")" = "/tmp/cli_test_inserted_rpath" ] \
+    && [ "$(rpath_first "$T/rpath_append_cmp_fixture")" = "/tmp/cli_test_ins_existing_one" ] \
+    && ok "rpath: -append put the very same path LAST -- so -insert is not -append in disguise" \
+    || bad "rpath: -append vs -insert" "append did not land last: $(rpath_positions "$T/rpath_append_cmp_fixture")"
+
+# An image with NO existing rpath still honours -insert; there is simply
+# nothing to be in front of. Combined with an -append in the same run, the
+# inserted one must still come out first -- the case where a naive
+# implementation that emits inserts after appends gets it backwards.
+build_main "$T/rpath_insert_empty"
+"$MACHO9" info "$T/rpath_insert_empty" | grep -q "^  rpath=" \
+    && bad "rpath -insert: empty precondition" "fixture unexpectedly already has an rpath" \
+    || ok "rpath -insert: empty-case fixture has no rpath to start with"
+"$MACHO9" rpath "$T/rpath_insert_empty" -insert "/tmp/cli_test_empty_ins" -append "/tmp/cli_test_empty_app" \
+    >"$T/rpath_insert_empty.out" 2>&1 || bad "rpath: -insert (no existing) exit" "$(cat "$T/rpath_insert_empty.out")"
+empty_all=$(rpath_positions "$T/rpath_insert_empty" | sed 's/^[0-9]* //' | tr '\n' ' ')
+[ "$empty_all" = "/tmp/cli_test_empty_ins /tmp/cli_test_empty_app " ] \
+    && ok "rpath: -insert lands before -append even in an image that had no rpaths" \
+    || bad "rpath: -insert (no existing)" "unexpected order: $empty_all"
+
+# The rewritten binary still runs: an LC_RPATH inserted in the wrong place, or
+# one that desynchronized the load-command table, shows up here as a dyld
+# failure rather than as a passing byte comparison.
+if [ "$signing_enforced" -eq 1 ]; then
+    skip "rpath: -insert result still runs" \
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of macho9 by the host probe above)"
+elif (cd "$T" && ./rpath_insert_fixture) >"$T/rpath_insert_run.out" 2>&1; then
+    ok "rpath: -insert result still runs"
 else
-    ok "rpath: -insert refused"
+    bad "rpath: -insert result" "the binary no longer runs: $(cat "$T/rpath_insert_run.out")"
 fi
-grep -qi "not implemented" "$T/rpath_insert.err" && ok "rpath: -insert says why" \
-    || bad "rpath: -insert message" "no 'not implemented' on stderr"
+
+# ============================================================================
+# segment: rename every matching LC_SEGMENT_64, and its sections' copy
+# ============================================================================
+# `macho9 info` prints a segment's segname but NOT the copy of that name each
+# section_64 carries, and the section copies are half of what this verb must
+# change (getsectiondata matches on the section's copy -- see
+# compat/rename_segment.c's header comment). segread below is a purpose-built
+# reader for exactly that, in the same spirit as change_dylib_test.sh's
+# ordinal_of/fatcheck: nothing here parses otool.
+#
+# It doubles as the fat-container half of this section. Building the fat file
+# by hand rather than with lipo is change_dylib_test.sh's rule and its reason:
+# what lipo will accept is not this suite's to pin. Slice 0 is the real
+# 64-bit binary; slice 1 is a non-Mach-O blob that mr_apply_file must pass
+# through byte for byte -- which is also the "only SOME slices match" case.
+cat > "$T/segread.c" <<'EOF'
+/* segread <mode> <file> [args]
+ *
+ *   segs  FILE          print "SEG <segname>" and "SECT <segname>/<sectname>"
+ *                       for every LC_SEGMENT_64, in load order
+ *   wrap  OUT THIN BLOB build a classic (32-bit fat_arch) fat container:
+ *                       slice 0 = THIN, slice 1 = BLOB (not a Mach-O)
+ *   dump  FILE IDX OUT  write fat slice IDX to OUT
+ *
+ * Names are char[16] and need not be NUL-terminated; printed with %.16s and
+ * compared nowhere, so a 16-byte name comes out whole. Big-endian fat header
+ * fields are written/read by hand -- FAT_MAGIC on disk is always big-endian.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <mach-o/loader.h>
+#include <mach-o/fat.h>
+
+static uint32_t be32(uint32_t v) {
+    return ((v & 0xffu) << 24) | ((v & 0xff00u) << 8) |
+           ((v & 0xff0000u) >> 8) | ((v >> 24) & 0xffu);
+}
+
+static uint8_t *slurp(const char *path, size_t *n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); exit(2); }
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = malloc((size_t)sz);
+    if (!b || fread(b, 1, (size_t)sz, f) != (size_t)sz) { fprintf(stderr, "read %s\n", path); exit(2); }
+    fclose(f);
+    *n = (size_t)sz;
+    return b;
+}
+
+static void spit(const char *path, const uint8_t *b, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); exit(2); }
+    if (fwrite(b, 1, n, f) != n) { perror("fwrite"); exit(2); }
+    fclose(f);
+}
+
+int main(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: segread segs|wrap|dump ...\n"); return 2; }
+
+    if (strcmp(argv[1], "segs") == 0) {
+        size_t n; uint8_t *b = slurp(argv[2], &n);
+        const struct mach_header_64 *h = (const struct mach_header_64 *)b;
+        if (n < sizeof *h || h->magic != MH_MAGIC_64) { fprintf(stderr, "not a thin 64-bit Mach-O\n"); return 2; }
+        const uint8_t *p = b + sizeof *h;
+        for (uint32_t i = 0; i < h->ncmds; i++) {
+            const struct load_command *lc = (const struct load_command *)p;
+            if (lc->cmd == LC_SEGMENT_64) {
+                const struct segment_command_64 *sg = (const struct segment_command_64 *)lc;
+                printf("SEG %.16s\n", sg->segname);
+                const struct section_64 *sc = (const struct section_64 *)(sg + 1);
+                for (uint32_t k = 0; k < sg->nsects; k++)
+                    printf("SECT %.16s/%.16s\n", sc[k].segname, sc[k].sectname);
+            }
+            p += lc->cmdsize;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "wrap") == 0) {
+        if (argc != 5) { fprintf(stderr, "usage: segread wrap OUT THIN BLOB\n"); return 2; }
+        size_t tn, bn;
+        uint8_t *tb = slurp(argv[3], &tn), *bb = slurp(argv[4], &bn);
+        const struct mach_header_64 *h = (const struct mach_header_64 *)tb;
+        if (tn < sizeof *h || h->magic != MH_MAGIC_64) { fprintf(stderr, "slice 0 is not a thin 64-bit Mach-O\n"); return 2; }
+        uint32_t align = 12;                       /* 4096, what real fat files use */
+        uint32_t hdrlen = (uint32_t)(sizeof(struct fat_header) + 2 * sizeof(struct fat_arch));
+        uint32_t off0 = (hdrlen + 4095u) & ~4095u;
+        uint32_t off1 = (uint32_t)((off0 + tn + 4095u) & ~4095u);
+        size_t total = off1 + bn;
+        uint8_t *out = calloc(1, total);
+        struct fat_header *fh = (struct fat_header *)out;
+        fh->magic = be32(FAT_MAGIC);
+        fh->nfat_arch = be32(2);
+        struct fat_arch *ar = (struct fat_arch *)(out + sizeof *fh);
+        ar[0].cputype = be32((uint32_t)h->cputype);
+        ar[0].cpusubtype = be32((uint32_t)h->cpusubtype);
+        ar[0].offset = be32(off0); ar[0].size = be32((uint32_t)tn); ar[0].align = be32(align);
+        ar[1].cputype = be32(7);   /* CPU_TYPE_X86, a slice this rewriter skips */
+        ar[1].cpusubtype = be32(3);
+        ar[1].offset = be32(off1); ar[1].size = be32((uint32_t)bn); ar[1].align = be32(align);
+        memcpy(out + off0, tb, tn);
+        memcpy(out + off1, bb, bn);
+        spit(argv[2], out, total);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "dump") == 0) {
+        if (argc != 5) { fprintf(stderr, "usage: segread dump FILE IDX OUT\n"); return 2; }
+        size_t n; uint8_t *b = slurp(argv[2], &n);
+        const struct fat_header *fh = (const struct fat_header *)b;
+        if (n < sizeof *fh || be32(fh->magic) != FAT_MAGIC) { fprintf(stderr, "not a fat file\n"); return 2; }
+        uint32_t narch = be32(fh->nfat_arch);
+        uint32_t idx = (uint32_t)strtoul(argv[3], NULL, 10);
+        if (idx >= narch) { fprintf(stderr, "slice %u of %u\n", idx, narch); return 2; }
+        const struct fat_arch *ar = (const struct fat_arch *)(b + sizeof *fh);
+        uint32_t off = be32(ar[idx].offset), sz = be32(ar[idx].size);
+        if ((size_t)off + sz > n) { fprintf(stderr, "slice out of bounds\n"); return 2; }
+        spit(argv[4], b + off, sz);
+        return 0;
+    }
+
+    fprintf(stderr, "unknown mode: %s\n", argv[1]);
+    return 2;
+}
+EOF
+"$CC" -O2 -o "$T/segread" "$T/segread.c"
+
+# A fixture with a real __DATA segment whose sections therefore carry
+# "__DATA" in their own segname fields. It is built to have MORE THAN ONE
+# such section -- an initialised global (__data), a zero-initialised one
+# (__bss/__common) and a call through libSystem (__la_symbol_ptr) -- because
+# the rename has to walk every section of the matched segment, and a
+# single-section fixture cannot tell "renames the sections" from "renames the
+# first section".
+cat > "$T/segmain.c" <<'EOF'
+#include <string.h>
+int g_counter = 7;
+int g_zero;
+char g_buf[64];
+int main(void) {
+    g_counter++;
+    memset(g_buf, 'x', sizeof g_buf);
+    g_zero = g_buf[0] == 'x';
+    return (g_counter == 8 && g_zero) ? 0 : 1;
+}
+EOF
+"$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_fixture"
+"$T/segread" segs "$T/segment_fixture" > "$T/segs_before"
+grep -q "^SEG __DATA$" "$T/segs_before" && grep -q "^SECT __DATA/" "$T/segs_before" \
+    && ok "segment: fixture has a __DATA segment whose sections name it" \
+    || bad "segment: precondition" "no __DATA segment/section in: $(cat "$T/segs_before")"
+
+"$MACHO9" segment "$T/segment_fixture" __DATA __DATA_R9 \
+    >"$T/segment.out" 2>&1 || bad "segment: exit" "$(cat "$T/segment.out")"
+"$T/segread" segs "$T/segment_fixture" > "$T/segs_after"
+grep -q "^SEG __DATA$" "$T/segs_after" \
+    && bad "segment: the segment itself" "a segment is still named __DATA: $(cat "$T/segs_after")" \
+    || ok "segment: renamed the LC_SEGMENT_64 itself"
+grep -q "^SEG __DATA_R9$" "$T/segs_after" \
+    && ok "segment: the new name is what landed" \
+    || bad "segment: new name" "no __DATA_R9 segment in: $(cat "$T/segs_after")"
+# The half `macho9 info` cannot see: every section's own copy of the name.
+if grep -q "^SECT __DATA/" "$T/segs_after"; then
+    bad "segment: section segnames" "a section still names __DATA: $(cat "$T/segs_after")"
+else
+    ok "segment: renamed each section's copy of the segment name too"
+fi
+# `|| true`: grep -c exits 1 when the count is 0, and a bare command exiting
+# nonzero under this script's `set -e` would kill the whole suite (see the
+# reached_end guard at the top). 0 is a legitimate -- indeed the interesting
+# -- answer here, so it must reach the comparison rather than the trap.
+nsect_before=$(grep -c "^SECT __DATA/" "$T/segs_before" || true)
+nsect_after=$(grep -c "^SECT __DATA_R9/" "$T/segs_after" || true)
+[ "$nsect_before" -gt 0 ] && [ "$nsect_before" -eq "$nsect_after" ] \
+    && ok "segment: all $nsect_before section(s) moved to the new name, none lost" \
+    || bad "segment: section count" "$nsect_before sections named __DATA before, $nsect_after named __DATA_R9 after"
+# Nothing else moved: __TEXT and its sections are untouched.
+grep -q "^SEG __TEXT$" "$T/segs_after" && grep -q "^SECT __TEXT/__text$" "$T/segs_after" \
+    && ok "segment: left every non-matching segment alone" \
+    || bad "segment: collateral" "__TEXT changed: $(cat "$T/segs_after")"
+if [ "$signing_enforced" -eq 1 ]; then
+    skip "segment: the renamed binary still runs" \
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of macho9 by the host probe above)"
+elif (cd "$T" && ./segment_fixture) >"$T/segment_run.out" 2>&1; then
+    ok "segment: the renamed binary still runs"
+else
+    bad "segment: result" "the renamed binary no longer runs: $(cat "$T/segment_run.out")"
+fi
+
+# A NEW name of exactly 16 bytes fills the field with no room for a
+# terminator -- the boundary rename_segment has always accepted, and the one a
+# strcpy-based implementation gets wrong by writing a 17th byte.
+"$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_16_fixture"
+"$MACHO9" segment "$T/segment_16_fixture" __DATA ABCDEFGHIJKLMNOP \
+    >"$T/segment16.out" 2>&1 || bad "segment: 16-byte name exit" "$(cat "$T/segment16.out")"
+"$T/segread" segs "$T/segment_16_fixture" | grep -q "^SEG ABCDEFGHIJKLMNOP$" \
+    && ok "segment: accepts a NEW name of exactly 16 bytes and writes it whole" \
+    || bad "segment: 16-byte name" "got: $("$T/segread" segs "$T/segment_16_fixture")"
+# 17 is one too many, and must be refused before any I/O.
+"$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_17_fixture"
+cp "$T/segment_17_fixture" "$T/segment_17_before"
+rc=0
+"$MACHO9" segment "$T/segment_17_fixture" __DATA ABCDEFGHIJKLMNOPQ \
+    >"$T/segment17.out" 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "segment: refuses a 17-byte NEW name with the documented refusal code" \
+    || bad "segment: 17-byte name" "expected exit 2, got $rc: $(cat "$T/segment17.out")"
+cmp -s "$T/segment_17_fixture" "$T/segment_17_before" \
+    && ok "segment: a refused rename left the file byte-for-byte unchanged" \
+    || bad "segment: 17-byte name" "the file was modified despite the refusal"
+
+# A segment name nothing matches must leave the file alone -- and say so.
+"$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_nomatch_fixture"
+cp "$T/segment_nomatch_fixture" "$T/segment_nomatch_before"
+"$MACHO9" segment "$T/segment_nomatch_fixture" __NOSUCHSEG __OTHER \
+    >"$T/segment_nomatch.out" 2>&1 || bad "segment: no-match exit" "$(cat "$T/segment_nomatch.out")"
+cmp -s "$T/segment_nomatch_fixture" "$T/segment_nomatch_before" \
+    && ok "segment: a rename that matched nothing did not touch the file" \
+    || bad "segment: no-match" "the file changed although no segment matched"
+
+# --- segment on a FAT container --------------------------------------------
+# The case the retirement plan singles out: fix_macho's -rename_seg is
+# fat-capable and folds into this verb, so this verb has to be too. The
+# non-Mach-O second slice must come back byte for byte.
+"$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_fat_slice"
+printf 'not a mach-o at all, just bytes to be preserved verbatim.\n' > "$T/segment_fat_blob"
+"$T/segread" wrap "$T/segment_fat" "$T/segment_fat_slice" "$T/segment_fat_blob"
+"$MACHO9" segment "$T/segment_fat" __DATA __DATA_R9 \
+    >"$T/segment_fat.out" 2>&1 || bad "segment: fat exit" "$(cat "$T/segment_fat.out")"
+"$T/segread" dump "$T/segment_fat" 0 "$T/segment_fat_slice0"
+"$T/segread" segs "$T/segment_fat_slice0" > "$T/segs_fat"
+grep -q "^SEG __DATA_R9$" "$T/segs_fat" && ! grep -q "^SEG __DATA$" "$T/segs_fat" \
+    && ok "segment: renamed the 64-bit slice of a fat container" \
+    || bad "segment: fat slice 0" "expected __DATA_R9 and no __DATA in: $(cat "$T/segs_fat")"
+grep -q "^SECT __DATA/" "$T/segs_fat" \
+    && bad "segment: fat slice 0 sections" "a section still names __DATA: $(cat "$T/segs_fat")" \
+    || ok "segment: renamed the fat slice's section segnames too"
+"$T/segread" dump "$T/segment_fat" 1 "$T/segment_fat_blob_after"
+cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
+    && ok "segment: passed the non-Mach-O fat slice through byte for byte" \
+    || bad "segment: fat slice 1" "the slice this rewriter cannot read was modified"
+
+# ============================================================================
+# retag-swift: the is-Swift tag moves from the stable-ABI bit to the legacy one
+# ============================================================================
+# The observable is the two low bits of each class record's data word, so the
+# fixture is a hand-built Mach-O with a known layout and the reader is the
+# same program that wrote it -- the leaf-tool-crashes.sh pattern. Nothing on
+# this host can emit a real Swift binary (10.9 predates Swift entirely), and a
+# fixture whose bits nothing in the repo chose would prove less, not more.
+cat > "$T/mkswift.c" <<'EOF'
+/* mkswift make OUT   -- write a tiny 64-bit Mach-O with one __DATA segment
+ *                       holding __objc_classlist -> one class record, whose
+ *                       isa points at a metaclass record. Both records carry
+ *                       the STABLE-ABI is-Swift tag (low bits == 2).
+ * mkswift tags FILE   -- print "class <low2> <word>" then "meta <low2> <word>"
+ *                       for the two records this layout puts at fixed offsets.
+ *
+ * Fixed layout (file offsets == vm offsets; the segment maps at vmaddr
+ * VMBASE with fileoff 0, so file_off(va) == va - VMBASE):
+ *   0x800  __objc_classlist: one 8-byte VA, pointing at the class record
+ *   0x900  class record:     +0 isa -> metaclass VA, +32 data word
+ *   0x940  metaclass record: +0 isa == 0,            +32 data word
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <mach-o/loader.h>
+
+#define FSIZE      0x1000
+#define VMBASE     0x100000000ULL
+#define LISTOFF    0x800
+#define CLASSOFF   0x900
+#define METAOFF    0x940
+#define DATAOFF    32
+#define PAYLOAD    0x00000001000009c0ULL   /* plausible non-tag bits, preserved */
+
+static void set_name16(char *field, const char *name) {
+    size_t len = strlen(name);
+    if (len > 16) len = 16;
+    memset(field, 0, 16);
+    memcpy(field, name, len);
+}
+
+static uint8_t *slurp(const char *path, size_t *n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); exit(2); }
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *b = malloc((size_t)sz);
+    if (!b || fread(b, 1, (size_t)sz, f) != (size_t)sz) { fprintf(stderr, "read %s\n", path); exit(2); }
+    fclose(f);
+    *n = (size_t)sz;
+    return b;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: mkswift make|tags FILE\n"); return 2; }
+
+    if (strcmp(argv[1], "tags") == 0) {
+        size_t n; uint8_t *b = slurp(argv[2], &n);
+        if (n < FSIZE) { fprintf(stderr, "fixture truncated\n"); return 2; }
+        uint64_t c = *(uint64_t *)(b + CLASSOFF + DATAOFF);
+        uint64_t m = *(uint64_t *)(b + METAOFF + DATAOFF);
+        printf("class %llu 0x%llx\n", (unsigned long long)(c & 3), (unsigned long long)c);
+        printf("meta %llu 0x%llx\n", (unsigned long long)(m & 3), (unsigned long long)m);
+        return 0;
+    }
+    if (strcmp(argv[1], "make") != 0) { fprintf(stderr, "unknown mode\n"); return 2; }
+
+    uint8_t *buf = calloc(1, FSIZE);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->cpusubtype = 3;
+    h->filetype = MH_EXECUTE;
+    h->ncmds = 1;
+
+    struct segment_command_64 *sg = (struct segment_command_64 *)(buf + sizeof *h);
+    sg->cmd = LC_SEGMENT_64;
+    sg->cmdsize = (uint32_t)(sizeof *sg + 2 * sizeof(struct section_64));
+    set_name16(sg->segname, "__DATA");
+    sg->vmaddr = VMBASE;
+    sg->vmsize = FSIZE;
+    sg->fileoff = 0;
+    sg->filesize = FSIZE;
+    sg->nsects = 2;
+    h->sizeofcmds = sg->cmdsize;
+
+    struct section_64 *sc = (struct section_64 *)(sg + 1);
+    set_name16(sc[0].sectname, "__objc_classlist");
+    set_name16(sc[0].segname, "__DATA");
+    sc[0].addr = VMBASE + LISTOFF;
+    sc[0].size = 8;
+    sc[0].offset = LISTOFF;
+    set_name16(sc[1].sectname, "__objc_data");
+    set_name16(sc[1].segname, "__DATA");
+    sc[1].addr = VMBASE + CLASSOFF;
+    sc[1].size = 0x100;
+    sc[1].offset = CLASSOFF;
+
+    *(uint64_t *)(buf + LISTOFF) = VMBASE + CLASSOFF;
+    *(uint64_t *)(buf + CLASSOFF) = VMBASE + METAOFF;   /* class->isa */
+    *(uint64_t *)(buf + CLASSOFF + DATAOFF) = PAYLOAD | 2;
+    *(uint64_t *)(buf + METAOFF) = 0;                   /* metaclass->isa */
+    *(uint64_t *)(buf + METAOFF + DATAOFF) = PAYLOAD | 2;
+
+    FILE *f = fopen(argv[2], "wb");
+    if (!f) { perror("fopen"); return 1; }
+    if (fwrite(buf, 1, FSIZE, f) != FSIZE) { perror("fwrite"); fclose(f); return 1; }
+    fclose(f);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mkswift" "$T/mkswift.c"
+"$T/mkswift" make "$T/swift_fixture"
+tags_before=$("$T/mkswift" tags "$T/swift_fixture")
+[ "$tags_before" = "class 2 0x1000009c2
+meta 2 0x1000009c2" ] \
+    && ok "retag-swift: fixture starts with both records on the stable-ABI bit" \
+    || bad "retag-swift: precondition" "unexpected starting tags: $tags_before"
+
+"$MACHO9" retag-swift "$T/swift_fixture" >"$T/retag.out" 2>&1 \
+    || bad "retag-swift: exit" "$(cat "$T/retag.out")"
+tags_after=$("$T/mkswift" tags "$T/swift_fixture")
+[ "$tags_after" = "class 1 0x1000009c1
+meta 1 0x1000009c1" ] \
+    && ok "retag-swift: moved both tags to the legacy bit, leaving every other bit alone" \
+    || bad "retag-swift" "expected both records tagged 1 with 0x...9c1, got: $tags_after"
+# Both halves of the pair: the class AND the metaclass its isa points at. The
+# count in the message is how we know the metaclass was reached at all.
+grep -q "retagged 2 class record(s)" "$T/retag.out" \
+    && ok "retag-swift: reported both the class and its metaclass" \
+    || bad "retag-swift: count" "expected 2 records, got: $(cat "$T/retag.out")"
+
+# Idempotent: a second run finds nothing on the stable bit, says 0, and does
+# not flip anything back.
+cp "$T/swift_fixture" "$T/swift_twice_before"
+"$MACHO9" retag-swift "$T/swift_fixture" >"$T/retag2.out" 2>&1 \
+    || bad "retag-swift: second run exit" "$(cat "$T/retag2.out")"
+grep -q "retagged 0 class record(s)" "$T/retag2.out" \
+    && ok "retag-swift: a second run retags nothing" \
+    || bad "retag-swift: idempotence" "expected 0 records, got: $(cat "$T/retag2.out")"
+cmp -s "$T/swift_fixture" "$T/swift_twice_before" \
+    && ok "retag-swift: a run with nothing to do left the file untouched" \
+    || bad "retag-swift: idempotence" "the file changed on a no-op run"
+
+# Handed something it cannot read, this verb SAYS SO rather than exiting 0
+# with no output -- the whole reason it does not just forward the old tool's
+# bare "return 0". A fat container is the realistic case: this verb is
+# thin-only, exactly like retag_swift_classes.
+rc=0
+"$MACHO9" retag-swift "$T/segment_fat" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "retag-swift: refuses a fat container with the documented refusal code" \
+    || bad "retag-swift: fat" "expected exit 2, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
+grep -q "not a readable 64-bit Mach-O" "$T/retag_fat.err" \
+    && ok "retag-swift: says why it refused, instead of silently doing nothing" \
+    || bad "retag-swift: fat message" "no explanation on stderr: $(cat "$T/retag_fat.err")"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"

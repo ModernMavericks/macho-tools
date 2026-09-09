@@ -7,6 +7,8 @@
  *   macho9 declassify IN OUT
  *   macho9 dylib FILE [--allow-grow] OP...   -replace -delete -append -insert -reexport
  *   macho9 rpath FILE [--allow-grow] OP...   -replace -delete -append -insert
+ *   macho9 segment FILE OLD NEW
+ *   macho9 retag-swift FILE
  *   macho9 lc FILE -delete KIND
  *   macho9 grow FILE N
  *   macho9 minos FILE 10.9
@@ -20,10 +22,12 @@
  *
  * DELEGATION, not reimplementation. Every verb here calls straight into the
  * primitives src/ already builds and tests: `verify`, `info` and `grow` into
- * mg_plausible, mi_open/mi_each_lc and mg_grow_header; `dylib`, `rpath` and
- * `lc` into mr_apply_file (src/rewrite.h); `minos` into mv_add_version_min
- * (src/version_min.h). Each verb is a thin shell over code that already
- * exists in this repo, and each translates this grammar into the ONE
+ * mg_plausible, mi_open/mi_each_lc and mg_grow_header; `dylib`, `rpath`,
+ * `lc` and `segment` into mr_apply_file (src/rewrite.h); `minos` into
+ * mv_add_version_min (src/version_min.h); `retag-swift` into
+ * mswift_retag_file (src/swift_retag.h). Each verb is a thin shell over code
+ * that already exists in this repo, and each translates this grammar into the
+ * ONE
  * implementation -- so the ordinal-renumbering logic that has twice shipped
  * loader-crashing bugs (docs/PROPOSAL.md "verify") is exercised exactly once,
  * however it is reached.
@@ -36,6 +40,14 @@
  * add_version_min.c's into src/version_min.c; both tools now parse their old
  * grammars into the same calls this file makes, so there is no sibling binary
  * to find, and no way for the two front-ends to drift apart.
+ *
+ * `segment` and `retag-swift` are the same arrangement one task later:
+ * rename_segment's rename is src/segname.h and retag_swift_classes' per-file
+ * work is src/swift_retag.h, and each compat tool keeps only its own grammar,
+ * write path, exit code and messages. `segment` reaches the shared rename
+ * THROUGH mr_apply_file rather than calling it directly, which is what gives
+ * this verb fat containers and an atomic write-back that rename_segment has
+ * never had.
  *
  * `declassify` (patch_macho's chained-fixups conversion, ~350 lines of its
  * own) is NOT implemented here yet; it errors clearly rather than pretending.
@@ -57,6 +69,8 @@
 #include "lc_kinds.h"
 #include "atomic_write.h"
 #include "rewrite.h"
+#include "segname.h"
+#include "swift_retag.h"
 #include "version_min.h"
 #include "mach_compat.h"
 
@@ -64,8 +78,8 @@
  * which meant a caller checking only "did this exit nonzero" (still fully
  * supported -- see below) could not tell "macho9 examined FILE and declined,
  * on purpose, because of what it found" (not a Mach-O, not plausible, a
- * KIND/version this build doesn't support, mg_grow_header's own designed
- * refusal) apart from "something actually went wrong running macho9 itself"
+ * KIND/version/segment name this build doesn't support, mg_grow_header's own
+ * designed refusal) apart from "something actually went wrong running macho9 itself"
  * (couldn't open/read/write, malloc failed, a usage error). Refusal is
  * load-bearing throughout this codebase -- "-grow refuses rather than
  * guesses" is a global rule, not an incidental behavior -- so a
@@ -99,11 +113,13 @@
  * print_capabilities' "ops=" list, for the same reason LC_STRIP_KINDS is
  * shared: two hand-maintained lists (the parser's if/else chain and a
  * hardcoded ops= string) had already diverged from each other by the time of
- * review. DOP_NONE for a mode means "not supported in that mode" -- there
- * is no insert or reexport for an LC_RPATH (rpath -insert is a new capability
- * this build does not claim; LC_RPATH has only one kind, so reexport is
- * meaningless for it), so both are simply absent from rpath's derived ops=
- * list and refused by the parser. */
+ * review. DOP_NONE for a mode means "not supported in that mode" -- LC_RPATH
+ * has only one kind, so `reexport` is meaningless for it and is simply absent
+ * from rpath's derived ops= list and refused by the parser. `-insert` IS
+ * supported for both now: docs/PROPOSAL.md calls rpath -insert "a new
+ * capability" change_dylib never had (its grammar has no spelling for it), and
+ * this build implements it -- an LC_RPATH placed ahead of every existing one,
+ * so dyld, which takes the first search path that resolves, tries it first. */
 enum dylib_op_kind {
     DOP_NONE = 0,   /* must stay 0: the ops= filter tests for falsiness */
     DOP_REPLACE,
@@ -123,7 +139,7 @@ static const struct dylib_op DYLIB_OPS[] = {
     { "-replace",  "replace",  2, DOP_REPLACE,  DOP_REPLACE },
     { "-delete",   "delete",   1, DOP_DELETE,   DOP_DELETE  },
     { "-append",   "append",   1, DOP_APPEND,   DOP_APPEND  },
-    { "-insert",   "insert",   1, DOP_INSERT,   DOP_NONE    },
+    { "-insert",   "insert",   1, DOP_INSERT,   DOP_INSERT  },
     { "-reexport", "reexport", 1, DOP_REEXPORT, DOP_NONE    },
 };
 #define N_DYLIB_OPS (sizeof(DYLIB_OPS) / sizeof(DYLIB_OPS[0]))
@@ -176,9 +192,10 @@ static void print_ops_csv(int is_rpath) {
  *         versions=a,b   (minos only) the floors this build can target
  *         flags=a,b      verb-level flags, e.g. allow-grow
  *
- * `dylib` lists all five brief ops; `rpath` deliberately omits `insert` --
- * docs/PROPOSAL.md calls rpath -insert "a new capability" change_dylib never
- * had, and this build still does not implement it, so it is not claimed.
+ * `dylib` lists all five brief ops; `rpath` lists four -- everything but
+ * `reexport`, which LC_RPATH's single kind makes meaningless. Both lists are
+ * derived from DYLIB_OPS, the same table the parser matches against, so
+ * neither can advertise an op the parser would refuse.
  *
  * Every verb listed below is unconditional now. dylib/rpath/lc/minos used to
  * be gated on a sibling binary (change_dylib / add_version_min) being present
@@ -195,6 +212,8 @@ static int print_capabilities(void) {
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
+    printf("verb segment\n");
+    printf("verb retag-swift\n");
     printf("verb minos versions=10.9\n");
     printf("verb lc ops=delete kinds=");
     print_kinds_csv();
@@ -214,14 +233,19 @@ static void usage(const char *prog) {
         "       %s declassify IN OUT                       (not implemented in this build)\n"
         "       %s dylib FILE [--allow-grow] OP...          -replace OLD NEW | -delete PATH |\n"
         "                                                    -append PATH | -insert PATH | -reexport PATH\n"
-        "       %s rpath FILE [--allow-grow] OP...          -replace OLD NEW | -delete PATH | -append PATH\n"
+        "       %s rpath FILE [--allow-grow] OP...          -replace OLD NEW | -delete PATH |\n"
+        "                                                    -append PATH (searched LAST) |\n"
+        "                                                    -insert PATH (searched FIRST)\n"
+        "       %s segment FILE OLD NEW                     rename every segment named OLD, and\n"
+        "                                                    its sections' copy of that name\n"
+        "       %s retag-swift FILE\n"
         "       %s lc FILE -delete KIND [-delete KIND...]   uuid | codesig | source-version |\n"
         "                                                    build-version | code-sign-drs\n"
         "       %s grow FILE N\n"
         "       %s minos FILE 10.9\n"
         "       %s info FILE\n"
         "       %s verify FILE\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* ---- verify: a thin shell over mg_plausible -----------------------------
@@ -484,17 +508,19 @@ static int cmd_lc(int argc, char **argv) {
  *
  * Token-for-token translation into an mr_ops (src/rewrite.h): -replace and
  * -delete become entries in the dylib_changes (or rpath_changes) array,
- * -append and -insert become dylib_appends/rpath_appends and dylib_inserts,
- * -reexport becomes a change with an empty new_path, and `--allow-grow`
- * becomes allow_grow. Position within the OP list does not matter -- the
+ * -append and -insert become the appends/inserts arrays of whichever kind
+ * this verb is, -reexport becomes a change with an empty new_path, and
+ * `--allow-grow` becomes allow_grow. Position within the OP list does not matter -- the
  * rewriter applies whole arrays, not a sequence -- so this does not enforce
  * one; only the order WITHIN each array is meaningful, and that is the order
  * the operations were typed.
  *
- * rpath -insert is not implemented (see print_capabilities' comment) --
- * refuse it explicitly rather than silently downgrading it to -append, which
- * would put the new search path LAST instead of FIRST and change what the
- * brief calls "a new capability" into a wrong answer that merely runs.
+ * -append and -insert are NOT interchangeable for either kind, and the
+ * distinction is the whole point of having both: an appended LC_LOAD_DYLIB
+ * gets the highest library ordinal while an inserted one gets ordinal 1, and
+ * an appended LC_RPATH is the LAST search path dyld tries while an inserted
+ * one is the FIRST. Downgrading either -insert to an -append would produce a
+ * wrong answer that merely runs.
  */
 static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     const char *path = argv[2];
@@ -538,15 +564,14 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         const struct dylib_op *op = &DYLIB_OPS[oi];
         int kind = is_rpath ? op->rpath_kind : op->dylib_kind;
         if (kind == DOP_NONE) {
-            if (is_rpath && strcmp(op->flag, "-insert") == 0) {
-                fprintf(stderr, "macho9 rpath: -insert is not implemented in this build "
-                                "(nothing here places an LC_RPATH ahead of the existing "
-                                "ones; a workaround is deleting and re-adding every other "
-                                "-rpath to reshuffle them, per docs/PROPOSAL.md)\n");
-            } else {
-                fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
-                        is_rpath ? "rpath" : "dylib", tok);
-            }
+            /* An op this table knows but this MODE does not support (today
+             * only `rpath -reexport`) is reported exactly like an op the table
+             * never heard of: from the caller's side both mean "this verb does
+             * not accept that", and --capabilities' ops= list -- built from
+             * this same table -- is where the answer to "then what does it
+             * accept?" lives. */
+            fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
+                    is_rpath ? "rpath" : "dylib", tok);
             return 1;
         }
 
@@ -602,12 +627,75 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     ops.dylib_changes = changes;    ops.n_dylib_changes = nchanges;
     ops.dylib_appends = is_rpath ? NULL : appends;
     ops.n_dylib_appends = is_rpath ? 0 : nappends;
-    ops.dylib_inserts = inserts;    ops.n_dylib_inserts = ninserts;
+    ops.dylib_inserts = is_rpath ? NULL : inserts;
+    ops.n_dylib_inserts = is_rpath ? 0 : ninserts;
     ops.rpath_changes = rchanges;   ops.n_rpath_changes = nrchanges;
     ops.rpath_appends = is_rpath ? appends : NULL;
     ops.n_rpath_appends = is_rpath ? nappends : 0;
+    ops.rpath_inserts = is_rpath ? inserts : NULL;
+    ops.n_rpath_inserts = is_rpath ? ninserts : 0;
     ops.allow_grow = allow_grow;
     return mr_apply_file(path, &ops);
+}
+
+/* ---- segment: a segment rename, routed through mr_apply_file -------------
+ *
+ * The rename itself is mseg_rename_lc (src/segname.h), shared with
+ * compat/rename_segment.c so the two front-ends cannot disagree about what
+ * renaming a segment means. This verb reaches it through an mr_ops rather than
+ * calling it directly, and that is the whole reason the operation lives in
+ * mr_ops at all: mr_apply_file already handles a classic fat container by
+ * rewriting each slice and reassembling, already passes through a slice it
+ * does not understand, and already writes back atomically only when something
+ * changed. rename_segment is thin-only and writes through its own fd; this
+ * verb gets all three for free, which is what the retirement plan needs before
+ * fix_macho's -rename_seg can fold into it.
+ *
+ * The one check that belongs HERE and not down there is the NEW name's length:
+ * a segname field is 16 bytes, and refusing before any I/O -- rather than
+ * silently truncating deep inside a per-slice rewrite -- is what
+ * rename_segment has always done, in the same place, via the same
+ * mseg_name_fits.
+ *
+ * mr_apply_file reports "nothing to change" and exits 0 when no segment
+ * matched. That is deliberately NOT rename_segment's exit 2: this verb hands
+ * back the shared driver's own code, exactly as dylib/rpath/lc do, and Task 2
+ * is where the wrapper decides what the old grammar's callers should see. */
+static int cmd_segment(const char *path, const char *oldname, const char *newname) {
+    if (!mseg_name_fits(newname)) {
+        fprintf(stderr, "macho9 segment: new segment name '%s' is longer than the %d bytes "
+                        "a segname field holds\n", newname, MSEG_NAME_MAX);
+        return EX_REFUSED;
+    }
+    mr_ops ops;
+    memset(&ops, 0, sizeof ops);
+    ops.segment_rename_old = oldname;
+    ops.segment_rename_new = newname;
+    return mr_apply_file(path, &ops);
+}
+
+/* ---- retag-swift: a thin shell over mswift_retag_file --------------------
+ *
+ * THIN ONLY, matching compat/retag_swift_classes.c, which never handled a fat
+ * container -- the class lists this walks are found through LC_SEGMENT_64
+ * sections of one image, and there is no per-slice driver for that the way
+ * mr_apply_file is one for load-command rewrites. Anything mswift_retag_file
+ * cannot read gets SAID SO here, rather than the bare "return 0" the old
+ * multi-file tool used to keep its argv loop going: a single-file verb that
+ * prints nothing and exits 0 on a fat binary is exactly the silent success
+ * docs/PROPOSAL.md's `verify` section exists to rule out. */
+static int cmd_retag_swift(const char *path) {
+    int n = mswift_retag_file(path);
+    if (n == MSWIFT_NOT_MACHO) {
+        fprintf(stderr, "macho9 retag-swift: %s: not a readable 64-bit Mach-O. "
+                        "This verb is thin-only, like retag_swift_classes, so that "
+                        "covers a fat container as well as anything that is not a "
+                        "Mach-O at all.\n", path);
+        return EX_REFUSED;
+    }
+    if (n < 0) return 1;   /* MSWIFT_ERROR / MSWIFT_RACED: already reported */
+    printf("%s: retagged %d class record(s)\n", path, n);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -632,6 +720,14 @@ int main(int argc, char **argv) {
     if (strcmp(verb, "minos") == 0) {
         if (argc != 4) { fprintf(stderr, "usage: %s minos FILE 10.9\n", argv[0]); return 1; }
         return cmd_minos(argv[2], argv[3]);
+    }
+    if (strcmp(verb, "segment") == 0) {
+        if (argc != 5) { fprintf(stderr, "usage: %s segment FILE OLD NEW\n", argv[0]); return 1; }
+        return cmd_segment(argv[2], argv[3], argv[4]);
+    }
+    if (strcmp(verb, "retag-swift") == 0) {
+        if (argc != 3) { fprintf(stderr, "usage: %s retag-swift FILE\n", argv[0]); return 1; }
+        return cmd_retag_swift(argv[2]);
     }
     if (strcmp(verb, "lc") == 0) {
         if (argc < 5) { fprintf(stderr, "usage: %s lc FILE -delete KIND [-delete KIND...]\n", argv[0]); return 1; }

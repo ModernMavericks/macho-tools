@@ -11,7 +11,7 @@ Ten suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `change_dylib_test` | builds real dylibs, rewrites a real executable, and **runs it** — a wrong library ordinal shows up as a dyld failure, not a silent mis-binding. Also covers `src/fat.c`'s fat-arch validation (both read-side, via `fix_macho`, and write-side) and `write_atomic`'s symlink/hard-link/ordinary-file handling |
 | `chained_fixups` | `patch_macho`'s chained-fixups conversion, against a fixture only a modern linker can produce. `SKIP`s (exit 77) on a host that can't emit chained fixups — 10.9 included — so it's real coverage on a modern host and an honest no-op on the target |
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
-| `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements |
+| `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements. `rpath -insert`, `segment` and `retag-swift` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `-insert` is only correct if the new search path lands FIRST (an `-append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment` has to rename each section's own copy of the segment name (`macho9 info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `retag-swift` has to move the tag bit without disturbing the rest of the word |
 | `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
@@ -24,7 +24,7 @@ validation) use three exit codes, also documented machine-readably in
 | code | meaning |
 |---|---|
 | `0` | success |
-| `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, or a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule) |
+| `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, or a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule) |
 | `1` | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal |
 
 Refusal is load-bearing throughout this codebase (`-grow` refuses rather than

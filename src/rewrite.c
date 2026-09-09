@@ -34,6 +34,7 @@
 
 #include "rewrite.h"
 #include "image.h"
+#include "segname.h"
 #include "grow.h"
 #include "ordinals.h"
 #include "fat.h"
@@ -71,6 +72,22 @@ static uint32_t mr_emit_dylib_lc(uint8_t *dst, const char *path) {
     return cs;
 }
 
+/* Emit one LC_RPATH naming `path` at `dst`; returns its cmdsize. An
+ * rpath_command followed by the NUL-terminated path, padded to 8 bytes --
+ * the same shape -insert and -append both need, which is why it is a
+ * function rather than being written out at each of the two sites. */
+static uint32_t mr_emit_rpath_lc(uint8_t *dst, const char *path) {
+    size_t plen = strlen(path) + 1;
+    uint32_t cs = (uint32_t)((sizeof(struct rpath_command) + plen + 7) & ~7UL);
+    struct rpath_command *nrc = (struct rpath_command *)dst;
+    memset(nrc, 0, cs);
+    nrc->cmd = LC_RPATH;
+    nrc->cmdsize = cs;
+    nrc->path.offset = sizeof(struct rpath_command);
+    strcpy((char *)nrc + sizeof(struct rpath_command), path);
+    return cs;
+}
+
 /* mr_build_lcs's per-load-command work, as an mi_each_lc callback. Every
  * mutable local the old hand-rolled loop threaded through each iteration
  * (new_off, ncmds, mods, placed_inserts) lives in this ctx instead; the
@@ -93,6 +110,7 @@ struct mr_build_lcs_ctx {
     uint32_t ncmds;
     int mods;
     int placed_inserts;
+    int placed_rpath_inserts;
     int verbose;
 };
 
@@ -130,6 +148,32 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
                                 cs, ctx->ops->dylib_inserts[s], s + 1);
         }
         ctx->placed_inserts = 1;
+    }
+
+    /* -insert for an rpath goes immediately before the first LC_RPATH the
+     * image already has, so dyld -- which takes the FIRST rpath that resolves
+     * -- searches the new one ahead of every existing one. That is the entire
+     * point of the operation: appending can only ever put it last. Unlike a
+     * dylib insert this shifts nothing, because LC_RPATH carries no library
+     * ordinal (mo_is_ordinal_lc lists the four commands that do, and LC_RPATH
+     * is not one), so no renumbering is needed or done.
+     *
+     * A -delete-rpath of that first LC_RPATH does not move this boundary: the
+     * insert is emitted at the position the deleted command occupied, which is
+     * still ahead of every rpath that survives. Nor does -strip-lc, for the
+     * same reason it cannot move the dylib boundary above: LC_RPATH is not in
+     * LC_STRIP_KINDS (src/lc_kinds.c), so the strip pass's early return can
+     * never fire on the very command this placement keys off. */
+    if (!ctx->placed_rpath_inserts && ctx->ops->n_rpath_inserts && lc->cmd == LC_RPATH) {
+        for (int s = 0; s < ctx->ops->n_rpath_inserts; s++) {
+            uint32_t cs = mr_emit_rpath_lc(ctx->new_lcs + ctx->new_off, ctx->ops->rpath_inserts[s]);
+            ctx->new_off += cs;
+            ctx->ncmds++;
+            ctx->mods++;
+            if (ctx->verbose) printf("  Insert [%u bytes]: LC_RPATH %s (now searched first)\n",
+                                cs, ctx->ops->rpath_inserts[s]);
+        }
+        ctx->placed_rpath_inserts = 1;
     }
 
     /* mo_is_ordinal_lc() here (rather than a locally re-listed set) is
@@ -243,6 +287,22 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
         ctx->mods++;
     } else {
         memcpy(ctx->new_lcs + ctx->new_off, lc, cmdsize);
+        /* A segment rename edits segname/sectname CONTENT only -- never cmd,
+         * never cmdsize -- so it can be applied to the command already copied
+         * into the new table, after the copy, without changing this command's
+         * size or the table's shape. mseg_rename_lc (src/segname.h) is the
+         * same function compat/rename_segment.c applies to its own buffer, so
+         * the two front-ends cannot disagree about what a rename is; only
+         * getting here through mr_apply_file is what additionally gives this
+         * one fat containers and an atomic write-back. */
+        if (ctx->ops->segment_rename_old &&
+            mseg_rename_lc((struct load_command *)(ctx->new_lcs + ctx->new_off),
+                           ctx->ops->segment_rename_old, ctx->ops->segment_rename_new)) {
+            if (ctx->verbose)
+                printf("  Rename segment: %s -> %s\n",
+                       ctx->ops->segment_rename_old, ctx->ops->segment_rename_new);
+            ctx->mods++;
+        }
         if (matched >= 0) {
             struct dylib_command *ndc = (struct dylib_command *)(ctx->new_lcs + ctx->new_off);
             ndc->cmdsize = write_size;
@@ -320,17 +380,24 @@ static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
         if (verbose) printf("  Add [%u bytes]: LC_LOAD_DYLIB %s\n", cs, ops->dylib_appends[a]);
     }
 
-    /* Append brand-new LC_RPATH commands (-add-rpath): an rpath_command
-     * followed by the NUL-terminated path, padded to 8 bytes. */
+    /* An image with no LC_RPATH at all still honours an rpath -insert; there
+     * was simply nothing to place it in front of. Emitting them HERE, before
+     * the appends below rather than after, is what keeps "-insert then -append
+     * into an image with no rpaths" producing the inserted one first -- the
+     * only order in which the two operations still mean what they say. */
+    if (!ctx.placed_rpath_inserts) {
+        for (int s = 0; s < ops->n_rpath_inserts; s++) {
+            uint32_t cs = mr_emit_rpath_lc(new_lcs + new_off, ops->rpath_inserts[s]);
+            new_off += cs;
+            ncmds++;
+            mods++;
+            if (verbose) printf("  Insert [%u bytes]: LC_RPATH %s\n", cs, ops->rpath_inserts[s]);
+        }
+    }
+
+    /* Append brand-new LC_RPATH commands (-add-rpath), searched last. */
     for (int a = 0; a < ops->n_rpath_appends; a++) {
-        size_t plen = strlen(ops->rpath_appends[a]) + 1;
-        uint32_t cs = (uint32_t)((sizeof(struct rpath_command) + plen + 7) & ~7UL);
-        struct rpath_command *nrc = (struct rpath_command *)(new_lcs + new_off);
-        memset(nrc, 0, cs);
-        nrc->cmd = LC_RPATH;
-        nrc->cmdsize = cs;
-        nrc->path.offset = sizeof(struct rpath_command);
-        strcpy((char *)nrc + sizeof(struct rpath_command), ops->rpath_appends[a]);
+        uint32_t cs = mr_emit_rpath_lc(new_lcs + new_off, ops->rpath_appends[a]);
         new_off += cs;
         ncmds++;
         mods++;
@@ -490,6 +557,8 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
         add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(ops->dylib_inserts[s]) + 1 + 7) & ~7UL);
     for (int a = 0; a < ops->n_rpath_appends; a++)
         add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(ops->rpath_appends[a]) + 1 + 7) & ~7UL);
+    for (int s = 0; s < ops->n_rpath_inserts; s++)
+        add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(ops->rpath_inserts[s]) + 1 + 7) & ~7UL);
     /* -change/-change-rpath can ALSO grow a command past its original
      * cmdsize -- mr_build_lcs's `matched`/`rmatched` branches size the rewritten
      * command as (base + strlen(new_path) + 1), rounded up, keeping whichever

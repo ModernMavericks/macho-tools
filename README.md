@@ -17,7 +17,8 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 - `src/` — the shared toolkit library (`macho9core`): image parsing, ULEB,
   ordinals, fat-arch validation, export-trie rebuild, `__LINKEDIT` bumping,
   header growth, LC-kind tables, the atomic-write helper, the dylib/rpath
-  load-command rewriter, and the `LC_VERSION_MIN_MACOSX` appender.
+  load-command rewriter, the `LC_VERSION_MIN_MACOSX` appender, the segment
+  rename, and the Swift class-record retag.
 - `compat/` — these six tools' own sources. They predate `macho9` and are kept
   under their original names because `install.sh` builds some of them by
   name; see `compat/README.md`.

@@ -7,11 +7,13 @@
  * main() so it is a library function rather than a program. Two front-ends
  * call it now and must keep behaving identically: compat/change_dylib.c
  * (the old grammar: -change/-delete/-reexport/-add/-insert/-strip-lc and the
- * -*-rpath twins) and cli/macho9.c's `dylib`/`rpath`/`lc` verbs (the new one:
- * -replace/-delete/-append/-insert/-reexport). macho9 used to fork and exec
- * change_dylib to get this work done; that made `change_dylib` a runtime
- * dependency of `macho9`, which is a cycle once change_dylib becomes a
- * wrapper around macho9. Sharing the code instead of the binary breaks it.
+ * -*-rpath twins) and cli/macho9.c's `dylib`/`rpath`/`lc`/`segment` verbs
+ * (the new one: -replace/-delete/-append/-insert/-reexport, plus a segment
+ * rename shared with compat/rename_segment.c via src/segname.h). macho9 used
+ * to fork and exec change_dylib to get this work done; that made
+ * `change_dylib` a runtime dependency of `macho9`, which is a cycle once
+ * change_dylib becomes a wrapper around macho9. Sharing the code instead of
+ * the binary breaks it.
  *
  * The parsing stays in each front-end -- the two grammars are genuinely
  * different, and neither is this module's business. What crosses the boundary
@@ -23,6 +25,12 @@
  * change_dylib's has always been (tests/change_dylib_test.sh and
  * tests/characterize.sh both pin it), so messages live down here, once,
  * rather than being re-emitted by each caller.
+ *
+ * LC_RPATH carries no library ordinal (mo_is_ordinal_lc, src/ordinals.h,
+ * names the four dylib commands that do and LC_RPATH is not among them), so
+ * unlike a dylib insert an rpath insert shifts nothing and needs no
+ * renumbering at all -- it is purely a question of where in the table the new
+ * command is emitted.
  *
  * LIBRARY ORDINALS. In a two-level-namespace image every undefined symbol
  * records which dylib it comes from, as a 1-based index into the dylib load
@@ -65,7 +73,10 @@ typedef struct {
  * Order within an array is the order the operations were given on the command
  * line, and it is observable: inserted dylibs become ordinals 1..n in the
  * order they appear here, and appended ones land after every existing
- * dependency in the order they appear here. */
+ * dependency in the order they appear here. The same holds for LC_RPATHs,
+ * where load order is not an ordinal but a SEARCH ORDER -- dyld takes the
+ * first rpath that resolves -- so rpath_inserts land ahead of every LC_RPATH
+ * the image already had and rpath_appends land behind them. */
 typedef struct {
     const mr_change *dylib_changes;    /* rewrite/delete/reexport a dependency */
     int              n_dylib_changes;
@@ -77,8 +88,18 @@ typedef struct {
     int              n_strip_cmds;
     const mr_change *rpath_changes;    /* rewrite/delete an LC_RPATH */
     int              n_rpath_changes;
-    const char *const *rpath_appends;  /* brand-new LC_RPATH, placed last */
+    const char *const *rpath_appends;  /* brand-new LC_RPATH, searched LAST */
     int              n_rpath_appends;
+    const char *const *rpath_inserts;  /* brand-new LC_RPATH, searched FIRST */
+    int              n_rpath_inserts;
+    /* Rename every LC_SEGMENT_64 named segment_rename_old -- and the copy of
+     * the segment name each of its sections carries -- to segment_rename_new.
+     * Both NULL means no rename was requested; the pair is scalar rather than
+     * an array because the only grammar that spells it (macho9 segment FILE
+     * OLD NEW) takes exactly one pair. The rename itself is mseg_rename_lc
+     * (src/segname.h), shared with compat/rename_segment.c. */
+    const char      *segment_rename_old;
+    const char      *segment_rename_new;
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
 } mr_ops;
 

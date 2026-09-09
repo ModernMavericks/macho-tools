@@ -44,7 +44,7 @@
 # how many invocations actually changed their input, not just how many ran.
 # If that number is near zero, the corpus or the operations are wrong.
 #
-# HOW LONG IT TAKES. Every sweep is 15 invocations x 2 builds per input, each
+# HOW LONG IT TAKES. Every sweep is 17 invocations x 2 builds per input, each
 # reading and rewriting the whole file, plus three SHA-256s. On real 10.9
 # hardware that is minutes for /usr/lib and /usr/bin, but the default roots
 # include /System/Library/Frameworks, whose binaries are large and mostly fat
@@ -66,7 +66,7 @@ MAX="${MACHO_DIFF_MAX:-300}"
 SCAN="${MACHO_DIFF_SCAN:-8000}"
 
 for d in "$REF" "$NEW"; do
-    for t in macho9 change_dylib add_version_min; do
+    for t in macho9 change_dylib add_version_min rename_segment retag_swift_classes; do
         [ -x "$d/$t" ] || { echo "differential: $d/$t not found or not executable" >&2; exit 1; }
     done
 done
@@ -177,6 +177,14 @@ while IFS= read -r SRC; do
     tool change_dylib -strip-lc uuid -add "@loader_path/libspare.dylib"
     tool change_dylib -grow -change "$first" "$longpath"
     tool add_version_min
+    # rename_segment and retag_swift_classes joined this sweep when Task 0.6a
+    # moved their guts into src/segname.c and src/swift_retag.c -- the same
+    # "the work moved, the behaviour must not" shape change_dylib and
+    # add_version_min were already swept for. __DATA_R9 is a name nothing
+    # ships, so the rename really does change bytes on any thin 64-bit input
+    # (and reports its own refusal, identically on both sides, on the rest).
+    tool rename_segment __DATA __DATA_R9
+    tool retag_swift_classes
 done < "$T/corpus"
 
 echo "differential: comparisons=$total differing=$diffs modified_inputs=$modified"

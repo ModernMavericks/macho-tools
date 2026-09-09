@@ -54,7 +54,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -91,10 +91,12 @@ endforeach()
 # includes src/image.h directly; fix_macho includes src/fat.h directly (Task 5:
 # both fat-aware tools now validate a fat file's arch table through the same
 # code, src/fat.c, instead of each having its own hand-rolled walk that could
-# -- and did -- disagree about validation). rename_segment and
-# retag_swift_classes join here one at a time as Task 1
-# (docs/superpowers/plans/2026-09-08-macho9-toolkit.md) converts each off its
-# own open/fstat/malloc/read/ncmds-walk preamble onto src/image.h.
+# -- and did -- disagree about validation). rename_segment is now only its
+# grammar and its lseek+write driver over src/segname.h's shared rename, and
+# retag_swift_classes only its argv loop over src/swift_retag.h's shared
+# per-file work -- the same "one implementation, two front-ends" split
+# change_dylib and add_version_min already have, so macho9's `segment` and
+# `retag-swift` verbs cannot drift from what those two tools do.
 target_link_libraries(change_dylib PRIVATE macho9core)
 target_link_libraries(patch_macho PRIVATE macho9core)
 target_link_libraries(fix_macho PRIVATE macho9core)
