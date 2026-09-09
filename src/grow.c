@@ -681,6 +681,19 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
     return rc;
 }
 
+struct mg_fs_find_ctx { uint32_t dataoff, datasize; };
+
+/* mg_grow_header's mi_each_lc callback: find the FIRST LC_FUNCTION_STARTS and
+ * stop (`break` in the original loop -- first match wins, unlike
+ * mg_plausible's deliberately-preserved last-match-wins). */
+static int mg_fs_find_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_fs_find_ctx *ctx = (struct mg_fs_find_ctx *)ctx_;
+    if (lc->cmd != LC_FUNCTION_STARTS) return 0;
+    const struct linkedit_data_command *ld = (const struct linkedit_data_command *)lc;
+    ctx->dataoff = ld->dataoff; ctx->datasize = ld->datasize;
+    return 1;
+}
+
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
@@ -775,17 +788,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * ORIGINAL file offset; after the memmove the blob lives at fs_dataoff+grow. */
     uint32_t fs_dataoff = 0, fs_datasize = 0;
     {
-        const uint8_t *sp = buf + sizeof(*hdr);
-        for (uint32_t i = 0; i < hdr->ncmds; i++) {
-            const struct load_command *lc = (const struct load_command *)sp;
-            if (lc->cmd == LC_FUNCTION_STARTS) {
-                const struct linkedit_data_command *ld =
-                    (const struct linkedit_data_command *)sp;
-                fs_dataoff = ld->dataoff; fs_datasize = ld->datasize;
-                break;
-            }
-            sp += lc->cmdsize;
-        }
+        struct mg_fs_find_ctx fctx = { 0, 0 };
+        /* find_im (above) still validly wraps this same buf/fsize -- neither
+         * has changed since -- so it is reused rather than re-wrapped. */
+        mi_each_lc(&find_im, mg_fs_find_cb, &fctx);
+        fs_dataoff = fctx.dataoff; fs_datasize = fctx.datasize;
     }
     if (fs_dataoff && fs_datasize) {
         uint64_t d0; int n0 = mu_decode(buf + fs_dataoff,
