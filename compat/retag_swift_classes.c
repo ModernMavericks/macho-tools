@@ -223,10 +223,23 @@ static int process(const char *path) {
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "Usage: %s binary [binary ...]\n", argv[0]); return 1; }
     int total = 0;
+    int had_error = 0;
     for (int i = 1; i < argc; i++) {
         int n = process(argv[i]);
+        /* process() returns -1 for a real failure (can't open/stat/write --
+         * already reported via perror/fprintf inside process()), 0 for
+         * "nothing to retag" (not a Mach-O, no matching class list, or
+         * skipped for a benign reason also already reported), and >0 for a
+         * count of classes retagged. Before this, only n>0 was checked, so
+         * a -1 was silently indistinguishable from "0 classes found" --
+         * process()'s return value was computed and then discarded, and
+         * `retag_swift_classes /no/such/file` exited 0 despite `perror`
+         * having already printed "No such file or directory" to stderr.
+         * That is exactly the shape of silent success docs/PROPOSAL.md's
+         * `verify` section exists to rule out. */
+        if (n < 0) { had_error = 1; continue; }
         if (n > 0) { printf("%s: retagged %d class record(s)\n", argv[i], n); total += n; }
     }
     printf("total: %d class record(s) retagged\n", total);
-    return 0;
+    return had_error ? 1 : 0;
 }

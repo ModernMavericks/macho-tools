@@ -179,6 +179,20 @@ else
     skip "retag_swift_classes: oobsection fixture (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
+# process()'s return value used to be computed and discarded in main(): a
+# failed open/stat/write (already reported via perror/fprintf) was silently
+# indistinguishable from "0 classes found", so this exited 0 even though it
+# had just printed an error. A nonexistent path is the simplest repro of a
+# real process() failure (open() fails, `perror` fires) that doesn't need a
+# fixture at all.
+rc=0
+"$BIN/retag_swift_classes" "$T/no-such-file.macho" >"$T/rt_missing.out" 2>"$T/rt_missing.err" || rc=$?
+if [ "$rc" -eq 1 ]; then
+    ok "retag_swift_classes: a real failure (nonexistent path) exits nonzero, not silently 0"
+else
+    bad "retag_swift_classes: nonexistent path" "expected exit 1, got exit $rc: $(cat "$T/rt_missing.out") $(cat "$T/rt_missing.err")"
+fi
+
 # --- patch_macho: pm_collect_ctx's to_remove[] must refuse, not overflow ----
 #
 # Task 2a moved patch_macho.c's collecting walk into an mi_each_lc callback
