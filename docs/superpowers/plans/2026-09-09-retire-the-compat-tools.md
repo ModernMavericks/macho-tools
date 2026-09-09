@@ -105,12 +105,40 @@ its own, independently of whether a wrapper then executes it.
       their argument parsers, not from their `--help` text, which may lag. This
       is the input to everything below.
 - [ ] One test per translation, asserting the exact emitted command line.
-- [ ] **Exhaustive combination sweep, as DISCOVERY.** Drive every enumerated
-      combination through the translator. The expectation is that `macho9`
-      expresses all of them; the purpose of the sweep is to find where it does
-      not. Treat each gap as a finding to bring back and decide on — extend
-      `macho9`, or record the spelling as having no equivalent, with the reason.
-      Do NOT quietly narrow the wrapper's surface to whatever happened to work.
+- [ ] **Exhaustive combination sweep — and it must be exhaustive.** Anything
+      less cannot establish that everything previously handled is still handled.
+      Single flags will mostly look clean; the surprises live in PAIRS and
+      TRIPLES, because that is where the tools interact. Precedent from this
+      repo: `-change X` combined with `-delete X` produced a binary dyld
+      refused, exited 0, and shipped that way for months — each flag alone was
+      fine.
+
+- [ ] **Record BOTH behaviours per combination, then classify.** For every
+      combination, capture what the OLD tool did (accepted / refused / crashed,
+      and the output bytes if it acted) and what `macho9` does. The matrix, not
+      a pass/fail list, is the deliverable:
+
+      | old tool | macho9 | meaning | action |
+      |---|---|---|---|
+      | accepted | accepts, same bytes | preserved | none |
+      | accepted | accepts, DIFFERENT bytes | **regression or deliberate fix** | investigate; `characterize` decides |
+      | accepted | refuses | **REGRESSION — blocks** | fix `macho9` or the translation |
+      | refused for a real reason | refuses | preserved | none |
+      | refused ARTIFICIALLY | accepts | **improvement — keep it** | verify it is safe, then document |
+      | crashed | refuses | improvement | document |
+
+- [ ] **`macho9` does NOT have to inherit the old tools' artificial limits.**
+      Where an old tool refused a combination only because its parser never
+      grew the case — not because the combination is unsafe — `macho9` handling
+      it is a feature, not a compatibility break. Say which of the two each
+      refusal was; "the old one didn't do this either" is a reason to look, not
+      a reason to stop. This repo has already lifted three such limits
+      deliberately: fat binaries in the rewrite path, the export-trie rebuild,
+      and the `-change`/`-delete` conflict.
+      The limits that must NOT be lifted are the ones with a stated safety
+      reason — 32-bit Mach-O, `LC_NOTE`/`LC_ATOM_INFO` layout, and every
+      `-grow` refusal. Those are refuse-rather-than-guess decisions with
+      recorded reasoning, not gaps.
 - [ ] Where no translation exists, emit a clear "no equivalent" and a non-zero
       exit — never a plausible-looking command that would do something else.
 
