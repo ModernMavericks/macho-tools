@@ -130,9 +130,13 @@ static void test_rebuild_reexport_untouched(void) {
 
 /* ---- stub-and-resolver: both addresses shift, independently of 0-ness ---- */
 static void test_rebuild_stub_and_resolver_both_shift(void) {
-    /* flags=0x10 (STUB_AND_RESOLVER), stub=0x50, resolver=0 (stays 0).
-     * term = flags(1) + stub(1) + resolver(1) = 3. */
-    uint8_t in[] = { 0x03, 0x10, 0x50, 0x00, 0x00 };
+    /* flags=0x10 (STUB_AND_RESOLVER), stub=0x10, resolver=0 (stays 0).
+     * term = flags(1) + stub(1) + resolver(1) = 3.
+     *
+     * A resolver=0 case is kept alongside the nonzero one below: it is the
+     * "0 stays 0" rule applying to the SECOND payload field, not just the
+     * first, which the nonzero test alone would not cover. */
+    uint8_t in[] = { 0x03, 0x10, 0x10, 0x00, 0x00 };
     uint8_t *out = NULL; uint32_t osz = 0;
     int r = mt_trie_rebuild(in, sizeof in, 0x30, &out, &osz);
     CHECK(r == 0, "rebuild of a stub-and-resolver node succeeds (got %d)", r);
@@ -140,9 +144,39 @@ static void test_rebuild_stub_and_resolver_both_shift(void) {
     const uint8_t *p = out + 2, *end = out + osz;
     uint64_t stub, resolver;
     int n1 = mu_decode(p, end, &stub); p += n1;
-    int n2 = mu_decode(p, end, &resolver); (void)n2;
-    CHECK(stub == 0x50 + 0x30, "stub shifted (got %#llx)", (unsigned long long)stub);
+    mu_decode(p, end, &resolver);
+    CHECK(stub == 0x10 + 0x30, "stub shifted (got %#llx)", (unsigned long long)stub);
     CHECK(resolver == 0, "resolver (was 0) stays 0 (got %#llx)", (unsigned long long)resolver);
+    free(out);
+}
+
+/* The case above alone is a false positive for "both shift": with
+ * resolver=0, a mutant that forgot to shift the resolver at all (`a2 =
+ * resolver;` instead of `a2 = resolver ? resolver + b->shift : 0;`) still
+ * produces resolver==0 and passes. This is the case that actually exercises
+ * the resolver's shift -- both fields nonzero and DIFFERENT, so a bug that
+ * only shifted one, or shifted them by the wrong amount, or swapped them,
+ * shows up. Verified: reintroducing exactly that mutation (`a2 = resolver;`
+ * in mt_parse's STUB_AND_RESOLVER branch) makes ONLY this test's "resolver
+ * shifted" check fail (got 0x20 want 0x50) -- everything else in trie_test
+ * and macho_grow_test still passes, confirming the earlier resolver=0 case
+ * really was blind to this. */
+static void test_rebuild_stub_and_resolver_nonzero_resolver_shifts(void) {
+    /* flags=0x10, stub=0x10, resolver=0x20 -- distinct nonzero values, so a
+     * shift bug in either field, or a stub/resolver swap, is visible. */
+    uint8_t in[] = { 0x03, 0x10, 0x10, 0x20, 0x00 };
+    uint8_t *out = NULL; uint32_t osz = 0;
+    int r = mt_trie_rebuild(in, sizeof in, 0x30, &out, &osz);
+    CHECK(r == 0, "rebuild of a stub-and-resolver node (both nonzero) succeeds (got %d)", r);
+    if (r != 0) return;
+    const uint8_t *p = out + 2, *end = out + osz;
+    uint64_t stub, resolver;
+    int n1 = mu_decode(p, end, &stub); p += n1;
+    mu_decode(p, end, &resolver);
+    CHECK(stub == 0x10 + 0x30, "stub shifted (got %#llx want %#llx)",
+          (unsigned long long)stub, (unsigned long long)(0x10 + 0x30));
+    CHECK(resolver == 0x20 + 0x30, "resolver shifted (got %#llx want %#llx)",
+          (unsigned long long)resolver, (unsigned long long)(0x20 + 0x30));
     free(out);
 }
 
@@ -270,40 +304,24 @@ static void test_rebuild_depth_cap_refuses(void) {
 static void test_rebuild_many_edges_none_dropped(void) {
     const int N = 200;
     /* Layout: root at offset 0 (term=0, nch=N, then N edges each
-     * "<2-digit-index>\0<uleb child offset>"), followed by N leaf nodes
-     * (term=2: flags0 addr(index) -- each leaf's address is its own index,
-     * so after rebuild we can confirm both the LABEL and the SHIFTED
-     * address survived for every single one of the 200). */
-    int root_len = 1 + 1;   /* term byte + nch byte */
-    for (int i = 0; i < N; i++) root_len += 3 + 2;  /* "NN\0" (3) + uleb child offset (<=2B here, but keep it simple: compute exactly below) */
-    /* Above overestimates were fiddly to keep exact by hand; build it
-     * programmatically with a growable buffer instead, computing each
-     * child's offset as we place it, since child offsets are ALWAYS after
-     * the root here (root is written first, offset 0, and leaves start
-     * right after it) so no forward-reference math is needed beyond simple
-     * arithmetic on already-known sizes. */
-    uint8_t label[3]; int leaf_sz = 4;   /* term2 flags0 addr(1B for <128... but N=200 needs 2B for values>=128) */
-    /* addresses 0..199: minlen is 1 byte for <128, 2 bytes for 128..199.
-     * Use leaf size 5 uniformly (term=3: flags0 + addr padded... simplest:
-     * just always encode the terminal with a 2-byte ULEB address via
-     * mu_encode_fixed, so every leaf is the same size and offsets are easy
-     * to compute by hand -- termsz=3 (flags1+addr2), total=1+3+1=5.) */
-    leaf_sz = 5;
-
-    /* First pass: compute root_len exactly, using the KNOWN leaf offsets
-     * (leaves start right after the root, each leaf_sz bytes, in index
-     * order) -- so child offsets, and their ULEB width, are known up front. */
-    int first_leaf_off_guess = 2 + N * 8;  /* upper bound: "NN\0"+2B uleb = 6B max per edge; refine below */
-    (void)first_leaf_off_guess;
-
-    /* Simpler and exact: two passes over a dynamic buffer using a fixed,
-     * generous per-edge encoding so the math is trivial --
-     * label "NN" (2 bytes, zero-padded index) + NUL + child offset ALWAYS
-     * encoded in exactly 2 ULEB bytes (mu_encode_fixed forces the width),
-     * so each edge is exactly 2+1+2 = 5 bytes, and root_len = 2 + N*5. */
-    root_len = 2 + N * 6;   /* label "NNN"(3) + NUL(1) + child-offset forced to 2 bytes */
-    int total = root_len + N * leaf_sz;
+     * "NNN\0<uleb child offset>", zero-padded 3-digit label), followed by N
+     * leaf nodes (term=3: flags0 addr(index) -- each leaf's address is its
+     * own index, so after rebuild we can confirm both the LABEL and the
+     * SHIFTED address survived for every single one of the 200).
+     *
+     * Every ULEB that COULD vary in width here is instead forced to a fixed
+     * width (mu_encode_fixed), so every edge and every leaf is the same
+     * number of bytes and every offset is exact arithmetic, not something
+     * hunted for by trial and error: each edge is label(3) + NUL(1) +
+     * child-offset(forced 2B) = 6 bytes, so root_len = 2 + N*6; each leaf is
+     * termsz(1) + flags(1) + address(forced 2B) + nch(1) = 5 bytes, and
+     * leaves start immediately after the root, in index order, so leaf i's
+     * offset is root_len + i*leaf_sz. */
+    const int leaf_sz = 5;
+    const int root_len = 2 + N * 6;
+    const int total = root_len + N * leaf_sz;
     uint8_t *buf = (uint8_t *)malloc((size_t)total);
+    uint8_t label[3];
     buf[0] = 0x00;              /* root term = 0 */
     buf[1] = (uint8_t)N;        /* nch = 200 (needs a full byte: fits, 200<256) */
     int p = 2;
@@ -375,6 +393,7 @@ int main(void) {
     test_rebuild_zero_address_stays_zero();
     test_rebuild_reexport_untouched();
     test_rebuild_stub_and_resolver_both_shift();
+    test_rebuild_stub_and_resolver_nonzero_resolver_shifts();
     test_rebuild_malformed_refuses();
     test_rebuild_cycle_refuses();
     test_rebuild_shared_offset_refuses();

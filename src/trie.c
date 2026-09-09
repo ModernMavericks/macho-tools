@@ -133,8 +133,17 @@ static int32_t mt_parse(struct mt_builder *b, uint32_t off, int depth) {
     p += k;
 
     if (term) {
+        /* Bounds-check BEFORE forming p+term: term is attacker-controlled
+         * (decoded straight from the trie) and can be up to 2^64-1, so
+         * computing p+term first and comparing pointers after is undefined
+         * behaviour if it overflows -- comparing the byte COUNT against
+         * `end - p` (always non-negative and in range here) has no such
+         * hazard and gives the identical answer for every well-defined case. */
+        if (term > (uint64_t)(end - p)) {
+            mt_fail(b, "terminal size runs past the trie");
+            return -1;
+        }
         const uint8_t *tend = p + term;
-        if (tend > end || tend < p) { mt_fail(b, "terminal size runs past the trie"); return -1; }
         uint64_t flags;
         k = mu_decode(p, tend, &flags);
         if (k == 0) { mt_fail(b, "malformed export-flags ULEB"); return -1; }

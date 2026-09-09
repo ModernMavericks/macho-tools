@@ -590,26 +590,57 @@ static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
     return 0;
 }
 
+/* Locate the export trie's load command -- LC_DYLD_INFO, LC_DYLD_INFO_ONLY, or
+ * LC_DYLD_EXPORTS_TRIE, whichever this image carries -- and return its BYTE
+ * OFFSET from buf (not a pointer: a caller that goes on to realloc buf, as
+ * the widen-append path does, needs an offset it can re-derive a pointer
+ * from afterward, not a pointer the realloc may have invalidated). Returns 1
+ * with *lc_off and *cmd set, or 0 if this image has no such load command (not an
+ * error -- just nothing to walk).
+ *
+ * The single source of truth for "which load command carries the export
+ * trie": mg_find_trie (below) and mg_grow_header's widen-append path both
+ * call this rather than each re-scanning load commands on their own, so the
+ * two can never disagree about which one it is. (They once could: an
+ * earlier version had the append path re-scan without breaking on the first
+ * match, landing on the LAST export-trie-shaped load command while this
+ * function -- and mg_find_trie -- always meant the FIRST. A file carrying
+ * both LC_DYLD_INFO_ONLY and LC_DYLD_EXPORTS_TRIE would have repointed the
+ * wrong one. It failed safe -- mg_verify would see pre-shift addresses
+ * through the untouched first LC and refuse -- but "two places
+ * independently deciding the same thing" is exactly the bug shape this
+ * whole toolkit plan exists to eliminate, so it is not left as a coincidence
+ * that happens to agree today.) */
+static int mg_find_trie_lc(const uint8_t *buf, long *lc_off, uint32_t *cmd) {
+    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
+    const uint8_t *sp = buf + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)sp;
+        if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY ||
+            lc->cmd == LC_DYLD_EXPORTS_TRIE) {
+            *lc_off = sp - buf; *cmd = lc->cmd; return 1;
+        }
+        sp += lc->cmdsize;
+    }
+    return 0;
+}
+
 /* Locate the export trie's (off, size), whichever load command carries it --
  * LC_DYLD_INFO[_ONLY]'s export_off/export_size, or LC_DYLD_EXPORTS_TRIE's
  * dataoff/datasize. Returns 1 with *off and *size set, or 0 if this image has
  * no export-trie load command at all (not an error -- just nothing to walk). */
 static int mg_find_trie(const uint8_t *buf, uint32_t *off, uint32_t *size) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
-            const struct dyld_info_command *d = (const struct dyld_info_command *)sp;
-            *off = d->export_off; *size = d->export_size; return 1;
-        }
-        if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            *off = d->dataoff; *size = d->datasize; return 1;
-        }
-        sp += lc->cmdsize;
+    long lc_off; uint32_t cmd;
+    if (!mg_find_trie_lc(buf, &lc_off, &cmd)) return 0;
+    if (cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) {
+        const struct dyld_info_command *d = (const struct dyld_info_command *)(buf + lc_off);
+        *off = d->export_off; *size = d->export_size;
+    } else {
+        const struct linkedit_data_command *d =
+            (const struct linkedit_data_command *)(buf + lc_off);
+        *off = d->dataoff; *size = d->datasize;
     }
-    return 0;
+    return 1;
 }
 
 static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
@@ -1161,28 +1192,39 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         } else {
             /* Does not fit: __LINKEDIT itself must grow. Append the rebuilt
              * trie right after __LINKEDIT's current end. On every binary this
-             * has been checked against, that is also the end of the FILE --
-             * __LINKEDIT is the last segment, and a code signature (if any)
-             * lives INSIDE __LINKEDIT's declared filesize, not after it -- so
-             * refuse, rather than guess, if that is not so here: appending
-             * past unknown trailing data would silently corrupt it, and
-             * appending before it would leave a hole. */
-            struct mach_header_64 *hh = (struct mach_header_64 *)buf;
-            uint8_t *lcp2 = buf + sizeof(*hh);
+             * has been checked against (including a real code-signed 10.9
+             * binary), that is also the end of the FILE -- __LINKEDIT is the
+             * last segment, and a code signature (if any) lives INSIDE
+             * __LINKEDIT's declared filesize, so `append_off != final_size`
+             * below cannot happen just because a signature is present.
+             * Refuse, rather than guess, if it turns out not so anyway.
+             * (Appending here strands any existing signature before the new
+             * end without extending it to cover the appended bytes, so the
+             * signature no longer verifies -- but growing the header pad
+             * ALREADY invalidates any signature, for the same reason every
+             * other rewriter in this toolkit does: this transform edits file
+             * bytes a signature covers. That is a pre-existing, documented
+             * limitation (`-strip-lc codesig`), not something new here.) */
+            uint8_t *lcp2 = buf + sizeof(struct mach_header_64);
             long linkedit_lc_off = -1;
-            long export_lc_off = -1; uint32_t export_lc_cmd = 0;
-            for (uint32_t i = 0; i < hh->ncmds; i++) {
+            struct mach_header_64 *hh2 = (struct mach_header_64 *)buf;
+            for (uint32_t i = 0; i < hh2->ncmds; i++) {
                 struct load_command *lc2 = (struct load_command *)lcp2;
                 if (lc2->cmd == LC_SEGMENT_64) {
                     struct segment_command_64 *seg2 = (struct segment_command_64 *)lcp2;
-                    if (strcmp(seg2->segname, "__LINKEDIT") == 0)
+                    if (strcmp(seg2->segname, "__LINKEDIT") == 0) {
                         linkedit_lc_off = lcp2 - buf;
-                } else if (lc2->cmd == LC_DYLD_INFO || lc2->cmd == LC_DYLD_INFO_ONLY ||
-                           lc2->cmd == LC_DYLD_EXPORTS_TRIE) {
-                    export_lc_off = lcp2 - buf; export_lc_cmd = lc2->cmd;
+                        break;   /* first (and only well-formed) __LINKEDIT */
+                    }
                 }
                 lcp2 += lc2->cmdsize;
             }
+            /* The export LC is looked up through mg_find_trie_lc, the same
+             * function mg_find_trie used just above to locate toff/tsize --
+             * not a second hand-rolled scan that could disagree with it
+             * about which load command "the" export trie means. */
+            long export_lc_off = -1; uint32_t export_lc_cmd = 0;
+            mg_find_trie_lc(buf, &export_lc_off, &export_lc_cmd);
             if (linkedit_lc_off < 0 || export_lc_off < 0) {
                 fprintf(stderr, "macho_grow: no __LINKEDIT segment (or no export-trie load "
                                 "command) to grow the rebuilt export trie into; refusing\n");

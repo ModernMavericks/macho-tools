@@ -12,7 +12,7 @@ Measured 2026-09-08 against its `main.c` at HEAD:
 |---|---|---|
 | export trie | **rebuilds it** — handles a ULEB that widens | in place at original width; **rebuilds it** (src/trie.c) when one would widen |
 | 32-bit (`LC_SEGMENT`) | yes | **no** — 64-bit only |
-| fat binaries in the rewrite path | yes | **no** in `change_dylib`; only `fix_macho` handles fat |
+| fat binaries in the rewrite path | yes | yes — `change_dylib` now walks fat slices too |
 | `S_INIT_FUNC_OFFSETS` | yes | yes |
 | `LC_FUNCTION_STARTS` leading delta | no | yes |
 | `LC_DATA_IN_CODE` contents | no | yes |
