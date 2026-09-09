@@ -25,7 +25,7 @@ validation) use three exit codes, also documented machine-readably in
 |---|---|
 | `0` | success |
 | `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, or a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule) |
-| `1` | everything else: a syscall/malloc/fork failure, a usage error — genuinely something going wrong, not a considered refusal |
+| `1` | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal |
 
 Refusal is load-bearing throughout this codebase (`-grow` refuses rather than
 widening a default case is a global rule, not a `macho9`-specific one), so a

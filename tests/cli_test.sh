@@ -382,6 +382,33 @@ else
     bad "alone: lc -delete" "$(cat "$T/alone_lc.out")"
 fi
 
+# minos is the one verb that was gated on add_version_min rather than
+# change_dylib, so it needs its own standalone run -- a regression that
+# restored only THAT subprocess would sail past the two assertions above.
+#
+# Which of mv_add_version_min's two success paths runs here depends on the
+# host's linker: a 10.9 ld emits LC_VERSION_MIN_MACOSX itself (so this is the
+# "already present" path), a 2026 one emits LC_BUILD_VERSION instead (so this
+# actually appends). Both are exit 0 and both prove the point, so accept
+# either MESSAGE rather than asserting which -- what must not happen is
+# macho9 failing because a binary it no longer needs isn't there. (Note the
+# fixture is deliberately NOT stripped of its version-min first: the helper
+# that does that is built further down, and this assertion is about reaching
+# the driver at all, not about which branch of it ran.)
+if "$T/alone/macho9" minos "$T/alone/fixture" 10.9 >"$T/alone_minos.out" 2>&1; then
+    ok "alone: minos works with no add_version_min anywhere near macho9"
+else
+    bad "alone: minos" "$(cat "$T/alone_minos.out")"
+fi
+if grep -q "LC_VERSION_MIN_MACOSX" "$T/alone_minos.out"; then
+    ok "alone: minos reached the version-min driver in-process (said what it did)"
+else
+    bad "alone: minos output" "exited 0 but said nothing about LC_VERSION_MIN_MACOSX: $(cat "$T/alone_minos.out")"
+fi
+"$T/alone/macho9" info "$T/alone/fixture" | grep -q "LC_VERSION_MIN_MACOSX" \
+    && ok "alone: the fixture carries LC_VERSION_MIN_MACOSX afterward" \
+    || bad "alone: minos result" "no LC_VERSION_MIN_MACOSX in info output after minos"
+
 # ============================================================================
 # verify
 # ============================================================================
@@ -676,7 +703,9 @@ else
         fi
     fi
 fi
-# Unknown KIND is refused with this verb's own message, before delegating.
+# Unknown KIND is refused with this verb's own message, before the rewriter
+# is ever called -- so a bad KIND never reaches (or is diagnosed by) code
+# shared with change_dylib.
 if "$MACHO9" lc "$T/lc_fixture" -delete bogus-kind >/dev/null 2>"$T/lc_bad.err"; then
     bad "lc: bad kind" "should be refused"
 else

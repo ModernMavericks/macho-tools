@@ -448,6 +448,16 @@ static int cmd_lc(int argc, char **argv) {
                 fprintf(stderr, ")\n");
                 return EX_REFUSED;
             }
+            /* Same CAP as change_dylib's -strip-lc (MR_MAX_STRIP, shared via
+             * src/rewrite.h so the two front-ends refuse the same inputs),
+             * deliberately DIFFERENT wording. change_dylib prints "too many
+             * -strip-lc (max 16)"; repeating that here would leak the old
+             * grammar's flag spellings out of a verb whose whole point is not
+             * to expose them -- cli_test.sh asserts exactly that, for
+             * --allow-grow's own no-op message. FOR WHOEVER WRITES THE
+             * change_dylib SHELL WRAPPER (Task 2): the wrapper cannot get the
+             * origin message by passing this through, so it must enforce the
+             * 16 itself and print "too many -strip-lc (max 16)" on its own. */
             if (nstrip == MR_MAX_STRIP) {
                 fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
                 return 1;
@@ -563,6 +573,17 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
             inserts[ninserts++] = argv[i + 1];
             break;
         }
+        /* Same CAP as change_dylib's own parser (MR_MAX_OPS, shared via
+         * src/rewrite.h), deliberately DIFFERENT wording -- and note this
+         * names THIS grammar's flag (`-append`), not the one change_dylib
+         * would have named (`-add`). change_dylib prints "too many -add (max
+         * 32)"; repeating that here would leak the old grammar's spellings
+         * out of a verb whose whole point is not to expose them, which
+         * cli_test.sh already asserts against for --allow-grow's no-op
+         * message. FOR WHOEVER WRITES THE change_dylib SHELL WRAPPER (Task
+         * 2): the wrapper cannot get the origin message by passing this
+         * through, so it must enforce the 32 itself and print "too many
+         * <old flag> (max 32)" on its own. */
         if (full) {
             fprintf(stderr, "macho9 %s: too many %s operations (max %d)\n",
                     is_rpath ? "rpath" : "dylib", op->flag, MR_MAX_OPS);
