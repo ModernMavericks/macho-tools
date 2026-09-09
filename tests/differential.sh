@@ -44,9 +44,10 @@
 # how many invocations actually changed their input, not just how many ran.
 # If that number is near zero, the corpus or the operations are wrong.
 #
-# HOW LONG IT TAKES. Every sweep is 17 invocations x 2 builds per input, each
-# reading and rewriting the whole file, plus three SHA-256s. On real 10.9
-# hardware that is minutes for /usr/lib and /usr/bin, but the default roots
+# HOW LONG IT TAKES. Every sweep is 18 invocations x 2 builds per input (plus
+# one more, `macho9 declassify`, on the new build alone), each reading and
+# rewriting the whole file, plus three SHA-256s. On real 10.9 hardware that is
+# minutes for /usr/lib and /usr/bin, but the default roots
 # include /System/Library/Frameworks, whose binaries are large and mostly fat
 # — a full default sweep can run for an hour. Bound it by lowering
 # MACHO_DIFF_MAX, or by naming smaller roots:
@@ -66,7 +67,7 @@ MAX="${MACHO_DIFF_MAX:-300}"
 SCAN="${MACHO_DIFF_SCAN:-8000}"
 
 for d in "$REF" "$NEW"; do
-    for t in macho9 change_dylib add_version_min rename_segment retag_swift_classes; do
+    for t in macho9 change_dylib add_version_min rename_segment retag_swift_classes patch_macho; do
         [ -x "$d/$t" ] || { echo "differential: $d/$t not found or not executable" >&2; exit 1; }
     done
 done
@@ -118,12 +119,19 @@ compare() {
     [ "$ah" != "$bh" ] && bad="$bad bytes"
     cmp -s "$T/a.out" "$T/b.out" || bad="$bad stdout"
     cmp -s "$T/a.err" "$T/b.err" || bad="$bad stderr"
-    if [ -n "$bad" ]; then
-        diffs=$((diffs + 1))
-        { echo "=== $1 ->$bad"
-          diff "$T/a.out" "$T/b.out" | head -10
-          diff "$T/a.err" "$T/b.err" | head -10; } >> "$REPORT"
-    fi
+    record "$1" "$bad"
+    return 0
+}
+
+# One disagreement, on the record. Shared by compare() and conv() rather than
+# written twice: the two sweeps compare different files, but a difference is
+# reported the same way for both.
+record() {
+    [ -z "$2" ] && return 0
+    diffs=$((diffs + 1))
+    { echo "=== $1 ->$2"
+      diff "$T/a.out" "$T/b.out" | head -10
+      diff "$T/a.err" "$T/b.err" | head -10; } >> "$REPORT"
     return 0
 }
 
@@ -145,6 +153,54 @@ tool() {
     ( cd "$T/A" && "$REF/$tl" f "$@" ) >"$T/a.out" 2>"$T/a.err"; arc=$?
     ( cd "$T/B" && "$NEW/$tl" f "$@" ) >"$T/b.out" 2>"$T/b.err"; brc=$?
     compare "$tl $SRC $*"
+}
+
+# patch_macho f o -- and, on the NEW build only, `macho9 declassify f o9`.
+#
+# This tool does not rewrite its input: it reads IN and writes OUT, which is
+# why the helpers above could not sweep it and, until Task 0.6b, nothing did.
+# That task moved its chained-fixups conversion into src/declassify.c and gave
+# macho9 a `declassify` verb over the same code, so two questions get asked
+# here, both about bytes rather than exit status:
+#
+#   REF vs NEW patch_macho          did the extraction change what the tool
+#                                    produces? (the same question every other
+#                                    line of this sweep asks of its tool)
+#   NEW patch_macho vs NEW macho9   do the two front-ends over that one
+#                                    implementation really write the same
+#                                    output? Asked of the NEW build only --
+#                                    the REF build's `declassify` predates the
+#                                    verb and is a stub that exits nonzero, so
+#                                    comparing it across builds would report a
+#                                    difference that is the point of the task.
+#
+# A 10.9 corpus has no chained fixups in it, so what this exercises on the
+# target machine is the read path, the pass-through, and the refusals -- most
+# of what moved -- while the conversion arithmetic itself is pinned by
+# cli_test.sh's hand-built fixture and by chained-fixups.sh on a host whose
+# linker emits the format. `differing=0` on this line is not a claim about the
+# conversion; it is a claim about everything around it.
+conv() {
+    total=$((total + 1))
+    cp "$SRC" "$T/A/f"; cp "$SRC" "$T/B/f"
+    rm -f "$T/A/o" "$T/B/o" "$T/B/o9"
+    ( cd "$T/A" && "$REF/patch_macho" f o ) >"$T/a.out" 2>"$T/a.err"; arc=$?
+    ( cd "$T/B" && "$NEW/patch_macho" f o ) >"$T/b.out" 2>"$T/b.err"; brc=$?
+    bad=""
+    [ "$arc" != "$brc" ] && bad="$bad exit($arc/$brc)"
+    cmp -s "$T/a.out" "$T/b.out" || bad="$bad stdout"
+    cmp -s "$T/a.err" "$T/b.err" || bad="$bad stderr"
+    if [ "$arc" -eq 0 ] || [ "$brc" -eq 0 ]; then
+        cmp -s "$T/A/o" "$T/B/o" || bad="$bad bytes"
+        cmp -s "$SRC" "$T/A/o" || modified=$((modified + 1))
+        ( cd "$T/B" && "$NEW/macho9" declassify f o9 ) >"$T/b9.out" 2>"$T/b9.err"; b9rc=$?
+        if [ "$b9rc" -ne 0 ]; then
+            bad="$bad declassify-exit($b9rc)"
+        else
+            cmp -s "$T/B/o" "$T/B/o9" || bad="$bad declassify-bytes"
+        fi
+    fi
+    record "patch_macho $SRC (and macho9 declassify)" "$bad"
 }
 
 # 3000 characters is comfortably past any plausible linker's default header
@@ -192,6 +248,7 @@ while IFS= read -r SRC; do
     # but the tag flip itself is pinned by cli_test.sh's mkswift fixture, not
     # here, and a `differing=0` on this line says nothing about it.
     tool retag_swift_classes
+    conv
 done < "$T/corpus"
 
 echo "differential: comparisons=$total differing=$diffs modified_inputs=$modified"

@@ -25,7 +25,8 @@
  * mg_plausible, mi_open/mi_each_lc and mg_grow_header; `dylib`, `rpath`,
  * `lc` and `segment` into mr_apply_file (src/rewrite.h); `minos` into
  * mv_add_version_min (src/version_min.h); `retag-swift` into
- * mswift_retag_file (src/swift_retag.h). Each verb is a thin shell over code
+ * mswift_retag_file (src/swift_retag.h); `declassify` into md_declassify
+ * (src/declassify.h). Each verb is a thin shell over code
  * that already exists in this repo, and each translates this grammar into the
  * ONE
  * implementation -- so the ordinal-renumbering logic that has twice shipped
@@ -49,9 +50,12 @@
  * this verb fat containers and an atomic write-back that rename_segment has
  * never had.
  *
- * `declassify` (patch_macho's chained-fixups conversion, ~350 lines of its
- * own) is NOT implemented here yet; it errors clearly rather than pretending.
- * Run patch_macho directly in the meantime.
+ * `declassify` is the last of them, and the same arrangement again:
+ * patch_macho's chained-fixups conversion is src/declassify.h, and that tool
+ * keeps only its `IN OUT` grammar, its own open+write of OUT, its messages
+ * and its flat exit code. It is the one verb here that reads one file and
+ * writes another rather than rewriting in place, so it writes OUT through
+ * wa_write_atomic itself instead of going through mr_apply_file.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,6 +72,7 @@
 #include "grow.h"
 #include "lc_kinds.h"
 #include "atomic_write.h"
+#include "declassify.h"
 #include "rewrite.h"
 #include "segname.h"
 #include "swift_retag.h"
@@ -209,6 +214,7 @@ static void print_ops_csv(int is_rpath) {
 static int print_capabilities(void) {
     printf("format 1\n");
     printf("exitcodes ok=0 refused=%d failed=1\n", EX_REFUSED);
+    printf("verb declassify\n");
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
@@ -230,7 +236,8 @@ static int print_capabilities(void) {
 static void usage(const char *prog) {
     fprintf(stderr,
         "usage: %s --capabilities\n"
-        "       %s declassify IN OUT                       (not implemented in this build)\n"
+        "       %s declassify IN OUT                        chained fixups -> LC_DYLD_INFO_ONLY;\n"
+        "                                                    IN is only read, so IN and OUT may match\n"
         "       %s dylib FILE [--allow-grow] OP...          -replace OLD NEW | -delete PATH |\n"
         "                                                    -append PATH | -insert PATH | -reexport PATH\n"
         "       %s rpath FILE [--allow-grow] OP...          -replace OLD NEW | -delete PATH |\n"
@@ -748,6 +755,96 @@ static int cmd_retag_swift(const char *path) {
     return 0;
 }
 
+/* ---- declassify: a thin shell over md_declassify -------------------------
+ *
+ * The conversion -- chained fixups lowered to LC_DYLD_INFO_ONLY, the exports
+ * trie and every LC_BUILD_VERSION stripped, __LINKEDIT extended over the
+ * appended opcode streams -- is src/declassify.c, shared with
+ * compat/patch_macho.c so the two front-ends cannot disagree about what
+ * declassifying a binary means. Both write the very same buffer
+ * md_declassify hands back, so their output files are byte-identical by
+ * construction, not by two implementations happening to agree.
+ *
+ * IN OUT, not in place: this is the one verb that reads one file and writes
+ * another, because that is the grammar docs/PROPOSAL.md settled on and what
+ * patch_macho's callers pass. IN is only ever read (the whole image is in
+ * memory before a byte is written), so `macho9 declassify F F` is safe and
+ * behaves as an in-place conversion.
+ *
+ * FOUR DELIBERATE DIVERGENCES FROM patch_macho, all of which a wrapper author
+ * (Task 2) has to know about, because reproducing patch_macho's observable
+ * behaviour on top of this verb means accounting for each:
+ *
+ *   - EXIT CODES. patch_macho returns a flat 1 for everything that goes
+ *     wrong. This verb returns EX_REFUSED where it examined the input and
+ *     declined on purpose -- not a readable 64-bit Mach-O, no chained fixups
+ *     to convert, or any of the conversion's own refusals (too many segments
+ *     or strippable commands, an unknown pointer format, no room for the
+ *     48-byte LC_DYLD_INFO_ONLY, no __LINKEDIT) -- and 1 only for an
+ *     operational failure, which here means writing OUT. That is what
+ *     EX_REFUSED's contract above asks for, and this verb is free to use it:
+ *     unlike dylib/rpath/lc/minos it has never forwarded another program's
+ *     exit code, so there is nothing to preserve. A wrapper that must look
+ *     like patch_macho maps both nonzero codes to 1.
+ *   - THE WRITE. patch_macho creates OUT with open(O_CREAT|O_TRUNC, 0755) and
+ *     writes into it; a write that fails partway leaves a truncated OUT
+ *     behind. This verb goes through wa_write_atomic (src/atomic_write.h) --
+ *     a temp file in OUT's directory, chmod 0755, renamed over OUT -- so a
+ *     failed run leaves no half-written output, and an OUT that already
+ *     exists keeps its xattrs. The BYTES written are identical either way.
+ *   - "Wrote ..." ON THE PASS-THROUGH PATH. patch_macho prints its "Wrote %s
+ *     (%zu bytes)" line only when it actually converted something; a
+ *     pass-through says "Already patched ... passing through." and nothing
+ *     else, so the file it just wrote is never named. This verb reports every
+ *     write, including the pass-through, because a verb that copies a file
+ *     without saying so is the silent-success shape docs/PROPOSAL.md's
+ *     `verify` section exists to rule out.
+ *   - THE UNREADABLE-INPUT MESSAGE. patch_macho prints "IN: not a readable
+ *     64-bit Mach-O"; this verb prefixes it, as every other verb here does.
+ *     md_declassify deliberately prints nothing for that case so each
+ *     front-end can name the file in its own words.
+ *
+ * The MDCL_ codes are tested BY NAME below, never as `rc < 0` or `rc != 0` --
+ * declassify.h says why: MDCL_PASSTHROUGH is a nonzero SUCCESS, and a code
+ * added later must not silently become either a success or the wrong kind of
+ * failure. */
+static int cmd_declassify(const char *in, const char *out) {
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    int rc = md_declassify(in, &buf, &len);
+
+    if (rc == MDCL_NOT_MACHO) {
+        fprintf(stderr, "macho9 declassify: %s: not a readable 64-bit Mach-O. "
+                        "This verb is thin-only, like patch_macho, so that covers "
+                        "a fat container as well as anything that is not a Mach-O "
+                        "at all.\n", in);
+        return EX_REFUSED;
+    }
+    if (rc == MDCL_REFUSED) return EX_REFUSED;  /* md_declassify already said why */
+    if (rc != MDCL_CONVERTED && rc != MDCL_PASSTHROUGH) {
+        /* A code declassify.h grew that this verb has not been taught. Refuse
+         * rather than write an output file from a buffer md_declassify never
+         * promised to fill -- an unrecognized code is precisely the case the
+         * by-name rule above exists for, and guessing which side of refusal it
+         * belongs on is not this verb's call to make. */
+        fprintf(stderr, "macho9 declassify: %s: md_declassify returned an "
+                        "unrecognized code %d; refusing rather than writing an "
+                        "output this verb cannot vouch for\n", in, rc);
+        return 1;
+    }
+
+    if (wa_write_atomic(out, 0755, buf, len) != 0) {
+        /* wa_write_atomic already reported which syscall failed. This is an
+         * operational failure, not a refusal: nothing about the input was
+         * wrong. */
+        free(buf);
+        return 1;
+    }
+    printf("Wrote %s (%zu bytes)\n", out, len);
+    free(buf);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--capabilities") == 0)
         return print_capabilities();
@@ -792,10 +889,8 @@ int main(int argc, char **argv) {
         return cmd_dylib_or_rpath(argc, argv, 1);
     }
     if (strcmp(verb, "declassify") == 0) {
-        fprintf(stderr, "macho9 declassify: not implemented in this build (patch_macho's "
-                        "chained-fixups conversion has not been ported to macho9 yet; run "
-                        "patch_macho IN OUT directly)\n");
-        return 1;
+        if (argc != 4) { fprintf(stderr, "usage: %s declassify IN OUT\n", argv[0]); return 1; }
+        return cmd_declassify(argv[2], argv[3]);
     }
 
     fprintf(stderr, "macho9: unknown verb '%s'\n", verb);

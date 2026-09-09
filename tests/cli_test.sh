@@ -234,18 +234,28 @@ rc=0
 [ "$rc" -eq 2 ] \
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 2" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 2"
-for v in verify info grow minos lc dylib rpath segment retag-swift; do
+for v in verify info grow minos lc dylib rpath segment retag-swift declassify; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
         bad "capabilities: $v" "not listed"
     fi
 done
-# declassify is NOT implemented; capabilities must not claim it is.
-if echo "$caps" | grep -q "^verb declassify"; then
-    bad "capabilities: declassify" "advertised but not implemented"
+# declassify used to be the one verb --capabilities deliberately omitted,
+# because it was a stub. It is implemented now (Task 0.6b), so it is in the
+# loop above -- and the assertions further down are what make that
+# advertisement honest, per print_capabilities' own "never advertise one that
+# errors out" contract. usage() must have stopped disclaiming it too: that
+# line is the other place a caller reads about what this build can do.
+"$MACHO9" >/dev/null 2>"$T/usage.err" || true
+if grep -q "declassify" "$T/usage.err"; then
+    if grep "declassify" "$T/usage.err" | grep -qi "not implemented"; then
+        bad "usage: declassify" "still says 'not implemented'"
+    else
+        ok "usage: declassify listed without a 'not implemented' disclaimer"
+    fi
 else
-    ok "capabilities: declassify correctly absent"
+    bad "usage: declassify" "not mentioned at all"
 fi
 # rpath -insert IS implemented now; capabilities must claim it. A wrapper has
 # no other way to learn this build can place a search path FIRST, which
@@ -336,14 +346,421 @@ case ",$rpath_ops," in
         ok "capabilities vocab: rpath ops= correctly omits reexport" ;;
 esac
 
-# declassify itself must error, not silently do nothing or crash.
-if "$MACHO9" declassify "$T/main" "$T/out" >/dev/null 2>"$T/declassify.err"; then
-    bad "declassify: exit code" "should be nonzero (not implemented)"
+# ============================================================================
+# declassify: chained fixups -> LC_DYLD_INFO_ONLY
+#
+# The conversion lives in src/declassify.c (Task 0.6b lifted it out of
+# compat/patch_macho.c's main); this verb and patch_macho are two front-ends
+# over the one copy. What is asserted here is the OBSERVABLE result -- the two
+# quadwords in __DATA the conversion rewrites, which load commands survived,
+# where the new LC_DYLD_INFO_ONLY points, and how far __LINKEDIT now reaches --
+# not "it exited 0".
+#
+# THE FIXTURE IS HAND-BUILT, and it has to be: chained fixups are a 2021
+# format, 10.9's linker predates them by a decade, and tests/chained-fixups.sh
+# (which asks the HOST linker for one) therefore SKIPs entirely on the machine
+# this toolkit is actually for. A fixture written byte by byte asks the same
+# question on every host -- the reasoning tests/README.md's host-portability
+# section gives, and the idiom leaf-tool-crashes.sh's mkfixture.c and the
+# mkswift helper below already use.
+SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../src" && pwd)
+cat > "$T/mkchained.c" <<'EOF'
+/* mkchained make OUT    -- write a tiny 64-bit Mach-O that uses CHAINED
+ *                          FIXUPS, the format `declassify`/patch_macho exists
+ *                          to lower. No linker on any host this repo supports
+ *                          can be asked to emit one on demand (10.9's predates
+ *                          the format by a decade), so the bytes are laid out
+ *                          by hand -- the same idiom tests/leaf-tool-crashes.sh
+ *                          and cli_test.sh's mkswift already use.
+ *
+ * mkchained check FILE   -- print, one per line, what the conversion is
+ *                          supposed to have DONE to it. Structure read
+ *                          directly out of the file; never otool text.
+ *
+ * The image: three segments (__TEXT, __DATA, __LINKEDIT), one section in each
+ * of the first two, an LC_DYLD_CHAINED_FIXUPS pointing at a hand-built fixups
+ * blob in __LINKEDIT, an LC_DYLD_EXPORTS_TRIE, and an LC_BUILD_VERSION -- the
+ * three commands the conversion strips. __DATA holds a two-link chain: slot 0
+ * is a REBASE of a base-relative target (0x1000), slot 1 (8 bytes later) is a
+ * BIND of import 0, "_mkchained_sym", from library ordinal 1.
+ *
+ * After conversion, then, slot 0 must hold image_base + 0x1000 and slot 1 must
+ * hold 0 (dyld fills a bind slot in at load time). Those two quadwords are the
+ * whole point: they are the arithmetic the conversion does that nothing else
+ * in this repo does, and they are observable in the output file's bytes.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+#include "mach_compat.h"
+
+#define FSIZE        0x3000
+#define TEXT_VMADDR  0x100000000ULL
+#define SECT_OFF     0x400          /* first section's file offset: the bound
+                                     * the conversion checks for the 48 bytes
+                                     * LC_DYLD_INFO_ONLY needs */
+#define DATA_OFF     0x1000
+#define LINKEDIT_OFF 0x2000
+#define FIXUPS_OFF   0x2000
+#define FIXUPS_SIZE  0x100
+#define TRIE_OFF     0x2100
+#define TRIE_SIZE    0x10
+
+#define CF_PTR_64_OFFSET 6
+#define REBASE_TARGET    0x1000ULL  /* base-relative, so the converted slot
+                                     * must read TEXT_VMADDR + this */
+#define BIND_SLOT_OFF    8
+#define SYMNAME          "_mkchained_sym"
+
+/* segname/sectname are char[16] and need NOT be NUL-terminated; see
+ * tests/README.md's host-portability section for why strcpy is wrong here. */
+static void set_name16(char *field, const char *name) {
+    size_t len = strlen(name);
+    if (len > 16) len = 16;
+    memset(field, 0, 16);
+    memcpy(field, name, len);
+}
+
+static struct segment_command_64 *put_seg(uint8_t *p, const char *name,
+                                          uint64_t vmaddr, uint64_t vmsize,
+                                          uint64_t fileoff, uint64_t filesize,
+                                          uint32_t nsects) {
+    struct segment_command_64 *s = (struct segment_command_64 *)p;
+    s->cmd = LC_SEGMENT_64;
+    s->cmdsize = (uint32_t)(sizeof *s + nsects * sizeof(struct section_64));
+    set_name16(s->segname, name);
+    s->vmaddr = vmaddr; s->vmsize = vmsize;
+    s->fileoff = fileoff; s->filesize = filesize;
+    s->maxprot = 7; s->initprot = 3;
+    s->nsects = nsects; s->flags = 0;
+    return s;
+}
+
+static void put_sect(struct segment_command_64 *seg, int i, const char *sect,
+                     const char *segname, uint64_t addr, uint64_t size,
+                     uint32_t offset) {
+    struct section_64 *s = (struct section_64 *)(seg + 1) + i;
+    memset(s, 0, sizeof *s);
+    set_name16(s->sectname, sect);
+    set_name16(s->segname, segname);
+    s->addr = addr; s->size = size; s->offset = offset;
+}
+
+static int make(const char *path) {
+    uint8_t *buf = calloc(1, FSIZE);
+    if (!buf) return 2;
+
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
+    h->filetype = MH_DYLIB;
+    h->flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL;
+
+    uint8_t *p = buf + sizeof *h;
+
+    struct segment_command_64 *text = put_seg(p, "__TEXT", TEXT_VMADDR, 0x1000, 0, 0x1000, 1);
+    put_sect(text, 0, "__text", "__TEXT", TEXT_VMADDR + SECT_OFF, 4, SECT_OFF);
+    p += text->cmdsize;
+
+    struct segment_command_64 *data = put_seg(p, "__DATA", TEXT_VMADDR + DATA_OFF, 0x1000,
+                                              DATA_OFF, 0x1000, 1);
+    put_sect(data, 0, "__data", "__DATA", TEXT_VMADDR + DATA_OFF, 0x10, DATA_OFF);
+    p += data->cmdsize;
+
+    struct segment_command_64 *le = put_seg(p, "__LINKEDIT", TEXT_VMADDR + LINKEDIT_OFF, 0x1000,
+                                            LINKEDIT_OFF, 0x1000, 0);
+    p += le->cmdsize;
+
+    struct linkedit_data_command *cf = (struct linkedit_data_command *)p;
+    cf->cmd = LC_DYLD_CHAINED_FIXUPS; cf->cmdsize = sizeof *cf;
+    cf->dataoff = FIXUPS_OFF; cf->datasize = FIXUPS_SIZE;
+    p += cf->cmdsize;
+
+    struct linkedit_data_command *tr = (struct linkedit_data_command *)p;
+    tr->cmd = LC_DYLD_EXPORTS_TRIE; tr->cmdsize = sizeof *tr;
+    tr->dataoff = TRIE_OFF; tr->datasize = TRIE_SIZE;
+    p += tr->cmdsize;
+
+    /* LC_BUILD_VERSION by hand: 10.9's <mach-o/loader.h> has no
+     * build_version_command struct, only the command number mach_compat.h
+     * supplies. cmd, cmdsize, platform, minos, sdk, ntools. */
+    uint32_t *bv = (uint32_t *)p;
+    bv[0] = LC_BUILD_VERSION; bv[1] = 24; bv[2] = 1;
+    bv[3] = 0x000C0000; bv[4] = 0x000C0000; bv[5] = 0;
+    p += 24;
+
+    h->ncmds = 6;
+    h->sizeofcmds = (uint32_t)(p - (buf + sizeof *h));
+
+    /* The chain in __DATA. Both links use pointer format 6
+     * (DYLD_CHAINED_PTR_64_OFFSET): bit 63 selects bind over rebase, bits
+     * [62:51] are the distance to the next link in 4-byte strides, and the low
+     * bits are a base-relative target (rebase) or an import ordinal (bind). */
+    uint64_t *slot = (uint64_t *)(buf + DATA_OFF);
+    slot[0] = REBASE_TARGET | ((uint64_t)(BIND_SLOT_OFF / 4) << 51);
+    slot[1] = (1ULL << 63) | 0ULL;   /* bind import 0, next = 0 = end of chain */
+
+    /* The fixups blob: header, starts-image, one starts-segment for __DATA
+     * (segment index 1), one import, one symbol name. */
+    uint8_t *fx = buf + FIXUPS_OFF;
+    uint32_t *fh = (uint32_t *)fx;
+    fh[0] = 0;      /* fixups_version */
+    fh[1] = 0x20;   /* starts_offset */
+    fh[2] = 0x60;   /* imports_offset */
+    fh[3] = 0x80;   /* symbols_offset */
+    fh[4] = 1;      /* imports_count */
+    fh[5] = 1;      /* imports_format: DYLD_CHAINED_IMPORT */
+    fh[6] = 0;      /* symbols_format: uncompressed */
+
+    uint32_t *starts = (uint32_t *)(fx + 0x20);
+    starts[0] = 3;      /* seg_count: __TEXT, __DATA, __LINKEDIT */
+    starts[1] = 0;      /* __TEXT: no fixups */
+    starts[2] = 0x10;   /* __DATA: its starts-segment, relative to starts */
+    starts[3] = 0;      /* __LINKEDIT: no fixups */
+
+    uint8_t *ss = fx + 0x30;
+    *(uint32_t *)(ss + 0)  = 24;                /* size */
+    *(uint16_t *)(ss + 4)  = 0x1000;            /* page_size */
+    *(uint16_t *)(ss + 6)  = CF_PTR_64_OFFSET;  /* pointer_format */
+    *(uint64_t *)(ss + 8)  = DATA_OFF;          /* segment_offset */
+    *(uint32_t *)(ss + 16) = 0;                 /* max_valid_pointer */
+    *(uint16_t *)(ss + 20) = 1;                 /* page_count */
+    *(uint16_t *)(ss + 22) = 0;                 /* page_start[0]: chain at +0 */
+
+    /* import 0: lib_ordinal 1, not weak, name at offset 0 of the symbol pool */
+    *(uint32_t *)(fx + 0x60) = 1u | (0u << 8) | (0u << 9);
+    memcpy(fx + 0x80, SYMNAME, sizeof SYMNAME);
+
+    memset(buf + TRIE_OFF, 0, TRIE_SIZE);
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (fd < 0) { perror("create"); free(buf); return 2; }
+    if (write(fd, buf, FSIZE) != (ssize_t)FSIZE) { perror("write"); close(fd); free(buf); return 2; }
+    close(fd);
+    free(buf);
+    return 0;
+}
+
+static int has_cmd(uint8_t *buf, uint32_t want) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *p = buf + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)p;
+        if (lc->cmd == want) return 1;
+        p += lc->cmdsize;
+    }
+    return 0;
+}
+
+static int check(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); close(fd); return 2;
+    }
+    close(fd);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    if (h->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); free(buf); return 2; }
+
+    uint64_t *slot = (uint64_t *)(buf + DATA_OFF);
+    printf("size=%llu\n", (unsigned long long)st.st_size);
+    printf("slot0=0x%llx\n", (unsigned long long)slot[0]);
+    printf("slot1=0x%llx\n", (unsigned long long)slot[1]);
+    printf("chained=%d\n", has_cmd(buf, LC_DYLD_CHAINED_FIXUPS));
+    printf("trie=%d\n", has_cmd(buf, LC_DYLD_EXPORTS_TRIE));
+    printf("buildver=%d\n", has_cmd(buf, LC_BUILD_VERSION));
+    printf("dyldinfo=%d\n", has_cmd(buf, LC_DYLD_INFO_ONLY));
+
+    /* The LC_DYLD_INFO_ONLY the conversion added, and the __LINKEDIT it had to
+     * extend to cover what that command points at. */
+    uint8_t *p = buf + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)p;
+        if (lc->cmd == LC_DYLD_INFO_ONLY) {
+            struct dyld_info_command *di = (struct dyld_info_command *)lc;
+            printf("rebase=%u+%u\n", di->rebase_off, di->rebase_size);
+            printf("bind=%u+%u\n", di->bind_off, di->bind_size);
+            printf("export=%u+%u\n", di->export_off, di->export_size);
+            /* The bind stream's first three opcodes are SET_TYPE_IMM,
+             * SET_DYLIB_ORDINAL_IMM and SET_SYMBOL_TRAILING_FLAGS_IMM, each
+             * one byte, and the symbol name follows the third as a NUL-
+             * terminated string. Reading it back is how this proves the BIND
+             * link was translated and not merely counted -- and reading it at
+             * a FIXED offset is deliberate: if the emitted opcode sequence
+             * ever changes shape, that is a behaviour change in the
+             * conversion and this must fail rather than adapt. */
+            if (di->bind_size > 4 && di->bind_off + di->bind_size <= (uint32_t)st.st_size) {
+                uint8_t *b = buf + di->bind_off;
+                printf("bindops=%02x,%02x,%02x\n", b[0], b[1], b[2]);
+                printf("bindsym=%.*s\n", (int)(di->bind_size - 3), (char *)b + 3);
+            }
+        }
+        if (lc->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *s = (struct segment_command_64 *)lc;
+            if (strncmp(s->segname, "__LINKEDIT", 16) == 0)
+                printf("linkedit=%llu+%llu\n", (unsigned long long)s->fileoff,
+                       (unsigned long long)s->filesize);
+        }
+        p += lc->cmdsize;
+    }
+    free(buf);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: mkchained make|check FILE\n"); return 2; }
+    if (strcmp(argv[1], "make") == 0) return make(argv[2]);
+    if (strcmp(argv[1], "check") == 0) return check(argv[2]);
+    fprintf(stderr, "usage: mkchained make|check FILE\n");
+    return 2;
+}
+EOF
+"$CC" -O2 -I "$SRC_DIR" -o "$T/mkchained" "$T/mkchained.c"
+"$T/mkchained" make "$T/chained.in"
+
+# What the fixture is, before anything touches it. If this ever stops holding,
+# every assertion below is asking the wrong question and would "pass" for the
+# wrong reason -- so it is checked, not assumed.
+chk=$("$T/mkchained" check "$T/chained.in")
+if echo "$chk" | grep -q "^chained=1" && echo "$chk" | grep -q "^dyldinfo=0"; then
+    ok "declassify: fixture really uses chained fixups and has no LC_DYLD_INFO_ONLY"
 else
-    ok "declassify: refuses (not implemented)"
+    bad "declassify: fixture" "not the shape this suite expects: $(echo "$chk" | tr '\n' ' ')"
 fi
-grep -qi "not implemented" "$T/declassify.err" && ok "declassify: says why" \
-    || bad "declassify: message" "no 'not implemented' on stderr"
+
+"$MACHO9" declassify "$T/chained.in" "$T/chained.out" >"$T/dcl.out" 2>"$T/dcl.err" && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && ok "declassify: converts a chained-fixups binary (exit 0)" \
+    || bad "declassify: exit code" "exited $rc on a chained-fixups binary: $(cat "$T/dcl.err")"
+
+# The conversion's whole job, read back out of the output file's bytes.
+#   slot0  a REBASE of base-relative 0x1000 in a __TEXT based at 0x100000000,
+#          so the classic rebase (which adds the slide, not slide+base) has to
+#          find the absolute 0x100001000 already in the slot;
+#   slot1  a BIND, which must be zeroed for dyld to fill in;
+#   the three modern load commands must be gone, LC_DYLD_INFO_ONLY present,
+#   and __LINKEDIT must now cover the appended opcode streams -- otherwise dyld
+#   would not read the very bytes the new command points at.
+dcl_out=$("$T/mkchained" check "$T/chained.out")
+dcl_val() { echo "$dcl_out" | sed -n "s/^$1=//p"; }
+dcl_fail=0
+dcl_expect() {
+    got=$(dcl_val "$1")
+    [ "$got" = "$2" ] || { bad "declassify: $1" "expected $2, got '$got'"; dcl_fail=1; }
+}
+dcl_expect slot0 0x100001000
+dcl_expect slot1 0x0
+dcl_expect chained 0
+dcl_expect trie 0
+dcl_expect buildver 0
+dcl_expect dyldinfo 1
+dcl_expect bindsym _mkchained_sym
+[ "$dcl_fail" -eq 0 ] && ok "declassify: rebase rewritten, bind zeroed and named, modern commands stripped"
+
+# __LINKEDIT has to end exactly where the file now does: the conversion
+# appends the rebase/bind streams past its old end and extends it to cover
+# them. This is one of the two sanctioned exceptions to "never move a byte",
+# so it gets its own assertion rather than riding along with the others.
+le=$(dcl_val linkedit); le_off=${le%%+*}; le_size=${le##*+}
+osize=$(dcl_val size)
+if [ "$((le_off + le_size))" -eq "$osize" ]; then
+    ok "declassify: __LINKEDIT extended to cover the appended opcode streams"
+else
+    bad "declassify: __LINKEDIT" "ends at $((le_off + le_size)), file is $osize bytes"
+fi
+rebase=$(dcl_val rebase); bind=$(dcl_val bind)
+if [ "${rebase##*+}" -gt 0 ] && [ "${bind##*+}" -gt 0 ]; then
+    ok "declassify: LC_DYLD_INFO_ONLY points at non-empty rebase and bind streams"
+else
+    bad "declassify: LC_DYLD_INFO_ONLY" "empty stream(s): rebase=$rebase bind=$bind"
+fi
+
+# BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting
+# the conversion into src/declassify.c did not change it: the two front-ends
+# are handed the same buffer by md_declassify and must write the same bytes.
+# Not a hard requirement of THIS script (macho9 stands alone, and $BIN need
+# not hold anything else), so its absence is a SKIP, not a failure.
+if [ -x "$BIN/patch_macho" ]; then
+    "$BIN/patch_macho" "$T/chained.in" "$T/chained.pm" >/dev/null 2>&1
+    if cmp -s "$T/chained.out" "$T/chained.pm"; then
+        ok "declassify: byte-identical to patch_macho's output"
+    else
+        bad "declassify: byte-identity" "macho9 and patch_macho produced different bytes"
+    fi
+    # And the divergence that IS deliberate: the same refusal, two exit codes.
+    # patch_macho returns a flat 1 for everything; this verb distinguishes
+    # "examined it and declined" (EX_REFUSED=2) from an operational failure.
+    # A Task 2 wrapper has to map one onto the other, so it is pinned here.
+    "$BIN/patch_macho" "$T/not-a-macho-in-cli-test" "$T/nope_pm" >/dev/null 2>&1 && pm_rc=0 || pm_rc=$?
+    [ "$pm_rc" -eq 1 ] && ok "declassify: patch_macho still exits 1 where this verb refuses with 2" \
+        || bad "declassify: patch_macho exit" "expected the historical flat 1, got $pm_rc"
+else
+    skip "declassify: byte-identity with patch_macho" "no patch_macho in $BIN"
+fi
+
+# IDEMPOTENCY, which install.sh's wrapper depends on: running the conversion
+# over an already-converted binary passes it through unchanged instead of
+# failing on the fixups that are no longer there.
+"$MACHO9" declassify "$T/chained.out" "$T/chained.again" >"$T/again.out" 2>"$T/again.err" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then
+    if cmp -s "$T/chained.out" "$T/chained.again"; then
+        ok "declassify: an already-converted binary passes through byte-for-byte"
+    else
+        bad "declassify: idempotency" "a second conversion changed the bytes"
+    fi
+    grep -q "Already patched" "$T/again.out" \
+        && ok "declassify: says it passed through" \
+        || bad "declassify: pass-through message" "no 'Already patched' line: $(cat "$T/again.out")"
+else
+    bad "declassify: idempotency" "exited $rc on an already-converted binary: $(cat "$T/again.err")"
+fi
+
+# IN and OUT may be the same path: the whole image is in memory before a byte
+# is written, so this is an in-place conversion and must land the same bytes.
+cp "$T/chained.in" "$T/inplace"
+"$MACHO9" declassify "$T/inplace" "$T/inplace" >/dev/null 2>"$T/inplace.err" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then
+    cmp -s "$T/inplace" "$T/chained.out" \
+        && ok "declassify: IN and OUT may be the same file" \
+        || bad "declassify: IN == OUT" "in-place output differs from the two-file output"
+else
+    bad "declassify: IN == OUT" "exited $rc : $(cat "$T/inplace.err")"
+fi
+
+# Refusals. Each is a decision macho9 made about the INPUT, so each is
+# EX_REFUSED (2), never the flat 1 that means "something went wrong running
+# macho9" -- that distinction is what --capabilities' exitcodes line promises.
+"$MACHO9" declassify "$T/not-a-macho-in-cli-test" "$T/nope" >/dev/null 2>"$T/nm.err" && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && ok "declassify: refuses a non-Mach-O with EX_REFUSED" \
+    || bad "declassify: non-Mach-O" "expected 2, got $rc"
+[ -e "$T/nope" ] && bad "declassify: non-Mach-O" "wrote an output file for an input it refused" \
+    || ok "declassify: a refused input produces no output file"
+
+# A 64-bit Mach-O with NEITHER chained fixups NOR LC_DYLD_INFO_ONLY -- a plain
+# object file is exactly that -- is not idempotent-pass-through material and
+# not convertible either. It must say so and refuse, not quietly copy.
+"$CC" -c -O2 $FIXTURE_FLAGS "$T/main.c" -o "$T/plain.o"
+"$MACHO9" declassify "$T/plain.o" "$T/plain.out" >/dev/null 2>"$T/plain.err" && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && ok "declassify: refuses a Mach-O with no chained fixups and no LC_DYLD_INFO_ONLY" \
+    || bad "declassify: no fixups" "expected 2, got $rc"
+grep -q "No chained fixups found" "$T/plain.err" \
+    && ok "declassify: says why it refused" \
+    || bad "declassify: no fixups" "no reason on stderr: $(cat "$T/plain.err")"
+
+# An OUT that cannot be written is an OPERATIONAL failure, not a refusal: the
+# input was fine and macho9 declined nothing. It must exit 1, and this is the
+# assertion that keeps EX_REFUSED from decaying into "any nonzero".
+"$MACHO9" declassify "$T/chained.in" "$T/no/such/dir/out" >/dev/null 2>"$T/unwritable.err" && rc=0 || rc=$?
+[ "$rc" -eq 1 ] && ok "declassify: an unwritable OUT is a failure (1), not a refusal (2)" \
+    || bad "declassify: unwritable OUT" "expected 1, got $rc"
 
 # ============================================================================
 # macho9 stands alone

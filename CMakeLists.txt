@@ -42,8 +42,9 @@ if(MAVERICKS_MODE STREQUAL "cross")
   message(STATUS "macho-tools: cross build against ${MAVERICKS_SDK}")
 endif()
 
-# No -std=: patch_macho.c assigns to an anonymous struct, which clang rejects
-# under -std=c11 and accepts in its default gnu dialect. Verified across all six.
+# No -std=: src/declassify.c (patch_macho's conversion, extracted in Task 0.6b)
+# assigns to an anonymous struct, which clang rejects under -std=c11 and accepts
+# in its default gnu dialect. Verified across all six.
 set(CMAKE_C_STANDARD_REQUIRED OFF)
 
 # The toolkit library the seven rewriters are being converged onto (docs/PROPOSAL.md
@@ -54,7 +55,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -87,8 +88,10 @@ endforeach()
 
 # change_dylib is now only its old argument grammar: it includes src/rewrite.h
 # (the whole rewrite, shared with macho9's dylib/rpath/lc) and src/lc_kinds.h.
-# add_version_min likewise includes only src/version_min.h. patch_macho
-# includes src/image.h directly; fix_macho includes src/fat.h directly (Task 5:
+# add_version_min likewise includes only src/version_min.h. patch_macho is now
+# only its `IN OUT` grammar and its own open+write over src/declassify.h's
+# shared conversion (Task 0.6b), which macho9's `declassify` verb calls too;
+# fix_macho includes src/fat.h directly (Task 5:
 # both fat-aware tools now validate a fat file's arch table through the same
 # code, src/fat.c, instead of each having its own hand-rolled walk that could
 # -- and did -- disagree about validation). rename_segment is now only its
