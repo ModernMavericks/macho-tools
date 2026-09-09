@@ -147,55 +147,66 @@ int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth) {
     return 0;
 }
 
+struct mg_collect_ctx {
+    const uint8_t *buf;
+    size_t fsize;
+    uint64_t base;
+    uint64_t *out;
+    uint8_t *kinds;
+    uint32_t max;
+    uint32_t n;
+};
+
+/* mg_collect's mi_each_lc callback: LC_FUNCTION_STARTS' leading (base-relative)
+ * delta, and every S_INIT_FUNC_OFFSETS entry, both resolved to an absolute
+ * address and appended to ctx->out. Read-only over the command chain; returns
+ * non-zero to stop on the first malformed/overflowing structure, same as the
+ * hand-rolled loop's early `return -1`. */
+static int mg_collect_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_collect_ctx *ctx = (struct mg_collect_ctx *)ctx_;
+    if (lc->cmd == LC_FUNCTION_STARTS) {
+        const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+        if (d->datasize) {
+            if ((size_t)d->dataoff + d->datasize > ctx->fsize) return -1;
+            uint64_t d0;
+            if (mu_decode(ctx->buf + d->dataoff, ctx->buf + d->dataoff + d->datasize, &d0) == 0)
+                return -1;
+            if (ctx->n >= ctx->max) return -1;
+            if (ctx->kinds) ctx->kinds[ctx->n] = MG_K_FUNC;   /* the first function's address */
+            ctx->out[ctx->n++] = ctx->base + d0;
+        }
+    }
+    if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *sect = (const struct section_64 *)(seg + 1);
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
+            if ((size_t)sect[j].offset + sect[j].size > ctx->fsize) return -1;
+            const uint32_t *e = (const uint32_t *)(ctx->buf + sect[j].offset);
+            uint64_t cnt = sect[j].size / sizeof(uint32_t);
+            for (uint64_t k = 0; k < cnt; k++) {
+                if (ctx->n >= ctx->max) return -1;
+                if (ctx->kinds) ctx->kinds[ctx->n] = MG_K_FUNC;   /* initializers are functions */
+                ctx->out[ctx->n++] = ctx->base + e[k];
+            }
+        }
+    }
+    return 0;
+}
+
 int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
                       uint32_t max, uint32_t *n_out) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    uint64_t base = 0;
-    uint32_t n = 0;
-    /* image base first: __TEXT is the segment mapping the header (fileoff 0, has content) */
-    const uint8_t *q = sp;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)q;
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)q;
-            if (seg->fileoff == 0 && seg->filesize > 0) { base = seg->vmaddr; break; }
-        }
-        q += lc->cmdsize;
-    }
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
+    /* image base first: __TEXT is the segment mapping the header (fileoff 0,
+     * has content) -- exactly what mi_text_base derives. */
+    uint64_t base = mi_text_base(&im);
     if (!base) return -1;
 
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_FUNCTION_STARTS) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            if (d->datasize) {
-                if ((size_t)d->dataoff + d->datasize > fsize) return -1;
-                uint64_t d0;
-                if (mu_decode(buf + d->dataoff, buf + d->dataoff + d->datasize, &d0) == 0)
-                    return -1;
-                if (n >= max) return -1;
-                if (kinds) kinds[n] = MG_K_FUNC;   /* the first function's address */
-                out[n++] = base + d0;
-            }
-        }
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            const struct section_64 *sect = (const struct section_64 *)(sp + sizeof *seg);
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
-                if ((size_t)sect[j].offset + sect[j].size > fsize) return -1;
-                const uint32_t *e = (const uint32_t *)(buf + sect[j].offset);
-                uint64_t cnt = sect[j].size / sizeof(uint32_t);
-                for (uint64_t k = 0; k < cnt; k++) {
-                    if (n >= max) return -1;
-                    if (kinds) kinds[n] = MG_K_FUNC;   /* initializers are functions */
-                    out[n++] = base + e[k];
-                }
-            }
-        }
-        sp += lc->cmdsize;
-    }
+    struct mg_collect_ctx ctx = { buf, fsize, base, out, kinds, max, 0 };
+    if (!mi_each_lc(&im, mg_collect_cb, &ctx)) return -1;
+    uint32_t n = ctx.n;
+
     /* Compact unwind last, so element order is stable across before/after. The
      * cast is safe: with `out` non-NULL the walker only reads. */
     if (mg_trie_walk((uint8_t *)buf, fsize, 0, 0, base, out, kinds, &n, max) != 0) return -1;
