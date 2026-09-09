@@ -17,6 +17,10 @@ static int name_eq(const char *field, const char *want) {
 }
 
 int mi_open(const char *path, mi_image *out) {
+    return mi_open_slack(path, 0, out);
+}
+
+int mi_open_slack(const char *path, size_t slack, mi_image *out) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return 1;
 
@@ -24,7 +28,9 @@ int mi_open(const char *path, mi_image *out) {
     if (fstat(fd, &st) != 0) { close(fd); return 1; }
     if (st.st_size < (off_t)sizeof(struct mach_header_64)) { close(fd); return 1; }
 
-    uint8_t *buf = (uint8_t *)malloc((size_t)st.st_size);
+    size_t cap = (size_t)st.st_size + slack;
+    if (cap < (size_t)st.st_size) { close(fd); return 1; }   /* overflow */
+    uint8_t *buf = (uint8_t *)malloc(cap);
     if (!buf) { close(fd); return 1; }
     if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
         free(buf); close(fd); return 1;
@@ -53,6 +59,7 @@ int mi_open(const char *path, mi_image *out) {
 
     out->buf  = buf;
     out->size = (size_t)st.st_size;
+    out->cap  = cap;
     out->hdr  = hdr;
     return 0;
 }
@@ -60,7 +67,7 @@ int mi_open(const char *path, mi_image *out) {
 void mi_close(mi_image *im) {
     if (!im) return;
     free(im->buf);
-    im->buf = NULL; im->size = 0; im->hdr = NULL;
+    im->buf = NULL; im->size = 0; im->cap = 0; im->hdr = NULL;
 }
 
 void mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx) {

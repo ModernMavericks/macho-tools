@@ -40,6 +40,38 @@ static void test_open_accepts_a_real_macho(void) {
     mi_close(&im);
 }
 
+static void test_open_reports_its_capacity(void) {
+    /* size is the FILE's size; cap is how much buffer there is. With no slack
+     * asked for they are equal, and a caller that grows in place can tell the
+     * difference rather than guessing. */
+    mi_image im;
+    if (mi_open(FIXTURE, &im) != 0) { CHECK(0, "capacity: fixture would not open"); return; }
+    CHECK(im.size == 8528, "mi_open size == 8528 (got %lu)", (unsigned long)im.size);
+    CHECK(im.cap == im.size, "mi_open cap == size (got %lu vs %lu)",
+          (unsigned long)im.cap, (unsigned long)im.size);
+    mi_close(&im);
+}
+
+static void test_open_slack_allocates_real_headroom(void) {
+    /* patch_macho appends rebase/bind streams into the tail of its buffer, so it
+     * over-allocates. That need is why mi_open alone could not serve it. The
+     * headroom must be genuinely writable, not merely promised -- hence the
+     * write to the last byte and the read back. */
+    const size_t slack = 2u * 1024 * 1024;
+    mi_image im;
+    int rc = mi_open_slack(FIXTURE, slack, &im);
+    CHECK(rc == 0, "mi_open_slack(fixture, 2MB) == 0 (got %d)", rc);
+    if (rc != 0) return;
+    CHECK(im.size == 8528, "  size is still the FILE size, 8528 (got %lu)",
+          (unsigned long)im.size);
+    CHECK(im.cap >= im.size + slack, "  cap >= size + slack (got %lu, want >= %lu)",
+          (unsigned long)im.cap, (unsigned long)(im.size + slack));
+    CHECK(im.hdr->magic == MH_MAGIC_64, "  and it is still a valid image");
+    im.buf[im.cap - 1] = 0xA5;
+    CHECK(im.buf[im.cap - 1] == 0xA5, "  the last slack byte is writable");
+    mi_close(&im);
+}
+
 static void test_open_refuses_a_missing_file(void) {
     mi_image im;
     CHECK(mi_open("tests/no-such-file.macho", &im) != 0, "mi_open(missing) refuses");
@@ -116,6 +148,8 @@ static void test_text_base_is_the_segment_mapping_the_header(void) {
 
 int main(void) {
     test_open_accepts_a_real_macho();
+    test_open_reports_its_capacity();
+    test_open_slack_allocates_real_headroom();
     test_open_refuses_a_missing_file();
     test_open_refuses_a_non_macho();
     test_each_lc_visits_every_command();

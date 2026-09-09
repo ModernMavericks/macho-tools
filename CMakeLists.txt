@@ -76,9 +76,10 @@ foreach(tool IN LISTS MACHO_TOOLS)
   mavericks_assert_binary_compatible(${tool})
 endforeach()
 
-# change_dylib is the one tool that includes macho_grow.h, which now includes
-# src/uleb.h. The other five reach nothing in src/ yet.
+# change_dylib includes macho_grow.h, which includes src/uleb.h; patch_macho
+# includes src/image.h directly. The other four reach nothing in src/ yet.
 target_link_libraries(change_dylib PRIVATE macho9core)
+target_link_libraries(patch_macho PRIVATE macho9core)
 
 install(TARGETS ${MACHO_TOOLS} RUNTIME DESTINATION bin)
 

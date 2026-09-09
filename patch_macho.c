@@ -13,6 +13,8 @@
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 
+#include "image.h"
+
 #define LC_DYLD_EXPORTS_TRIE    0x80000033
 #define LC_DYLD_CHAINED_FIXUPS  0x80000034
 #define LC_BUILD_VERSION_CMD    0x00000032
@@ -70,21 +72,28 @@ static void ob_str(struct opbuf *b, const char *s) {
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "Usage: %s input output\n", argv[0]); return 1; }
 
-    /* Read file */
-    int fd = open(argv[1], O_RDONLY);
-    struct stat st; fstat(fd, &st);
-    size_t fsize = st.st_size;
-    uint8_t *buf = malloc(fsize + 2*1024*1024);
-    if (read(fd, buf, fsize) != (ssize_t)fsize) { perror("read"); return 1; }
-    close(fd);
-
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "Not 64-bit Mach-O (magic=0x%x)\n", hdr->magic); return 1; }
+    /* Read file. The 2MB of slack is this tool's own requirement: it appends the
+     * rebuilt rebase/bind streams into the tail of the buffer rather than
+     * reallocating, so the headroom has to be there from the start. That is why
+     * mi_open alone could not serve this caller. */
+    mi_image im;
+    if (mi_open_slack(argv[1], 2*1024*1024, &im) != 0) {
+        fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", argv[1]);
+        return 1;
+    }
+    size_t fsize = im.size;
+    uint8_t *buf = im.buf;
+    struct mach_header_64 *hdr = im.hdr;
 
     /* Collect segments and find special load commands */
     struct segment_command_64 *segs[32] = {0};
     int nsegs = 0;
-    uint64_t image_base_vmaddr = 0; /* __TEXT's vmaddr: the pre-slide base. */
+    /* __TEXT's vmaddr: the pre-slide base. Was a strcmp inside the walk below;
+     * segname is a char[16] that need not be NUL-terminated, so strcmp could run
+     * off the end of a 16-character name. mi_find_segment compares against the
+     * field width instead. */
+    struct segment_command_64 *text_seg = mi_find_segment(&im, "__TEXT");
+    uint64_t image_base_vmaddr = text_seg ? text_seg->vmaddr : 0;
     uint32_t exports_off = 0, exports_size = 0;
     uint32_t fixups_off = 0, fixups_size = 0;
     int has_dyld_info_only = 0;
@@ -98,7 +107,6 @@ int main(int argc, char **argv) {
         struct load_command *lc = (struct load_command *)lcp;
         if (lc->cmd == LC_SEGMENT_64) {
             struct segment_command_64 *seg = (struct segment_command_64 *)lc;
-            if (strcmp(seg->segname, "__TEXT") == 0) image_base_vmaddr = seg->vmaddr;
             segs[nsegs++] = seg;
         } else if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
             uint32_t *d = (uint32_t *)lc;
@@ -125,7 +133,7 @@ int main(int argc, char **argv) {
      * tool safely on an already-converted binary. */
     if (!fixups_off && has_dyld_info_only) {
         printf("Already patched (LC_DYLD_INFO_ONLY present, no chained fixups) — passing through.\n");
-        fd = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0755);
+        int fd = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0755);
         if (fd < 0) { perror("create output"); return 1; }
         if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); close(fd); return 1; }
         close(fd);
@@ -345,7 +353,7 @@ int main(int argc, char **argv) {
     }
 
     /* Write output */
-    fd = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    int fd = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (fd < 0) { perror("create output"); return 1; }
     write(fd, buf, new_end);
     close(fd);

@@ -19,7 +19,8 @@
 
 typedef struct {
     uint8_t               *buf;   /* whole file, heap; owned by the mi_image */
-    size_t                 size;
+    size_t                 size;  /* the FILE's size -- what was read in */
+    size_t                 cap;   /* how much buffer there is; >= size */
     struct mach_header_64 *hdr;   /* == (struct mach_header_64 *)buf */
 } mi_image;
 
@@ -28,6 +29,13 @@ typedef struct {
  * (unreadable, too short, wrong magic, load commands running past the end).
  * On failure *out is untouched and nothing is allocated. */
 int mi_open(const char *path, mi_image *out);
+
+/* As mi_open, but allocate `slack` writable bytes beyond the file, for a caller
+ * that appends into the tail of the buffer rather than reallocating (patch_macho
+ * builds its rebase/bind streams that way). `size` still reports the file size;
+ * `cap` reports the allocation. Prefer plain mi_open and a realloc where the
+ * growth is bounded and known -- this exists for the case where it is not. */
+int mi_open_slack(const char *path, size_t slack, mi_image *out);
 
 /* Free the buffer and zero the struct. Safe on an all-zero mi_image. */
 void mi_close(mi_image *im);
