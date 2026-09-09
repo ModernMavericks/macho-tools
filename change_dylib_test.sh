@@ -912,6 +912,80 @@ after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{p
     && ok "fat collision: input left completely untouched on refusal" \
     || bad "fat collision" "input was modified despite the refusal"
 
+# --- 14. write_atomic must replace the FILE, never the PATH -------------------
+# Regression: the mkstemp+rename atomic write (landed alongside case 12/13's
+# fat fixes) rename()d over the PATH the caller gave it. When that path is a
+# SYMLINK -- exactly the shape of a macOS framework dylib,
+# Foo.framework/Foo -> Versions/A/Foo -- rename() replaced the symlink
+# itself with a plain file and left the real target (and anything else that
+# follows the same symlink) unpatched, while the tool still printed
+# "Updated" and exited 0. The same rename-over-path also breaks a file with
+# multiple hard links: the sibling name keeps the stale content because
+# rename() gives its own name a fresh inode. Both are covered here, plus the
+# ordinary (single-link, non-symlink) case that must keep its atomicity win.
+rpath_present() { otool -l "$1" | grep -A2 LC_RPATH | grep -q "path $2 "; }
+
+# 14a. symlink: change_dylib is pointed at the LINK; the LINK must still be
+# a symlink to the same name afterward, and the REAL file it names must be
+# the one that changed. An xattr on the real file (quarantine et al. are
+# exactly this) must survive too.
+build_main "$T/wa_real"
+xattr -w com.macho9.test present "$T/wa_real" 2>/dev/null || true
+ln -s wa_real "$T/wa_link"
+before_ino=$(stat -f %i "$T/wa_real")
+"$T/change_dylib" "$T/wa_link" -add-rpath /opt/macho9_wa_pad >/dev/null \
+    || bad "write_atomic symlink" "change_dylib failed"
+if [ -L "$T/wa_link" ] && [ "$(readlink "$T/wa_link")" = "wa_real" ]; then
+    ok "write_atomic: symlink is still a symlink, to the same name"
+else
+    bad "write_atomic symlink" "wa_link is no longer a symlink to wa_real"
+fi
+after_ino=$(stat -f %i "$T/wa_real")
+if rpath_present "$T/wa_real" "/opt/macho9_wa_pad"; then
+    ok "write_atomic: the REAL target got the change (via the symlink)"
+else
+    bad "write_atomic symlink" "wa_real does not have the new rpath"
+fi
+[ "$before_ino" != "$after_ino" ] \
+    && ok "write_atomic: symlink's real target rewritten via mkstemp+rename (fresh inode = atomicity kept)" \
+    || bad "write_atomic symlink" "wa_real's inode did not change ($before_ino) -- fell back to in-place write instead of the atomic path"
+xv=$(xattr -p com.macho9.test "$T/wa_real" 2>/dev/null || echo MISSING)
+case "$xv" in
+    present) ok "write_atomic: xattr on the real target survived" ;;
+    MISSING) bad "write_atomic symlink" "xattr dropped from the real target" ;;
+    *) bad "write_atomic symlink" "xattr corrupted: got '$xv'" ;;
+esac
+
+# 14b. hard link: two names, one inode. A naive mkstemp+rename gives one
+# name a fresh inode and leaves the other showing stale content -- so this
+# must fall back to an in-place write, and BOTH names must show the change.
+build_main "$T/wa_hard1"
+ln "$T/wa_hard1" "$T/wa_hard2"
+"$T/change_dylib" "$T/wa_hard1" -add-rpath /opt/macho9_wa_hardpad >/dev/null \
+    || bad "write_atomic hardlink" "change_dylib failed"
+if rpath_present "$T/wa_hard1" "/opt/macho9_wa_hardpad" && rpath_present "$T/wa_hard2" "/opt/macho9_wa_hardpad"; then
+    ok "write_atomic: hard-linked sibling shows the change too (still one inode)"
+else
+    bad "write_atomic hardlink" "sibling link did not see the update -- hard-link group was split"
+fi
+[ "$(stat -f %i "$T/wa_hard1")" = "$(stat -f %i "$T/wa_hard2")" ] \
+    && ok "write_atomic: hard-link count preserved (both names, one inode)" \
+    || bad "write_atomic hardlink" "wa_hard1 and wa_hard2 no longer share an inode"
+
+# 14c. ordinary case: no symlink, no extra hard link -- must still take the
+# atomic mkstemp+rename path (the whole reason write_atomic exists: a write
+# failing partway must never leave a half-written binary in place).
+build_main "$T/wa_plain"
+before_ino=$(stat -f %i "$T/wa_plain")
+"$T/change_dylib" "$T/wa_plain" -add-rpath /opt/macho9_wa_plain >/dev/null \
+    || bad "write_atomic ordinary" "change_dylib failed"
+after_ino=$(stat -f %i "$T/wa_plain")
+if rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && [ "$before_ino" != "$after_ino" ]; then
+    ok "write_atomic: ordinary case still goes through mkstemp+rename (new inode)"
+else
+    bad "write_atomic ordinary" "expected the change applied via a fresh inode (rpath present=$(rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && echo y || echo n), inode $before_ino -> $after_ino)"
+fi
+
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
 echo "change_dylib_test: $fails FAILED"; exit 1
