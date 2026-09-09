@@ -90,6 +90,7 @@ target_link_libraries(patch_macho PRIVATE macho9core)
 target_link_libraries(fix_macho PRIVATE macho9core)
 target_link_libraries(add_version_min PRIVATE macho9core)
 target_link_libraries(rename_segment PRIVATE macho9core)
+target_link_libraries(retag_swift_classes PRIVATE macho9core)
 
 # The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): `verify`/`info`/`grow`
 # delegate in-process to macho9core + macho_grow.h; `dylib`/`rpath`/`lc`
