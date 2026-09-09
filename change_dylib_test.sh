@@ -1292,6 +1292,89 @@ else
     bad "long -change (-grow)" "the long replacement path is not intact in the output file"
 fi
 
+# --- 18. heap overflow when TWO load commands share an install name and one
+#     -change matches both ---------------------------------------------------
+#
+# Case 17 fixed add_bytes to account for -change/-change-rpath growth at all,
+# but it still budgeted "one grown command per -change/-change-rpath
+# ARGUMENT" -- and build_lcs's matching loop grows EVERY load command that
+# matches, not just one. Two LC_LOAD_DYLIBs can legitimately carry the same
+# install name (nothing in the format forbids it), so a single -change for
+# that name needs budget for TWO grown commands, and the per-argument budget
+# gave it one. Confirmed as a real heap buffer overflow at both 3000 and
+# 9000-char replacement paths under DYLD_INSERT_LIBRARIES=libgmalloc.dylib
+# against the pre-fix binary: exit 139 (SIGSEGV) both times; without
+# libgmalloc, the corruption doesn't crash (same reasoning as case 17's own
+# comment on why this suite otherwise avoids running under libgmalloc: heap
+# corruption without a detector watching can silently succeed) -- which is
+# exactly why the assertion below runs THIS ONE case under libgmalloc itself
+# rather than relying on a by-hand confirmation. Fixed by change_growth_bytes,
+# which walks the REAL load commands instead of the -change arguments -- see
+# its own comment in change_dylib.c for the one (safe, over- not under-)
+# approximation it still makes.
+#
+# The fixture needs two commands sharing a name, which a normal link never
+# produces -- ld itself resolves a second dylib against the first one it
+# already loaded under the same install name, so only one LC_LOAD_DYLIB ever
+# gets emitted (confirmed by hand: linking two distinct .dylib files built
+# with an identical -install_name still yields exactly one LC_LOAD_DYLIB).
+# This instead uses -insert to add a SECOND "@loader_path/liba.dylib"
+# LC_LOAD_DYLIB onto a binary that already links liba.dylib normally --
+# `-insert` never checks for an existing match, so it happily produces the
+# duplicate, and does so through the tool's own tested code path rather than
+# hand-built bytes.
+build_main "$T/dupname_fixture"
+"$T/change_dylib" "$T/dupname_fixture" -grow -insert "@loader_path/liba.dylib" >/dev/null \
+    || bad "dupname fixture setup" "-insert failed unexpectedly"
+dup_count=$(otool -l "$T/dupname_fixture" | grep -c "name @loader_path/liba.dylib")
+[ "$dup_count" -eq 2 ] \
+    && ok "dupname fixture: two LC_LOAD_DYLIBs now share an install name" \
+    || bad "dupname fixture" "expected 2 load commands named @loader_path/liba.dylib, otool shows $dup_count"
+
+DUP_LONG_PATH=$(printf 'Z%.0s' $(seq 1 3000))
+
+# Plain run (no libgmalloc): proves correct BEHAVIOR -- no crash, and both
+# matching commands actually got renamed, not just one silently dropped or
+# truncated.
+rc=0
+"$T/change_dylib" "$T/dupname_fixture" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
+    >"$T/dupname_change.out" 2>"$T/dupname_change.err" || rc=$?
+if [ "$rc" -gt 127 ]; then
+    bad "dup-install-name -change" "tool was killed by a signal (exit $rc) -- the heap overflow this case exists to catch"
+elif [ "$rc" -ne 0 ]; then
+    bad "dup-install-name -change" "expected success but exited $rc: $(cat "$T/dupname_change.err")"
+else
+    ok "dup-install-name -change: completed without crashing (exit 0)"
+fi
+new_count=$(otool -l "$T/dupname_fixture" | grep -c "name $DUP_LONG_PATH")
+[ "$new_count" -eq 2 ] \
+    && ok "dup-install-name -change: BOTH matching load commands were renamed, not just one" \
+    || bad "dup-install-name -change" "expected both duplicate commands renamed (2 occurrences), found $new_count"
+
+# libgmalloc run: this is the assertion that actually DISCRIMINATES the bug --
+# guard-malloc places each allocation so an overrun faults immediately instead
+# of landing in unrelated heap memory, which is what makes the corrupted-but-
+# doesn't-crash outcome above insufficient proof on its own. Skipped (loudly,
+# not silently) if this host has no libgmalloc.
+if [ -f /usr/lib/libgmalloc.dylib ]; then
+    build_main "$T/dupname_fixture_gm"
+    "$T/change_dylib" "$T/dupname_fixture_gm" -grow -insert "@loader_path/liba.dylib" >/dev/null \
+        || bad "dupname fixture setup (libgmalloc copy)" "-insert failed unexpectedly"
+    rc=0
+    DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
+        "$T/change_dylib" "$T/dupname_fixture_gm" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
+        >"$T/dupname_gm.out" 2>"$T/dupname_gm.err" || rc=$?
+    if [ "$rc" -gt 127 ]; then
+        bad "dup-install-name -change (libgmalloc)" "killed by a signal (exit $rc) under libgmalloc -- the heap overflow this case exists to catch"
+    elif [ "$rc" -ne 0 ]; then
+        bad "dup-install-name -change (libgmalloc)" "expected success but exited $rc: $(cat "$T/dupname_gm.err")"
+    else
+        ok "dup-install-name -change (libgmalloc): completed without crashing (exit 0)"
+    fi
+else
+    skip "dup-install-name -change (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
+fi
+
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
 echo "change_dylib_test: $fails FAILED"; exit 1

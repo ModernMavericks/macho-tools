@@ -146,8 +146,12 @@ static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
  * count via *out_ncmds, and how many changes applied via *out_mods. Does NOT
  * mutate the header, so it is safe to call more than once (e.g. again after the
  * header pad has been grown). `verbose` prints the per-change diagnostics once.
+ * Returns 0 on success, -1 (message already on stderr) if a dylib or LC_RPATH
+ * command's name offset is out of bounds for its own cmdsize -- see
+ * mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are unspecified on
+ * failure; the caller must not use them.
  */
-static void build_lcs(const uint8_t *buf, const struct change *changes, int nchanges,
+static int build_lcs(const uint8_t *buf, const struct change *changes, int nchanges,
                       const char *const *adds, int nadds,
                       const char *const *inserts, int ninserts,
                       const uint32_t *strip, int nstrip,
@@ -206,8 +210,14 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
          * excluded from matching just below, same as before. */
         if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
             const struct dylib_command *dc = (const struct dylib_command *)lcp;
-            const char *name = (const char *)lcp + dc->dylib.name.offset;
             if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
+                const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+                if (!name) {
+                    fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
+                                    "exceeds cmdsize %u); refusing\n",
+                            dc->dylib.name.offset, cmdsize);
+                    return -1;
+                }
                 for (int c = 0; c < nchanges; c++)
                     if (strcmp(name, changes[c].old_path) == 0) { matched = c; break; }
                 /* Deletion is decided by ord_is_deleted -- the SAME predicate
@@ -235,7 +245,13 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
         int rmatched = -1;
         if (lc->cmd == LC_RPATH) {
             const struct rpath_command *rc = (const struct rpath_command *)lcp;
-            const char *rp = (const char *)lcp + rc->path.offset;
+            const char *rp = mo_lc_str_at(lc, rc->path.offset);
+            if (!rp) {
+                fprintf(stderr, "ERROR: malformed LC_RPATH command (path offset %u "
+                                "exceeds cmdsize %u); refusing\n",
+                        rc->path.offset, cmdsize);
+                return -1;
+            }
             for (int c = 0; c < nrchanges; c++)
                 if (strcmp(rp, rchanges[c].old_path) == 0) { rmatched = c; break; }
             if (rmatched >= 0 && rchanges[rmatched].new_path != NULL) {
@@ -335,6 +351,85 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
     *out_off = new_off;
     *out_ncmds = ncmds;
     *out_mods = mods;
+    return 0;
+}
+
+/*
+ * Exact (or, in one rare case, safely over-) budget for the extra bytes
+ * build_lcs's -change/-change-rpath growth will write beyond each matched
+ * command's ORIGINAL cmdsize -- computed by walking the real load commands
+ * in `buf` the same way build_lcs's own matching loop does, instead of
+ * assuming "one grown command per -change/-change-rpath argument".
+ *
+ * That assumption was the bug: more than one load command can carry the same
+ * install name (or rpath), and build_lcs grows EVERY command that matches, so
+ * a binary with two LC_LOAD_DYLIBs naming the same library and a single
+ * -change for it needs budget for two grown commands, not one. Reproduced
+ * with two synthetic LC_LOAD_DYLIBs sharing an install name and a -change
+ * whose replacement path is ~9000 chars: the old per-argument budget sized
+ * new_lcs for one growth, build_lcs wrote two, and the second write ran past
+ * the allocation -- a heap overflow confirmed under libgmalloc (SIGSEGV; without
+ * it, memory corruption with exit 1).
+ *
+ * This performs the identical sizing build_lcs performs -- round8(base +
+ * strlen(new_path) + 1), kept only if it exceeds the original cmdsize -- over
+ * every matching command rather than once per argument, and mirrors
+ * build_lcs's own "first match in `changes`/`rchanges` wins" rule so it
+ * agrees with what build_lcs will actually do for the ordinary case where a
+ * name is named once. It is not bit-exact in one edge case: if the SAME old
+ * path appears in both a -change and a separate -delete, build_lcs's
+ * `ord_is_deleted` check (not visible to a single first-match walk) makes
+ * that command a deletion with no growth, while this still counts it as
+ * growing. That only over-budgets -- harmless slack in new_lcs -- never
+ * under-budgets, which is the property that matters here. Writes nothing;
+ * reads bounds-checked via mo_lc_str_at, and silently does not count a
+ * malformed command as a match -- build_lcs performs the same check and
+ * refuses the whole operation before it would ever act on that command, so
+ * excluding it here cannot lead to writing past what was budgeted.
+ */
+static uint32_t change_growth_bytes(const uint8_t *buf, uint32_t ncmds,
+                                     const struct change *changes, int nchanges,
+                                     const struct change *rchanges, int nrchanges) {
+    uint32_t growth = 0;
+    const uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)lcp;
+        uint32_t cmdsize = lc->cmdsize;
+
+        if (mo_is_ordinal_lc(lc->cmd)) {
+            const struct dylib_command *dc = (const struct dylib_command *)lcp;
+            const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+            if (name) {
+                for (int c = 0; c < nchanges; c++) {
+                    if (strcmp(name, changes[c].old_path) != 0) continue;
+                    if (changes[c].new_path != NULL) {
+                        size_t base = dc->dylib.name.offset;
+                        size_t new_len = strlen(changes[c].new_path) + 1;
+                        uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+                        if (needed > cmdsize) growth += needed - cmdsize;
+                    }
+                    break;
+                }
+            }
+        } else if (lc->cmd == LC_RPATH) {
+            const struct rpath_command *rc = (const struct rpath_command *)lcp;
+            const char *rp = mo_lc_str_at(lc, rc->path.offset);
+            if (rp) {
+                for (int c = 0; c < nrchanges; c++) {
+                    if (strcmp(rp, rchanges[c].old_path) != 0) continue;
+                    if (rchanges[c].new_path != NULL) {
+                        size_t base = rc->path.offset;
+                        size_t new_len = strlen(rchanges[c].new_path) + 1;
+                        uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+                        if (needed > cmdsize) growth += needed - cmdsize;
+                    }
+                    break;
+                }
+            }
+        }
+        lcp += cmdsize;
+    }
+    return growth;
 }
 
 /* process_one's return codes. PO_SKIP is not an error: it means `label` is not
@@ -407,35 +502,21 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
      * cmdsize -- build_lcs's `matched`/`rmatched` branches size the rewritten
      * command as (base + strlen(new_path) + 1), rounded up, keeping whichever
      * is larger of that or the original cmdsize (see the "if (needed <
-     * cmdsize) needed = cmdsize;" lines below). Before this, add_bytes never
-     * accounted for that growth at all: a long enough -change replacement
-     * (repro: `-change /usr/lib/libSystem.B.dylib` with a ~9000-char new
-     * path) made build_lcs write well past the end of a buffer sized only
-     * for the -add/-insert commands, a heap buffer overflow (confirmed
-     * under libgmalloc: SIGSEGV). This doesn't know here which existing
-     * command a given -change will match (that's decided later, by name,
-     * inside build_lcs) or that command's actual `base` (dc->dylib.name.
-     * offset / rc->path.offset), so it bounds it the same way -add above
-     * does: as if the match grew a brand-new, full-size
-     * dylib_command/rpath_command header plus the new path -- at least as
-     * large as `base + new_len` can ever be for a well-formed command,
-     * whatever the match turns out to be (or if it turns out not to match
-     * anything at all, in which case this is simply unused slack).
-     *
-     * NOT a worst-case bound, though: this budgets ONE grown command per
-     * `-change`/`-change-rpath` TERM, but the matching loop above grows
-     * every LOAD COMMAND that matches -- one term can match more than one
-     * command. A binary carrying the same install name (or rpath) on two or
-     * more load commands and a single `-change`/`-change-rpath` for it will
-     * still under-budget add_bytes and can overflow new_lcs, same class of
-     * bug as the one this comment used to describe. Unhandled; not fixed
-     * here. */
-    for (int c = 0; c < nchanges; c++)
-        if (changes[c].new_path != NULL && changes[c].new_path[0] != '\0')
-            add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(changes[c].new_path) + 1 + 7) & ~7UL);
-    for (int c = 0; c < nrchanges; c++)
-        if (rchanges[c].new_path != NULL)
-            add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(rchanges[c].new_path) + 1 + 7) & ~7UL);
+     * cmdsize) needed = cmdsize;" lines in build_lcs). The real bound is
+     * "sum, over every EXISTING LOAD COMMAND that will actually match, of
+     * that command's own growth" -- not "one grown command per -change
+     * argument". A single -change argument can match more than one load
+     * command (two LC_LOAD_DYLIBs can legitimately carry the same install
+     * name), and each one grows independently, so a per-argument budget
+     * undercounts whenever that happens: this was a real heap buffer
+     * overflow (confirmed under libgmalloc: SIGSEGV; without libgmalloc,
+     * silent corruption then exit 1), reproduced with two synthetic
+     * LC_LOAD_DYLIBs sharing an install name and a -change whose replacement
+     * path is ~9000 chars. change_growth_bytes computes the real bound by
+     * walking the actual load commands the same way build_lcs's matching
+     * loop does -- see its own comment for the one (safe, over- not
+     * under-) approximation it still makes. */
+    add_bytes += change_growth_bytes(buf, hdr->ncmds, changes, nchanges, rchanges, nrchanges);
 
     /* Map each existing 1-based library ordinal to its new value (0 = deleted),
      * built once by mo_map_build so this rewrite and the ordinal renumbering
@@ -462,9 +543,12 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
     /* Build the new table once to learn its size (and print diagnostics). */
     uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
     uint32_t new_off, new_ncmds; int modifications;
-    build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
-              rchanges, nrchanges, radds, nradds,
-              new_lcs, &new_off, &new_ncmds, &modifications, 1);
+    if (build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+                   rchanges, nrchanges, radds, nradds,
+                   new_lcs, &new_off, &new_ncmds, &modifications, 1) != 0) {
+        free(new_lcs);
+        return PO_ERROR;
+    }
 
     if (modifications == 0) { printf("%s: nothing to change.\n", label); free(new_lcs); return 0; }
 
@@ -504,9 +588,12 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
          * the copied load commands reflect the shift. */
         free(new_lcs);
         new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-        build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
-                  rchanges, nrchanges, radds, nradds,
-                  new_lcs, &new_off, &new_ncmds, &modifications, 0);
+        if (build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+                       rchanges, nrchanges, radds, nradds,
+                       new_lcs, &new_off, &new_ncmds, &modifications, 0) != 0) {
+            free(new_lcs);
+            return PO_ERROR;
+        }
     }
 
     /* Check the map against what build_lcs actually emitted -- not just

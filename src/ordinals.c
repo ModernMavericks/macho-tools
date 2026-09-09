@@ -28,6 +28,11 @@ int mo_is_ordinal_lc(uint32_t cmd) {
            cmd == LC_REEXPORT_DYLIB || cmd == LC_LOAD_UPWARD_DYLIB;
 }
 
+const char *mo_lc_str_at(const struct load_command *lc, uint32_t offset) {
+    if (offset >= lc->cmdsize) return NULL;
+    return (const char *)lc + offset;
+}
+
 int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
                   int (*is_deleted)(const char *name, void *ctx), void *ctx,
                   mo_map *map, int *out_nnew) {
@@ -64,7 +69,13 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
         }
         if (mo_is_ordinal_lc(lc->cmd)) {
             const struct dylib_command *dc = (const struct dylib_command *)p;
-            const char *name = (const char *)p + dc->dylib.name.offset;
+            const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+            if (!name) {
+                fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
+                                "exceeds cmdsize %u); refusing\n",
+                        dc->dylib.name.offset, lc->cmdsize);
+                return -1;
+            }
             if (++nold > MO_MAX_DYLIBS) {
                 fprintf(stderr, "ERROR: more than %d dylibs\n", MO_MAX_DYLIBS);
                 return -1;

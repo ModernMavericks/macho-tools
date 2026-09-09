@@ -310,12 +310,14 @@ static const char *lc_name(uint32_t cmd) {
     }
 }
 
-/* dylib_command/rpath_command names are a lc_str offset relative to the
- * command's own start; bounds-check against cmdsize before trusting it, same
- * caution change_dylib.c's build_lcs takes reading the same fields. */
+/* dylib_command/rpath_command names are an lc_str offset relative to the
+ * command's own start; the bounds check against cmdsize lives once, in
+ * mo_lc_str_at (ordinals.h), which change_dylib.c's build_lcs and
+ * mo_map_build also call -- so this dump can't drift out of agreement with
+ * what the rewriters consider in-bounds, the way it briefly did. */
 static const char *lc_str_at(const struct load_command *lc, uint32_t offset) {
-    if (offset >= lc->cmdsize) return "(malformed: offset past cmdsize)";
-    return (const char *)lc + offset;
+    const char *s = mo_lc_str_at(lc, offset);
+    return s ? s : "(malformed: offset past cmdsize)";
 }
 
 static void info_cb(const struct load_command *lc, void *ctx_) {
