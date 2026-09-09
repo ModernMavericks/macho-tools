@@ -102,6 +102,22 @@ typedef struct {
      * (src/segname.h), shared with the rename_segment grammar. */
     const char      *segment_rename_old;
     const char      *segment_rename_new;
+    /* OUT, and the only field here that is not an instruction: if non-NULL,
+     * the rewriter ADDS to it the number of LC_SEGMENT_64s it actually
+     * renamed -- summed over every slice of a fat container, and left alone
+     * entirely when the rewrite is refused, since a refused rewrite renamed
+     * nothing on disk.
+     *
+     * It exists because "how many matched" is not derivable from outside.
+     * mseg_rename_lc matches with strncmp over the 16-byte segname field
+     * (src/segname.h), and a segname is neither NUL-terminated nor free of
+     * whitespace, so no front-end can recover the count by reading a printed
+     * name back: an OLD longer than 16 bytes whose first 16 match, or a
+     * segname containing a space, both defeat it. The old `rename_segment`
+     * grammar needs the count for its one output line AND for its exit 2 when
+     * nothing matched, so the count has to come from the code that did the
+     * matching. cli/macho9.c's `segment` verb reports it. */
+    int             *segment_renamed;
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
 } mr_ops;
 

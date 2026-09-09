@@ -1720,44 +1720,51 @@ cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
 # image's initializers and compact-unwind entries still name functions
 # LC_FUNCTION_STARTS knows about. That is an OFFSET question, and a segment
 # rename moves no offset -- it writes characters into segname/sectname fields.
-# So mr_process_thin skips the gate for a rename-only operation set, and this
-# is the assertion that it really does.
+# So mr_process_thin skips the gate for a rename-only operation set, and these
+# are the assertions that it really does, and that it still runs for everything
+# else.
 #
-# The probe is a real binary on THIS host that the gate rejects for an
-# ORDINARY operation -- `macho9 lc -delete uuid`, which cannot be blamed on a
-# rename. mg_plausible's heuristic has false positives on stock 10.9 system
-# dylibs (it rejects libSystem.B.dylib and libc++.1.dylib here and accepts
-# /bin/ls and /bin/cat), which is exactly why the gate must not sit on a path
-# that cannot benefit from it. SKIPped, loudly, where no such binary exists:
-# which files trip the heuristic is a property of what is installed, not of
-# this repo.
-mgp_victim=''
-for f in /usr/lib/*.dylib; do
-    [ -r "$f" ] || continue
-    case $(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' ') in cffaedfe) ;; *) continue ;; esac
-    cp "$f" "$T/mgp" 2>/dev/null || continue
-    chmod u+w "$T/mgp" 2>/dev/null || continue
-    "$MACHO9" lc "$T/mgp" -delete uuid >/dev/null 2>"$T/mgp.err" && continue
-    grep -q 'no known function' "$T/mgp.err" || continue
-    mgp_victim=$f; break
-done
-if [ -n "$mgp_victim" ]; then
-    cp "$mgp_victim" "$T/mgp"; chmod u+w "$T/mgp"
-    mgp_before=$(shasum -a 256 < "$T/mgp" | cut -d' ' -f1)
-    if "$MACHO9" segment "$T/mgp" __DATA __DATA_R9 >/dev/null 2>"$T/mgp2.err"; then
-        [ "$(shasum -a 256 < "$T/mgp" | cut -d' ' -f1)" != "$mgp_before" ] \
-            && ok "segment: renames a binary mg_plausible rejects for other operations" \
-            || bad "segment: mg_plausible scope" "exited 0 but changed nothing"
-    else
-        bad "segment: mg_plausible scope" "refused $mgp_victim: $(cat "$T/mgp2.err")"
-    fi
-    # ...and the gate is still THERE for anything that can move an offset.
-    cp "$mgp_victim" "$T/mgp3"; chmod u+w "$T/mgp3"
-    "$MACHO9" lc "$T/mgp3" -delete uuid >/dev/null 2>&1 \
-        && bad "segment: mg_plausible scope" "lc -delete stopped meeting the gate too" \
-        || ok "segment: an operation that CAN move an offset still meets the gate"
+# The input is tests/mkimplausible.c's committed, hand-built fixture, not a
+# scan of /usr/lib for a real dylib the heuristic gets wrong. An earlier version
+# did scan, and SKIPped when it found nothing -- which passes on 10.9 and covers
+# nothing on the cross runner, where those dylibs live only in the shared cache.
+# The fixture's own header says how it trips the gate.
+"$CC" -O2 -Wall -Wextra -I "$SRC_DIR" -o "$T/mkimplausible" "$SRC_DIR/../tests/mkimplausible.c"
+"$T/mkimplausible" "$T/implausible"
+
+# `|| true`: a refusal is the expected outcome and this suite runs under set -e.
+"$MACHO9" verify "$T/implausible" >/dev/null 2>"$T/imp_verify.err" || true
+grep -q 'implausible' "$T/imp_verify.err" \
+    && ok "segment: the fixture really is one mg_plausible rejects" \
+    || bad "segment: mg_plausible fixture" "macho9 verify did not call it implausible: $(cat "$T/imp_verify.err")"
+
+# An ordinary operation on it still meets the gate and is refused, with the
+# input left alone -- so the skip below is narrow, not a hole.
+cp "$T/implausible" "$T/imp_lc"
+imp_before=$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)
+if "$MACHO9" lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
+    bad "segment: mg_plausible scope" "lc -delete uuid was NOT refused, so the gate is gone"
 else
-    skip "segment: the mg_plausible scope" "no /usr/lib dylib on this host trips that heuristic"
+    grep -q 'no known function' "$T/imp_lc.err" \
+        && ok "segment: an operation that CAN move an offset still meets the gate" \
+        || bad "segment: mg_plausible scope" "lc -delete refused for another reason: $(cat "$T/imp_lc.err")"
+fi
+[ "$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)" = "$imp_before" ] \
+    && ok "segment: that refusal left the input untouched" \
+    || bad "segment: mg_plausible scope" "the refused input was modified"
+
+# ...and a rename of the very same file goes through, and really renames.
+cp "$T/implausible" "$T/imp_seg"
+if "$MACHO9" segment "$T/imp_seg" __DATA __DATA_R9 >/dev/null 2>"$T/imp_seg.err"; then
+    "$T/segread" segs "$T/imp_seg" > "$T/imp_segs"
+    grep -q "^SEG __DATA_R9$" "$T/imp_segs" && ! grep -q "^SEG __DATA$" "$T/imp_segs" \
+        && ok "segment: renames a binary mg_plausible rejects for other operations" \
+        || bad "segment: mg_plausible scope" "exited 0 but did not rename: $(cat "$T/imp_segs")"
+    grep -q "^SECT __DATA/" "$T/imp_segs" \
+        && bad "segment: mg_plausible scope" "a section still names __DATA" \
+        || ok "segment: and renames that binary's section segnames too"
+else
+    bad "segment: mg_plausible scope" "refused the fixture: $(cat "$T/imp_seg.err")"
 fi
 
 # ============================================================================

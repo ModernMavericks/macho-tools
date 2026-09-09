@@ -130,7 +130,22 @@ if ! "$T/has_lc" "$T/in" "$LC_DYLD_CHAINED_FIXUPS"; then
 fi
 echo "chained-fixups: input uses LC_DYLD_CHAINED_FIXUPS, converting"
 
-"$BIN/patch_macho" "$T/in" "$T/out" >/dev/null
+"$BIN/patch_macho" "$T/in" "$T/out" >"$T/patch.out"
+
+# The CONVERTING path's last stdout line. patch_macho printed
+# "Wrote %s (%zu bytes)" only when it actually converted something, naming OUT
+# and OUT's size; compat/patch_macho.sh has to print that itself now, because
+# `macho9 declassify` writes into a temp whose name must not leak. 10.9 cannot
+# emit chained fixups, so this is the ONLY place the converting path runs --
+# tests/wrapper_test.sh can only reach the pass-through, where the line is
+# correctly absent.
+want_wrote="Wrote $T/out ($(wc -c < "$T/out" | tr -d ' ') bytes)"
+if [ "$(sed -n '$p' "$T/patch.out")" = "$want_wrote" ]; then
+    echo "chained-fixups: patch_macho named the file it wrote, with its size"
+else
+    echo "chained-fixups: FAIL — expected '$want_wrote' as the last stdout line, got: $(cat "$T/patch.out")" >&2
+    exit 1
+fi
 
 if "$T/has_lc" "$T/out" "$LC_DYLD_CHAINED_FIXUPS"; then
     echo "chained-fixups: FAIL — output still carries LC_DYLD_CHAINED_FIXUPS" >&2

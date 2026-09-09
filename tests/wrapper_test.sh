@@ -31,6 +31,7 @@ BIN="${1:?usage: wrapper_test.sh <bindir>}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 FIXTURE="$HERE/fixture.macho"
+CC="${CC:-clang}"
 
 for t in macho9 patch_macho change_dylib add_version_min rename_segment retag_swift_classes; do
     [ -x "$BIN/$t" ] || { echo "wrapper_test: $BIN/$t not found or not executable" >&2; exit 1; }
@@ -242,6 +243,61 @@ cmp -s "$T/f" "$T/o" \
     && ok "patch_macho: the pass-through output is the input, byte for byte" \
     || bad "patch_macho pass-through" "output differs from input"
 
+# THE FOURTH OBSERVABLE: OUT's MODE AND INODE. patch_macho created OUT with
+# open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755); `macho9 declassify` writes
+# through wa_write_atomic, which always produces 0755 and always a new inode.
+# The wrapper installs macho9's output through OUT's own path so all four cases
+# below match the C tool. Every expected value here was measured against the
+# pre-wrapper binary.
+#
+# `stat -f` with an explicit format is a machine-readable request, not
+# human-readable output being parsed -- same category as this file's
+# `od -An -tx1`, and it is BSD stat, which every macOS has.
+mode_of() { stat -f '%Lp' "$1"; }
+ino_of()  { stat -f '%i' "$1"; }
+
+# 1. a FRESH OUT takes 0755 masked by the umask, not a bare 0755.
+fresh
+rm -f "$T/o"
+( cd "$T" && umask 077 && "$BIN/patch_macho" f o ) >/dev/null 2>&1
+[ "$(mode_of "$T/o")" = 700 ] \
+    && ok "patch_macho: a fresh OUT gets 0755 masked by the umask (0700 under 077)" \
+    || bad "patch_macho fresh mode" "mode $(mode_of "$T/o"), want 700"
+fresh
+rm -f "$T/o"
+( cd "$T" && umask 022 && "$BIN/patch_macho" f o ) >/dev/null 2>&1
+[ "$(mode_of "$T/o")" = 755 ] \
+    && ok "patch_macho: and 0755 under umask 022" \
+    || bad "patch_macho fresh mode" "mode $(mode_of "$T/o"), want 755"
+
+# 2. an EXISTING OUT keeps its own mode and its own inode: open() changes
+#    neither, and neither may this wrapper.
+fresh
+: > "$T/o"; chmod 600 "$T/o"; before_ino=$(ino_of "$T/o")
+run patch_macho f o
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/o")" = 600 ] && [ "$(ino_of "$T/o")" = "$before_ino" ] \
+    && ok "patch_macho: an existing OUT keeps its mode and its inode" \
+    || bad "patch_macho existing OUT" "exit $rc, mode $(mode_of "$T/o") (want 600), inode changed=$([ "$(ino_of "$T/o")" = "$before_ino" ] && echo no || echo YES)"
+
+# 3. IN == OUT is the same inode, so a hard link to it must see the new bytes.
+fresh
+chmod 640 "$T/f"; rm -f "$T/flink"; ln "$T/f" "$T/flink"; before_ino=$(ino_of "$T/f")
+run patch_macho f f
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/f")" = 640 ] && [ "$(ino_of "$T/f")" = "$before_ino" ] \
+    && cmp -s "$T/f" "$T/flink" \
+    && ok "patch_macho: IN == OUT keeps the inode, the mode and every hard link" \
+    || bad "patch_macho IN == OUT" "exit $rc, mode $(mode_of "$T/f"), inode changed=$([ "$(ino_of "$T/f")" = "$before_ino" ] && echo no || echo YES)"
+rm -f "$T/flink"
+
+# 4. an existing OUT that is not writable FAILS, even where the directory is.
+fresh
+: > "$T/o"; chmod 444 "$T/o"
+run patch_macho f o
+[ "$rc" -eq 1 ] \
+    && ok "patch_macho: an unwritable existing OUT fails, as open(O_WRONLY) did" \
+    || bad "patch_macho unwritable OUT" "exit $rc, want 1"
+chmod 644 "$T/o"; rm -f "$T/o"
+
 # ---- add_version_min ----------------------------------------------------
 #
 # The one tool with nothing to reshape: both front-ends call
@@ -293,6 +349,51 @@ run rename_segment f __DATA __DATA
     && ok "rename_segment: renaming a segment to its own name is a match, not 'nothing to do'" \
     || bad "rename_segment same name" "exit $rc, stdout: $(cat "$T/out")"
 
+# THE MATCH COUNT MUST COME FROM THE MATCHER, not from a printed name. These
+# two shapes are why: mseg_rename_lc matches with strncmp over the 16-byte
+# segname field, which is neither NUL-terminated nor free of whitespace, so a
+# wrapper that recovered the count by reading names back out of `macho9 info`
+# got both wrong -- it exited 2 and left the file alone where the C tool
+# renamed and exited 0. Both were measured against the pre-wrapper binary
+# before this wrapper was changed to take the count from
+# `macho9 segment: renamed=<N>`.
+#
+# The odd segnames are made with `macho9 segment` itself, which is how they are
+# reachable in the first place; both are legal in a char[16] field.
+fresh
+( cd "$T" && "$BIN/macho9" segment f __DATA 1234567890123456 ) >/dev/null 2>&1
+before=$(sha "$T/f")
+run rename_segment f 12345678901234567 __X
+[ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) 12345678901234567 -> __X' "$T/out" \
+    && [ "$(sha "$T/f")" != "$before" ] \
+    && ok "rename_segment: an OLD longer than 16 bytes still matches on its first 16" \
+    || bad "rename_segment 17-byte OLD" "exit $rc, stdout: $(cat "$T/out")"
+
+fresh
+( cd "$T" && "$BIN/macho9" segment f __DATA 'A B' ) >/dev/null 2>&1
+before=$(sha "$T/f")
+run rename_segment f 'A B' __Y
+[ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) A B -> __Y' "$T/out" \
+    && [ "$(sha "$T/f")" != "$before" ] \
+    && ok "rename_segment: a segname containing whitespace still matches" \
+    || bad "rename_segment whitespace segname" "exit $rc, stdout: $(cat "$T/out")"
+
+# The count itself, and that it is the count and not a constant: rename a
+# segment name the image carries TWICE (which is what this tool produces --
+# see src/segname.h on __DATA_CONST -> __DATA leaving two __DATAs).
+fresh
+( cd "$T" && "$BIN/macho9" segment f __TEXT __DUP ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f __DATA __DUP ) >/dev/null 2>&1
+run rename_segment f __DUP __ONE
+[ "$rc" -eq 0 ] && grep -qxF 'f: renamed 2 segment(s) __DUP -> __ONE' "$T/out" \
+    && ok "rename_segment: reports the real match count, not 1" \
+    || bad "rename_segment count" "exit $rc, stdout: $(cat "$T/out")"
+
+# ...and the signal that count comes from is one this build advertises.
+"$BIN/macho9" --capabilities 2>/dev/null | grep -q '^verb segment .*reports=renamed' \
+    && ok "capabilities: this build advertises segment reports=renamed" \
+    || bad "capabilities" "segment does not advertise reports=renamed, which the wrapper needs"
+
 # THIN ONLY. rename_segment ran mi_open, which refuses a fat container;
 # `macho9 segment` goes through mr_apply_file, which handles one. Without the
 # wrapper's gate this would rename inside a fat file the C tool refused --
@@ -316,35 +417,35 @@ else
     skip "rename_segment: fat container" "no fat Mach-O found on this host"
 fi
 
-# mg_plausible, from the caller's side. mr_apply_file's last gate rejects real,
-# untouched 10.9 system dylibs -- a heuristic false positive, not something a
+# mg_plausible, from the caller's side. mr_apply_file's last gate rejects some
+# perfectly ordinary images -- a heuristic false positive, not something a
 # rewrite did -- and rename_segment never had such a gate at all. src/rewrite.c
-# now skips it for a rename-only operation set (tests/cli_test.sh asserts that
-# directly, and asserts the gate is still there for everything else); this is
-# the same property seen through the wrapper, which is where a caller sees it.
+# skips it for a rename-only operation set (tests/cli_test.sh asserts that
+# directly at the verb, and asserts the gate still runs for everything else);
+# this is the same property seen through the wrapper, which is where a caller
+# sees it.
 #
-# The probe is a binary the gate rejects for an ORDINARY operation, so it
-# cannot be blamed on the rename. SKIPped, loudly, where the host has none.
-victim=''
-for f in /usr/lib/*.dylib; do
-    [ -r "$f" ] || continue
-    case $(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' ') in cffaedfe) ;; *) continue ;; esac
-    cp "$f" "$T/v" 2>/dev/null || continue
-    chmod u+w "$T/v" 2>/dev/null || continue
-    ( cd "$T" && "$BIN/macho9" lc v -delete uuid ) >/dev/null 2>"$T/verr" && continue
-    grep -q 'no known function' "$T/verr" || continue
-    victim=$f; break
-done
-if [ -n "$victim" ]; then
-    cp "$victim" "$T/v"; chmod u+w "$T/v"
-    before=$(sha "$T/v")
-    run rename_segment v __DATA __DATA_R9
-    [ "$rc" -eq 0 ] && grep -q '^v: renamed ' "$T/out" && [ "$(sha "$T/v")" != "$before" ] \
-        && ok "rename_segment: renames a binary mg_plausible rejects for other operations" \
-        || bad "rename_segment mg_plausible" "exit $rc on $victim: $(cat "$T/err")"
-else
-    skip "rename_segment: the mg_plausible scope" "no /usr/lib dylib on this host trips that heuristic"
-fi
+# The input is tests/mkimplausible.c's committed fixture, built here. It used
+# to be a scan of /usr/lib for a real dylib the heuristic gets wrong, with a
+# SKIP when none turned up -- which passes on 10.9 and covers nothing on the
+# cross runner, leaving the one behavioural change this task made to macho9
+# with no coverage where it is built.
+"$CC" -O2 -Wall -Wextra -I "$ROOT/src" -o "$T/mkimplausible" "$HERE/mkimplausible.c"
+"$T/mkimplausible" "$T/imp"
+
+# The fixture is refused for an ordinary operation, so the pass below is narrow.
+( cd "$T" && "$BIN/macho9" lc imp -delete uuid ) >/dev/null 2>"$T/imperr"
+[ $? -ne 0 ] && grep -q 'no known function' "$T/imperr" \
+    && ok "rename_segment: the fixture really is one the gate rejects for other operations" \
+    || bad "rename_segment mg_plausible" "lc -delete uuid was not refused: $(cat "$T/imperr")"
+
+cp "$T/imp" "$T/v"
+before=$(sha "$T/v")
+run rename_segment v __DATA __DATA_R9
+[ "$rc" -eq 0 ] && grep -qxF 'v: renamed 1 segment(s) __DATA -> __DATA_R9' "$T/out" \
+    && [ "$(sha "$T/v")" != "$before" ] \
+    && ok "rename_segment: renames a binary mg_plausible rejects for other operations" \
+    || bad "rename_segment mg_plausible" "exit $rc: $(cat "$T/err")"
 
 # The NEW-name length check and the arity check happen before any I/O, in
 # rename_segment's own words -- both come from compat/translate.sh.
@@ -409,6 +510,87 @@ run retag_swift_classes
 [ "$rc" -eq 1 ] && firstline_is "$T/err" "Usage: $BIN/retag_swift_classes binary [binary ...]" \
     && ok "retag_swift_classes: no argument is a usage error naming argv[0]" \
     || bad "retag_swift_classes usage" "exit $rc, stderr: $(head -1 "$T/err")"
+
+# ---- hostile argv shapes -----------------------------------------------
+#
+# A path with a SPACE, a path with a LEADING DASH, and an EMPTY string. All
+# three are shapes the wrappers were fixed for -- translate.sh's mt_quote does
+# the quoting, mw_run_atomic splits the path with parameter expansion rather
+# than dirname/basename (which would read a leading dash as an option) and
+# passes `--` to cp/rm/cat -- and none of them was covered, so the fixes could
+# have regressed silently. The reviewer verified all three against the
+# pre-wrapper binaries; these keep them verified.
+
+# A SPACE in the file name, on the mixed-family path -- the one that copies the
+# file aside, so the temp name has the space in it too. Asserted by comparing
+# against the same operations on an ordinarily-named copy.
+fresh
+cp "$FIXTURE" "$T/has space"
+( cd "$T" && "$BIN/change_dylib" "has space" -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>"$T/err"
+rc=$?
+( cd "$T" && "$BIN/change_dylib" f -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>&1
+[ "$rc" -eq 0 ] && cmp -s "$T/has space" "$T/f" \
+    && ok "change_dylib: a file name with a space rewrites identically" \
+    || bad "change_dylib spaced path" "exit $rc: $(cat "$T/err")"
+leftovers=$(ls -a "$T" | grep 'macho9-compat' || true)
+[ -z "$leftovers" ] \
+    && ok "change_dylib: and left no temp behind beside it" \
+    || bad "change_dylib spaced path" "left behind: $leftovers"
+rm -f "$T/has space"
+
+# A LEADING DASH. Every one of these tools took argv[1] as a path
+# unconditionally, so `-dashy` is a file name, not an option.
+fresh
+cp "$FIXTURE" "$T/-dashy"
+before=$(sha "$T/-dashy")
+( cd "$T" && "$BIN/change_dylib" -dashy -strip-lc uuid ) >/dev/null 2>"$T/err"
+rc=$?
+[ "$rc" -eq 0 ] && [ "$(sha "$T/-dashy")" != "$before" ] \
+    && ok "change_dylib: a file name starting with a dash is a file name" \
+    || bad "change_dylib leading dash" "exit $rc: $(cat "$T/err")"
+# ...and on the mixed-family path, where cp/rm/cat see it too. Compared against
+# the SAME operations on an ordinarily-named copy, so both sides are rewritten
+# here rather than relying on whatever $T/f happens to hold.
+fresh
+cp "$FIXTURE" "$T/-dashy"
+( cd "$T" && "$BIN/change_dylib" -dashy -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>"$T/err"
+rc=$?
+( cd "$T" && "$BIN/change_dylib" f -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>&1
+[ "$rc" -eq 0 ] && cmp -s "$T/-dashy" "$T/f" \
+    && ok "change_dylib: and on the multi-command path, where cp and cat see it" \
+    || bad "change_dylib leading dash, mixed" "exit $rc: $(cat "$T/err")"
+rm -f "$T/-dashy"
+
+# An EMPTY NEW segment name: legal (a segname may be all NULs) and matched by
+# tests/compat-matrix.tsv's `rename_segment f __DATA ''` row, whose C-side
+# output was "f: renamed 1 segment(s) __DATA -> " with the trailing space.
+fresh
+run rename_segment f __DATA ''
+[ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) __DATA -> ' "$T/out" \
+    && ok "rename_segment: an empty NEW name is accepted, and printed as empty" \
+    || bad "rename_segment empty NEW" "exit $rc, stdout: [$(cat "$T/out")]"
+
+# An EMPTY file name reaches open() as "" and fails there, on both sides.
+run change_dylib '' -strip-lc uuid
+[ "$rc" -ne 0 ] \
+    && ok "change_dylib: an empty file name fails rather than acting on something else" \
+    || bad "change_dylib empty path" "exit 0"
+
+# A SPACE in a retag_swift_classes argument, which is variadic -- so the space
+# must not split one file into two.
+fresh
+cp "$FIXTURE" "$T/two words"
+( cd "$T" && "$BIN/retag_swift_classes" "two words" f ) >"$T/out" 2>"$T/err"
+rc=$?
+[ "$rc" -eq 0 ] && grep -qxF 'total: 0 class record(s) retagged' "$T/out" \
+    && [ "$(wc -l < "$T/out" | tr -d ' ')" = 1 ] \
+    && ok "retag_swift_classes: a spaced argument stays one file" \
+    || bad "retag_swift_classes spaced path" "exit $rc, stdout: $(cat "$T/out")"
+rm -f "$T/two words"
 
 # ---- the emitted grammar is one this build actually has -----------------
 #

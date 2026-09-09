@@ -19,22 +19,34 @@
 # words.
 #
 # cli/macho9.c's cmd_segment lists THREE DELIBERATE DIVERGENCES a wrapper has
-# to account for, and running the file through `macho9 info` first is what
-# closes two of them at once -- it answers "is this the kind of file
-# rename_segment would touch?" and "how many segments does OLD name?" from
-# macho9's own stable output, without this wrapper re-deriving either.
+# to account for.
 #
-#   1. EXIT 2 WHEN NOTHING MATCHED. mr_apply_file reports "nothing to change"
-#      and exits 0; rename_segment exits 2. mseg_rename_image returns the
-#      match count, and `macho9 info` prints one "  segname=NAME ..." line per
-#      LC_SEGMENT_64, so the count is available here: zero matches means exit
-#      2, before anything is run and without touching the file -- which is
-#      also what rename_segment did (it wrote nothing in that case).
-#   2. STDOUT. rename_segment prints exactly one line. `macho9 segment` prints
-#      mr_apply_file's header-pad/updated chatter instead. So macho9's stdout
-#      is SUPPRESSED and this wrapper prints rename_segment's own line, with
-#      the count from step 1 -- byte-identical to the C tool's, on every
-#      rename_segment row of tests/compat-matrix.tsv that produced output.
+#   1. EXIT 2 WHEN NOTHING MATCHED, and 2. THE ONE-LINE MESSAGE. Both need the
+#      same number: how many LC_SEGMENT_64s the rename actually matched.
+#      rename_segment got it from mseg_rename_image's return value; this
+#      wrapper gets it from `macho9 segment`, which prints
+#
+#          macho9 segment: renamed=<N>
+#
+#      on success -- one line, key=value, in the shape --capabilities already
+#      established, and advertised as `verb segment reports=renamed` so this
+#      wrapper can check the build provides it rather than assume. macho9's own
+#      stdout is otherwise SUPPRESSED and this wrapper prints rename_segment's
+#      single line with that count, byte-identical to the C tool's.
+#
+#      IT IS NOT DERIVED FROM `macho9 info`. An earlier version of this wrapper
+#      counted "  segname=NAME ..." lines out of that dump with awk, and it was
+#      wrong twice over, both cases reachable and both measured: mseg_rename_lc
+#      matches with strncmp over the 16-byte segname field, so an OLD LONGER
+#      than 16 bytes whose first 16 match is a match the field-splitting count
+#      missed, and a segname CONTAINING WHITESPACE (legal, and producible with
+#      `macho9 segment f __TEXT 'A B'`) split across awk fields and missed too.
+#      Both made this wrapper exit 2, leaving the file untouched, where the C
+#      tool renamed and exited 0. tests/wrapper_test.sh pins both.
+#
+#      That was tests/README.md's second lesson -- never parse human-readable
+#      output as an oracle -- applied to `macho9 info` instead of to `otool`.
+#      The count now comes from the code that did the matching.
 #   3. mg_plausible. mr_apply_file used to run it before writing, on every
 #      operation, and refuse if it failed; rename_segment had no such gate.
 #      NOT reproduced HERE, because it is no longer a divergence: src/rewrite.c
@@ -54,10 +66,13 @@
 # "%s: not a readable 64-bit Mach-O" (exit 1). `macho9 segment` goes through
 # mr_apply_file, which HANDLES fat containers -- so it would rename inside a
 # fat file that rename_segment refused outright. `macho9 info` is thin-only in
-# exactly rename_segment's sense (it is a bare mi_open), so gating on it
-# reproduces the old refusal. This matters in practice: most binaries under
-# /System/Library/Frameworks are fat, so without the gate tests/differential.sh
-# would show this wrapper rewriting files the C tool would not have.
+# exactly rename_segment's sense (it is a bare mi_open), so gating on its EXIT
+# STATUS reproduces the old refusal. Its output is not read: the exit status is
+# the whole signal, which is the difference between using a machine-readable
+# result and parsing a human-readable one. This matters in practice: most
+# binaries under /System/Library/Frameworks are fat, so without the gate
+# tests/differential.sh would show this wrapper rewriting files the C tool
+# would not have.
 #
 # A FIFTH DIVERGENCE, NOT CLOSED, and the one real gap this wrapper ships
 # with: LC_LAZY_LOAD_DYLIB. mr_apply_file builds the library-ordinal map
@@ -105,6 +120,17 @@
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
+# Checked here, before sourcing, so a missing support file gets this message
+# rather than the shell's own "No such file or directory" from the `.` below.
+# The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
+# $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
+# one holding macho9 -- which is why MACHO9_COMPAT_DIR exists.
+[ -r "$MW_DIR/macho9-compat.sh" ] || {
+    printf '%s: cannot find macho9-compat.sh in %s -- macho9 and its two support\n' "$0" "$MW_DIR" >&2
+    printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set MACHO9_COMPAT_DIR to where they really are\n' "$0" >&2
+    exit 1
+}
 . "$MW_DIR/macho9-compat.sh"
 
 mw_translate rename_segment "$@" || exit $?
@@ -122,19 +148,33 @@ if [ ! -w "$mw_file" ]; then
     exit 1
 fi
 
-if ! macho9 info "$mw_file" >"$MW_T/info" 2>"$MW_T/infoerr"; then
+# THIN ONLY: `macho9 info` is a bare mi_open, which is the gate
+# rename_segment itself had. Only the exit status is used; the output is
+# discarded, deliberately (see the FOURTH DIVERGENCE note above).
+if ! macho9 info "$mw_file" >/dev/null 2>&1; then
     printf '%s: not a readable 64-bit Mach-O\n' "$mw_file" >&2
     exit 1
 fi
 
-# Exact string equality on the whole field, never a regex: OLD is caller data
-# and may contain regex metacharacters. `macho9 info` prints one
-# "  segname=NAME vmaddr=..." line per LC_SEGMENT_64, so awk's first
-# whitespace-separated field is exactly "segname=" plus the name.
-mw_n=$(awk -v want="segname=$mw_old" '$1 == want { n++ } END { print n + 0 }' "$MW_T/info")
+mw_run >"$MW_T/segout" 2>&1 || { cat "$MW_T/segout" >&2; exit 1; }
+
+# The match count, from the verb that did the matching. Anchored on the whole
+# line, so nothing else macho9 prints can be mistaken for it.
+mw_n=$(sed -n 's/^macho9 segment: renamed=\([0-9][0-9]*\)$/\1/p' "$MW_T/segout")
+if [ -z "$mw_n" ]; then
+    # The rename succeeded but this build's `macho9 segment` did not report the
+    # count, so there is no honest way to tell "renamed 0" (exit 2) from
+    # "renamed some" (exit 0, with the number in the message). Fail loudly
+    # rather than guess: `macho9 --capabilities` advertises the signal as
+    # `verb segment reports=renamed`, and a build without it is a mismatched
+    # install, not a file this tool should report on.
+    printf '%s: %s: this macho9 did not report a rename count' "$MW_TOOL" "$mw_file" >&2
+    printf ' (--capabilities should say "verb segment reports=renamed")\n' >&2
+    cat "$MW_T/segout" >&2
+    exit 1
+fi
 
 [ "$mw_n" -eq 0 ] && exit 2
 
-mw_run >/dev/null || exit 1
 printf '%s: renamed %d segment(s) %s -> %s\n' "$mw_file" "$mw_n" "$mw_old" "$mw_new"
 exit 0

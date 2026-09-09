@@ -83,6 +83,17 @@
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
+# Checked here, before sourcing, so a missing support file gets this message
+# rather than the shell's own "No such file or directory" from the `.` below.
+# The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
+# $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
+# one holding macho9 -- which is why MACHO9_COMPAT_DIR exists.
+[ -r "$MW_DIR/macho9-compat.sh" ] || {
+    printf '%s: cannot find macho9-compat.sh in %s -- macho9 and its two support\n' "$0" "$MW_DIR" >&2
+    printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set MACHO9_COMPAT_DIR to where they really are\n' "$0" >&2
+    exit 1
+}
 . "$MW_DIR/macho9-compat.sh"
 
 mw_translate change_dylib "$@" || exit $?

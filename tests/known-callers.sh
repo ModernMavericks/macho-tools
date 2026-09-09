@@ -216,6 +216,33 @@ grep -q 'still binds to the dylib being deleted' "$T/eatom" \
     && ok "atomicity: the refusal gives the same reason the C tool gave" \
     || bad "atomicity" "refused for some other reason: $(cat "$T/eatom")"
 
+# ---- the production pipeline, on a path with a space --------------------
+#
+# install.sh's wrapper binds $REAL to the user's real Claude Code binary and $T
+# to a temporary beside it, so a space in either is a user's directory name
+# away, not a hypothetical. The whole pipeline is replayed on one, and must
+# produce the same bytes as the ordinary run above -- which is also the
+# end-to-end check on translate.sh's quoting and on the temp-file split's
+# parameter-expansion path handling.
+mkdir -p "$T/dir with space"
+cp "$FIXTURE" "$T/dir with space/REAL"
+rc=0
+{ "$BIN/patch_macho" "$T/dir with space/REAL" "$T/dir with space/t" >/dev/null 2>&1 &&
+  "$BIN/add_version_min" "$T/dir with space/t"                      >/dev/null 2>&1 &&
+  "$BIN/change_dylib"    "$T/dir with space/t" -strip-lc uuid -strip-lc codesig \
+      -change "/usr/lib/libSystem.B.dylib"  "@loader_path/../S.dylib" \
+      -change "/usr/lib/libicucore.A.dylib" "@loader_path/../I.dylib" \
+      -change "/usr/lib/libc++.1.dylib"     "@loader_path/../c++.1.dylib" \
+      >/dev/null 2>&1; } || rc=$?
+got=$(sha "$T/dir with space/t" 2>/dev/null || echo none)
+[ "$rc" -eq 0 ] && [ "$got" = "$INSTALLSH_SHA" ] \
+    && ok "install.sh: the whole pipeline works on a path containing a space" \
+    || bad "install.sh spaced path" "exit $rc, sha256 $got, want $INSTALLSH_SHA"
+spaceleft=$(ls -a "$T/dir with space" | grep 'macho9-compat' || true)
+[ -z "$spaceleft" ] \
+    && ok "install.sh: and left no temp behind in that directory" \
+    || bad "install.sh spaced path" "left behind: $spaceleft"
+
 # And nothing may be left lying around next to the caller's file.
 leftovers=$(ls -a "$T" | grep 'macho9-compat' || true)
 [ -z "$leftovers" ] \

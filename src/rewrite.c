@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>       /* offsetof, for the mr_ops layout tripwire below */
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -110,6 +111,7 @@ struct mr_build_lcs_ctx {
     uint32_t new_off;
     uint32_t ncmds;
     int mods;
+    int renames;      /* how many LC_SEGMENT_64s the rename actually matched */
     int placed_inserts;
     int placed_rpath_inserts;
     int verbose;
@@ -309,6 +311,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
                 printf("  Rename segment: %s -> %s\n",
                        ctx->ops->segment_rename_old, ctx->ops->segment_rename_new);
             ctx->mods++;
+            ctx->renames++;
         }
         if (matched >= 0) {
             struct dylib_command *ndc = (struct dylib_command *)(ctx->new_lcs + ctx->new_off);
@@ -352,7 +355,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
  * here rather than folded into the per-command callback. */
 static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
                         uint8_t *new_lcs, uint32_t *out_off, uint32_t *out_ncmds,
-                        int *out_mods, int verbose) {
+                        int *out_mods, int *out_renames, int verbose) {
     struct mr_build_lcs_ctx ctx;
     memset(&ctx, 0, sizeof ctx);
     ctx.ops = ops;
@@ -414,6 +417,7 @@ static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
     *out_off = new_off;
     *out_ncmds = ncmds;
     *out_mods = mods;
+    *out_renames = ctx.renames;
     return 0;
 }
 
@@ -521,11 +525,38 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
 /* True if the only thing this operation set asks for is a segment rename:
  * no dylib or rpath change, append or insert, no load command to strip, and
  * no header growth. It exists for one decision -- see the mg_plausible gate
- * in mr_process_thin -- and is written as "everything else is empty" rather
- * than "a rename is requested" on purpose, so that an mr_ops field added
- * later makes this predicate FALSE (the conservative answer, keeping the
- * gate) until someone considers it, rather than silently widening what the
- * gate is skipped for. */
+ * in mr_process_thin.
+ *
+ * WRITTEN AS "EVERYTHING ELSE IS EMPTY", not as "a rename is requested",
+ * because the two differ for an operation set this function has never heard
+ * of. But C gives that no force on its own: a field added to mr_ops and not
+ * added to the conjunction below leaves this returning TRUE for
+ * {rename, that new operation}, which is exactly the silent widening the
+ * shape is meant to prevent. So the coupling is a BUILD failure, the same
+ * device commit 247d09d used for mg_classify/ml_bump_lc: add a field to
+ * mr_ops and this file stops compiling until someone comes here, reads the
+ * paragraph above, and decides whether the new field belongs in the
+ * conjunction.
+ *
+ * 144 and 136 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) on the only
+ * architecture this project builds (CMakeLists.txt pins
+ * CMAKE_OSX_ARCHITECTURES to x86_64), so literals are stable here. They are a
+ * tripwire, not a portability claim: on some other target the fix is to
+ * re-derive both numbers AND re-read this function, which is the whole point.
+ * Negative-array-size typedef rather than _Static_assert, which is C11 and
+ * this project sets no -std=.
+ *
+ * WHAT IT CATCHES, exactly: any field inserted among the existing ones (the
+ * offsetof moves), and any field appended that grows the struct (the sizeof
+ * moves) -- which is every pointer, every pointer/count pair, and every
+ * member wider than the tail padding. WHAT IT MISSES: a single bare `int`
+ * appended immediately after allow_grow, which lands in the 4 bytes of tail
+ * padding x86_64 alignment already leaves, changing neither number. That hole
+ * is named rather than papered over; an operation added as one lone int and
+ * nothing else is the one shape that still needs a human to remember. */
+typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
+    (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 136) ? 1 : -1];
+
 static int mr_is_rename_only(const mr_ops *ops) {
     return ops->segment_rename_old != NULL && ops->segment_rename_new != NULL &&
            ops->n_dylib_changes == 0 && ops->n_dylib_appends == 0 &&
@@ -625,8 +656,8 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
 
     /* Build the new table once to learn its size (and print diagnostics). */
     uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-    uint32_t new_off, new_ncmds; int modifications;
-    if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, 1) != 0) {
+    uint32_t new_off, new_ncmds; int modifications; int renames;
+    if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, &renames, 1) != 0) {
         free(new_lcs);
         return MR_ERROR;
     }
@@ -683,7 +714,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
          * the copied load commands reflect the shift. */
         free(new_lcs);
         new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-        if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, 0) != 0) {
+        if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, &renames, 0) != 0) {
             free(new_lcs);
             return MR_ERROR;
         }
@@ -757,6 +788,15 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
                         "offsets that name no known function. Left unmodified.\n", label);
         return MR_ERROR;
     }
+
+    /* Report the match count only now, past every gate: a refused rewrite
+     * renamed nothing on disk, and a front-end that reports "renamed 2" for a
+     * file it did not write would be the silent-success shape this codebase
+     * refuses. ADDED, not assigned, because mr_process_fat calls this once per
+     * slice and the caller's total is across all of them; within one slice the
+     * value is whatever the LAST mr_build_lcs produced (a rebuild after a
+     * header grow replaces it rather than doubling it). */
+    if (ops->segment_renamed) *ops->segment_renamed += renames;
 
     *pbuf = buf; *pfsize = fsize;
     *out_modified = 1;

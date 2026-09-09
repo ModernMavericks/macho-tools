@@ -196,6 +196,9 @@ static void print_ops_csv(int is_rpath) {
  *         kinds=a,b,c    (lc only) the KIND vocabulary -delete accepts
  *         versions=a,b   (minos only) the floors this build can target
  *         flags=a,b      verb-level flags, e.g. allow-grow
+ *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
+ *                         verb prints on success, by key -- today only
+ *                         `segment reports=renamed`
  *
  * `dylib` lists all five brief ops; `rpath` lists four -- everything but
  * `reexport`, which LC_RPATH's single kind makes meaningless. Both lists are
@@ -218,7 +221,10 @@ static int print_capabilities(void) {
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
-    printf("verb segment\n");
+    /* reports=renamed: this verb prints "macho9 segment: renamed=<N>" on
+     * success, the match count nothing outside the rewriter can derive. See
+     * cmd_segment for why, and compat/rename_segment.sh for who needs it. */
+    printf("verb segment reports=renamed\n");
     printf("verb retag-swift\n");
     printf("verb minos versions=10.9\n");
     printf("verb lc ops=delete kinds=");
@@ -675,8 +681,10 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  *
  *   - EXIT CODE WHEN NOTHING MATCHED. mr_apply_file reports "nothing to
  *     change" and exits 0; rename_segment exits 2. This verb hands back the
- *     shared driver's own code, exactly as dylib/rpath/lc do, and Task 2 is
- *     where the wrapper decides what the old grammar's callers should see.
+ *     shared driver's own code, exactly as dylib/rpath/lc do -- but it also
+ *     prints `macho9 segment: renamed=<N>`, so a wrapper can tell the two
+ *     apart exactly rather than by inference. See the count's own comment in
+ *     cmd_segment below.
  *   - mg_plausible. mr_process_thin runs it over the finished image before
  *     writing (src/rewrite.c, "Last gate before the bytes reach disk") and
  *     refuses if it fails; rename_segment has no such gate. So this verb can
@@ -696,11 +704,36 @@ static int cmd_segment(const char *path, const char *oldname, const char *newnam
                         "a segname field holds\n", newname, MSEG_NAME_MAX);
         return EX_REFUSED;
     }
+    int renamed = 0;
     mr_ops ops;
     memset(&ops, 0, sizeof ops);
     ops.segment_rename_old = oldname;
     ops.segment_rename_new = newname;
-    return mr_apply_file(path, &ops);
+    ops.segment_renamed = &renamed;
+    int rc = mr_apply_file(path, &ops);
+    /* THE MATCH COUNT, MACHINE-READABLE, and the reason mr_ops has an
+     * out-param for it at all.
+     *
+     * A caller cannot derive it. mseg_rename_lc matches with strncmp over the
+     * 16-byte segname field, which is neither NUL-terminated nor free of
+     * whitespace, so reading a name back out of `macho9 info`'s human-readable
+     * dump gets it wrong in at least two reachable ways -- an OLD longer than
+     * 16 bytes whose first 16 match, and a segname containing a space. That is
+     * tests/README.md's second lesson ("never parse human-readable output as
+     * an oracle") applied to this binary's own output rather than to otool's.
+     *
+     * So this verb states it, in the shape --capabilities already established:
+     * one line, key=value, greppable, no spaces in the value. It is what
+     * compat/rename_segment.sh needs for BOTH of its observables -- the count
+     * in its one output line, and its exit 2 when nothing matched -- and
+     * `verb segment reports=renamed` in --capabilities is how a wrapper checks
+     * this build provides it instead of assuming.
+     *
+     * Printed only on success, and it is 0 when nothing matched (mr_apply_file
+     * says "nothing to change." and writes nothing, which is exactly the case
+     * the old grammar reported as exit 2). */
+    if (rc == 0) printf("macho9 segment: renamed=%d\n", renamed);
+    return rc;
 }
 
 /* ---- retag-swift: a thin shell over mswift_retag_file --------------------
@@ -765,12 +798,11 @@ static int cmd_retag_swift(const char *path) {
  *
  * The conversion -- chained fixups lowered to LC_DYLD_INFO_ONLY, the exports
  * trie and every LC_BUILD_VERSION stripped, __LINKEDIT extended over the
- * appended opcode streams -- is src/declassify.c, shared with
- * compat/patch_macho.c so the two front-ends cannot disagree about what
- * declassifying a binary means. The old `patch_macho IN OUT` grammar reaches
- * this verb through compat/patch_macho.sh, and both write the very same buffer
- * md_declassify hands back, so their output files are byte-identical by
- * construction, not by two implementations happening to agree.
+ * appended opcode streams -- is src/declassify.c, and this verb is the only C
+ * front-end over it. The old `patch_macho IN OUT` grammar reaches THIS VERB
+ * through compat/patch_macho.sh, so there is no second implementation left to
+ * disagree with: the output file's bytes are identical by construction rather
+ * than by two implementations happening to agree.
  *
  * IN OUT, not in place: this is the one verb that reads one file and writes
  * another, because that is the grammar docs/PROPOSAL.md settled on and what

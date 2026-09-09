@@ -29,61 +29,141 @@
 # zero. tests/leaf-tool-crashes.sh depends on this, checking for exit 1 on a
 # fixture whose refusal reaches macho9 as EX_REFUSED.
 #
-# STDOUT -- ONE LINE SUPPRESSED. Everything md_declassify itself prints is
-# identical on both sides (it is the same function). The single difference,
-# measured over tests/compat-matrix.tsv's patch_macho rows and reproduced by
-# hand: on the PASS-THROUGH path -- an input that is already converted --
-# `macho9 declassify` prints a "Wrote OUT (N bytes)" line that patch_macho
-# never printed. cmd_declassify names that as a deliberate divergence: "a verb
-# that copies a file without saying so is the silent-success shape
-# docs/PROPOSAL.md's `verify` section exists to rule out."
+# THE WRITE, AND THE FOURTH OBSERVABLE. patch_macho created OUT with
+# open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755) and wrote into it. That fixes
+# more than the bytes:
 #
-# patch_macho reports that line only when it actually CONVERTED something, so
-# this wrapper drops it again when the run was a pass-through. A pass-through
-# is recognized by md_declassify's own "Already patched ... passing through."
-# line -- macho9's stable stdout, the same oracle tests/cli_test.sh asserts
-# against, and explicitly not otool/nm text (tests/README.md's second lesson).
-# Only the LAST line is ever dropped, and only if it starts with "Wrote ", so
-# a future message change degrades to printing one extra line rather than
-# eating a real one. tests/wrapper_test.sh pins both halves.
+#   * a FRESH OUT gets mode 0755 masked by the process umask -- 0700 under
+#     `umask 077`, not 0755;
+#   * an EXISTING OUT keeps whatever mode it already had, because open() does
+#     not change the mode of a file it did not create;
+#   * with IN == OUT it is the SAME INODE, so every hard link to it and every
+#     xattr on it survives;
+#   * and an existing OUT that is not writable makes it FAIL, even when the
+#     directory is writable.
 #
-# On the CONVERTING path nothing is dropped: patch_macho's own "Wrote %s (%zu
-# bytes)" and cmd_declassify's are the same format string with the same two
-# values, so passing macho9's through is byte-identical. 10.9's linker cannot
-# emit chained fixups, so that path is exercised by tests/chained-fixups.sh on
-# a modern host (it SKIPs here) rather than natively.
+# `macho9 declassify` writes through wa_write_atomic, which mkstemps beside
+# OUT, fchmods 0755 and renames -- so it produces 0755 regardless of umask,
+# regardless of OUT's previous mode, and always a NEW inode. Every one of the
+# four bullets above differs. File mode and inode are a fourth observable
+# alongside bytes, exit code and stdout, and this wrapper reproduces all four
+# rather than enumerating them:
 #
-# STDERR. macho9's, plus the teaching message. It differs from patch_macho's
-# in one enumerated place: for an unreadable input patch_macho printed
-# "IN: not a readable 64-bit Mach-O" and macho9 prefixes and expands that.
-# No caller byte-compares stderr; the one that shows it (install.sh's wrapper)
-# shows it to a human.
+#   macho9 writes a TEMP file, and this wrapper installs it over OUT with
+#   `cat TEMP > OUT` -- writing THROUGH the path, exactly as the C tool's
+#   open(O_TRUNC) did. An existing OUT keeps its inode, mode, hard links and
+#   xattrs; an IN == OUT run keeps them too; an unwritable OUT fails. Only for
+#   an OUT that does not exist yet does anything have to be chosen, and there
+#   the wrapper creates it and chmods it to `0755 & ~umask` -- the mode the C
+#   tool's open() would have produced -- before writing a byte into it.
 #
-# THE WRITE ITSELF. patch_macho created OUT with open(O_CREAT|O_TRUNC, 0755)
-# and wrote into it; macho9 goes through wa_write_atomic (same mode, same
-# bytes, no half-written OUT on failure). One consequence worth naming: where
-# OUT already exists and is not writable but its directory is, patch_macho
-# failed and macho9 succeeds.
+#   What that gives up is the same one thing mw_run_atomic gives up
+#   (compat/macho9-compat.sh): the final copy is not atomic. Neither was the C
+#   tool's open(O_TRUNC)+write, so this matches it rather than diverging from
+#   it -- macho9's atomic write happens, but into the temp.
+#
+#   The temp path is reached by re-translating the same argv with it in place
+#   of OUT, never by string-editing the emitted line -- same rule
+#   mw_run_atomic follows and for the same reason.
+#
+# STDOUT. Everything md_declassify itself prints is identical on both sides (it
+# is the same function). Two adjustments:
+#
+#   * macho9's trailing "Wrote <path> (N bytes)" line is DROPPED, always,
+#     because it now names the temp file rather than OUT.
+#   * On the CONVERTING path this wrapper prints `Wrote OUT (N bytes)` itself,
+#     with N from OUT's size -- the same format string and the same two values
+#     patch_macho printed. On the PASS-THROUGH path it prints nothing, because
+#     patch_macho printed nothing: an already-converted input said only
+#     "Already patched ... passing through." and never named the file it wrote.
+#     cmd_declassify names that divergence deliberately ("a verb that copies a
+#     file without saying so is the silent-success shape docs/PROPOSAL.md's
+#     `verify` section exists to rule out").
+#
+# A pass-through is recognized by md_declassify's own "Already patched" line --
+# macho9's stable stdout, the same oracle tests/cli_test.sh asserts against,
+# and explicitly not otool/nm text (tests/README.md's second lesson).
+# tests/wrapper_test.sh pins both paths' stdout and all four mode cases.
+#
+# 10.9's linker cannot emit chained fixups, so the CONVERTING path is exercised
+# by tests/chained-fixups.sh on a modern host (it SKIPs here) rather than
+# natively; the mode assertions do not depend on which path ran.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
+# Checked here, before sourcing, so a missing support file gets this message
+# rather than the shell's own "No such file or directory" from the `.` below.
+# The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
+# $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
+# one holding macho9 -- which is why MACHO9_COMPAT_DIR exists.
+[ -r "$MW_DIR/macho9-compat.sh" ] || {
+    printf '%s: cannot find macho9-compat.sh in %s -- macho9 and its two support\n' "$0" "$MW_DIR" >&2
+    printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set MACHO9_COMPAT_DIR to where they really are\n' "$0" >&2
+    exit 1
+}
 . "$MW_DIR/macho9-compat.sh"
 
 mw_translate patch_macho "$@" || exit $?
+
+mw_in=$1
+mw_out=$2
+
+# Run the conversion into a temp, so installing it over OUT can be the same
+# write-through-the-path the C tool did. Re-translated rather than
+# string-edited; the first translation of this argv already succeeded, so a
+# failure here means the translation is not stable under a change of file name
+# and nothing should run.
+MT_PROG0=$0
+MW_CMDS=$(mt_translate patch_macho "$mw_in" "$MW_T/converted")
+mw_trc=$?
+unset MT_PROG0
+if [ "$mw_trc" -ne 0 ]; then
+    printf '%s: internal error: the translation is not stable under a change of file name\n' \
+        "$MW_TOOL" >&2
+    exit 1
+fi
 
 mw_run >"$MW_T/out" 2>"$MW_T/err"
 mw_rc=$?
 cat "$MW_T/err" >&2
 
+# A refusal leaves OUT untouched -- md_declassify runs to completion before the
+# C tool ever opened OUT, so this matches, and it is why the temp exists.
 if [ "$mw_rc" -ne 0 ]; then
     cat "$MW_T/out"
     exit 1
 fi
 
-if grep -q '^Already patched' "$MW_T/out" &&
-   [ "$(sed -n '$p' "$MW_T/out" | cut -c1-6)" = 'Wrote ' ]; then
+# Drop macho9's own "Wrote ..." line: it names the temp.
+if [ "$(sed -n '$p' "$MW_T/out" | cut -c1-6)" = 'Wrote ' ]; then
     sed '$d' "$MW_T/out"
 else
     cat "$MW_T/out"
+fi
+
+# Create OUT with the mode the C tool's open(..., 0755) would have produced,
+# BEFORE any content goes into it, and only when it does not already exist --
+# an existing OUT keeps its own mode, because open() does not change one.
+if [ ! -e "$mw_out" ]; then
+    if ! : > "$mw_out"; then
+        printf 'create output: cannot create %s\n' "$mw_out" >&2
+        exit 1
+    fi
+    mw_umask=$(umask)
+    chmod "$(printf '%o' "$(( 0755 & ~0$mw_umask ))")" "$mw_out" 2>/dev/null
+fi
+
+# Install through the path: inode, mode, hard links and xattrs all survive,
+# and a symlinked OUT is followed to its target -- exactly what
+# open(O_WRONLY|O_TRUNC) did.
+if ! cat "$MW_T/converted" > "$mw_out"; then
+    printf 'write: cannot write %s\n' "$mw_out" >&2
+    exit 1
+fi
+
+# patch_macho named the file it wrote only when it had CONVERTED something.
+if ! grep -q '^Already patched' "$MW_T/out"; then
+    printf 'Wrote %s (%s bytes)\n' "$mw_out" "$(wc -c < "$mw_out" | tr -d ' ')"
 fi
 exit 0
