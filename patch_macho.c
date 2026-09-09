@@ -71,8 +71,10 @@ static void ob_str(struct opbuf *b, const char *s) {
  * index into a file offset), locates LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_
  * FIXUPS/LC_DYLD_INFO_ONLY/LC_BUILD_VERSION, and records which commands the
  * rest of this tool will strip. Read-only w.r.t. the chain itself (never
- * touches lc->cmd, lc->cmdsize, or ncmds) except for the one early stop
- * below, which is exactly what the stop-capable mi_each_lc exists for. */
+ * touches lc->cmd, lc->cmdsize, or ncmds) except for the early stops below --
+ * both of the fixed-size arrays here (segs[32], to_remove[4]) refuse rather
+ * than overflow when a malformed or pathological input would fill them past
+ * capacity, which is exactly what the stop-capable mi_each_lc exists for. */
 struct pm_collect_ctx {
     struct segment_command_64 *segs[32];
     int nsegs;
@@ -82,6 +84,38 @@ struct pm_collect_ctx {
     struct { uint8_t *pos; uint32_t size; } to_remove[4];
     int n_remove;
 };
+
+/* Push one command onto ctx->to_remove, refusing rather than overflowing the
+ * fixed-size array if there is no room. All three LC_DYLD_EXPORTS_TRIE/
+ * LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION call sites below route through
+ * here rather than each writing `ctx->to_remove[ctx->n_remove++] = ...`
+ * with its own copy of the bound check -- three independent copies drifting
+ * apart over time is exactly the "two places independently decide one
+ * thing" bug class this conversion exists to retire, and it is also the
+ * shape of bug that put this fix here in the first place: the nsegs >= 32
+ * bound just above was applied to ONE fixed-size array in this struct;
+ * to_remove[4], ten lines away in the same struct, was moved here without
+ * the matching treatment. n_remove is declared immediately after
+ * to_remove[4] -- a 5th unbounded push wrote element [4], one past the
+ * array, directly over n_remove itself (the low bits of a heap pointer,
+ * since the write reads as a pointer-sized `pos` first), and every
+ * following write then walked off the struct into main()'s locals. A
+ * hand-built fixture with 5+ LC_BUILD_VERSION commands reproduced this as
+ * "pointer being freed was not allocated" (n_remove corrupted to something
+ * that still looked small) or SIGSEGV (corrupted to something that didn't);
+ * see tests/leaf-tool-crashes.sh. Returns 1 (stop the walk) on overflow, 0
+ * on success. */
+static int pm_remove_push(struct pm_collect_ctx *ctx, uint8_t *pos, uint32_t size) {
+    int cap = (int)(sizeof ctx->to_remove / sizeof ctx->to_remove[0]);
+    if (ctx->n_remove >= cap) {
+        fprintf(stderr, "ERROR: more than %d load commands to strip (LC_DYLD_EXPORTS_TRIE/"
+                        "LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION); refusing rather than "
+                        "overflowing the removal table\n", cap);
+        return 1;
+    }
+    ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){pos, size};
+    return 0;
+}
 
 static int pm_collect_lc(const struct load_command *lc_, void *ctx_) {
     struct pm_collect_ctx *ctx = ctx_;
@@ -112,17 +146,17 @@ static int pm_collect_lc(const struct load_command *lc_, void *ctx_) {
     } else if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
         uint32_t *d = (uint32_t *)lc;
         ctx->exports_off = d[2]; ctx->exports_size = d[3];
-        ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){(uint8_t *)lc, lc->cmdsize};
+        if (pm_remove_push(ctx, (uint8_t *)lc, lc->cmdsize)) return 1;
         printf("Exports trie: off=%u size=%u\n", ctx->exports_off, ctx->exports_size);
     } else if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) {
         uint32_t *d = (uint32_t *)lc;
         ctx->fixups_off = d[2]; ctx->fixups_size = d[3];
-        ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){(uint8_t *)lc, lc->cmdsize};
+        if (pm_remove_push(ctx, (uint8_t *)lc, lc->cmdsize)) return 1;
         printf("Chained fixups: off=%u size=%u\n", ctx->fixups_off, ctx->fixups_size);
     } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
         ctx->has_dyld_info_only = 1;
     } else if (lc->cmd == LC_BUILD_VERSION) {
-        ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){(uint8_t *)lc, lc->cmdsize};
+        if (pm_remove_push(ctx, (uint8_t *)lc, lc->cmdsize)) return 1;
     }
     return 0;
 }

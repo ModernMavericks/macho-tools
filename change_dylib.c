@@ -199,6 +199,23 @@ static int build_lcs_lc(const struct load_command *lc, void *ctx_) {
         if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
             const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
             if (!name) {
+                /* UNREACHABLE through this tool's own CLI today: process_one
+                 * calls mo_map_build (src/ordinals.c) on this same buffer
+                 * BEFORE build_lcs ever runs, and mo_map_build performs this
+                 * identical mo_lc_str_at check against every ordinal-bearing
+                 * dylib LC -- byte-identical message included -- so it
+                 * always refuses first. Confirmed by marker-patching this
+                 * format string and observing mo_map_build's message come
+                 * out instead. Kept anyway: it is still the correct check
+                 * for anyone calling build_lcs directly (it is `static`, but
+                 * nothing enforces that process_one is its only caller
+                 * forever), and removing it on the assumption that
+                 * mo_map_build always runs first would be exactly the kind
+                 * of "two places deciding one thing, only one tested"
+                 * coupling this codebase keeps getting bitten by. Don't
+                 * delete it as dead, and don't trust it as covered -- the
+                 * LC_RPATH refusal just below is the one change_dylib_test.sh
+                 * case 19 actually exercises. */
                 fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
                                 "exceeds cmdsize %u); refusing\n",
                         dc->dylib.name.offset, cmdsize);

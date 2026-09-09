@@ -35,8 +35,11 @@ set -eu
 BIN="${1:?usage: leaf-tool-crashes.sh <bindir>}"
 [ -x "$BIN/add_version_min" ] || { echo "leaf-tool-crashes: $BIN/add_version_min not found" >&2; exit 1; }
 [ -x "$BIN/retag_swift_classes" ] || { echo "leaf-tool-crashes: $BIN/retag_swift_classes not found" >&2; exit 1; }
+[ -x "$BIN/patch_macho" ] || { echo "leaf-tool-crashes: $BIN/patch_macho not found" >&2; exit 1; }
 
 CC="${CC:-clang}"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SRC_DIR="$SCRIPT_DIR/../src"
 T="${TMPDIR:-/tmp}/leaf-tool-crashes.$$"
 mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -151,6 +154,128 @@ if [ -f /usr/lib/libgmalloc.dylib ]; then
     fi
 else
     skip "retag_swift_classes: oobsection fixture (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
+fi
+
+# --- patch_macho: pm_collect_ctx's to_remove[4] must refuse, not overflow --
+#
+# Task 2a moved patch_macho.c's collecting walk into an mi_each_lc callback
+# and put its fixed-size `to_remove[4]` array into the SAME context struct
+# as `int n_remove`, with n_remove declared immediately after the array --
+# same layout hazard as segs[32]/nsegs just above it in that struct, but
+# without the matching `>= 32` style bound. A 5th push (any mix of
+# LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION -- this
+# fixture uses LC_BUILD_VERSION because it is trivial to repeat N times)
+# writes to_remove[4], one element past the array, landing on n_remove
+# itself; every push after that walks further off the struct into main()'s
+# locals. A malformed/pathological input the pre-Task-2a tool declined
+# cleanly (too many strippable commands is not something a real linker ever
+# produces, but nothing stopped a hand-built or hostile file from having it)
+# went from a clean refusal to a crash mid-run in a tool install.sh points at
+# user binaries.
+#
+# N=3/N=4 stay under the cap and must still succeed structurally (this
+# fixture has no chained fixups, so patch_macho's own "No chained fixups
+# found" refusal fires afterward -- exit 1, but a CLEAN one, not a crash).
+# N=5 and N=6 are the reviewer's own reproduction: pre-fix, N=5 corrupted
+# n_remove into something that still looked like a small int (free() on a
+# bogus pointer -> exit 134, "pointer being freed was not allocated"); N=6
+# corrupted it into something that didn't -> exit 139 (SIGSEGV). Post-fix,
+# every N at or past the cap must refuse cleanly (exit 1, naming the
+# overflow) with the file left untouched, exactly like segs[32]'s existing
+# refusal just above.
+cat > "$T/mkmanylc.c" <<'EOF'
+/* Writes a Mach-O with N x LC_BUILD_VERSION load commands (ntools=0, so each
+ * is a fixed 24 bytes -- already 8-aligned, satisfying mi_validate's cmdsize
+ * alignment check) and nothing else. No LC_SEGMENT_64 at all: patch_macho's
+ * mi_find_segment(&im, "__TEXT") lookup tolerates that (returns NULL,
+ * image_base_vmaddr stays 0), so this exercises pm_collect_lc's to_remove[]
+ * pushes in isolation, the same way leaf-tool-crashes' other fixtures target
+ * one specific hazard each. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <mach-o/loader.h>
+#include "mach_compat.h"   /* LC_BUILD_VERSION: not in the 10.9 SDK's own headers */
+
+struct bvc { uint32_t cmd, cmdsize, platform, minos, sdk, ntools; };
+
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s N out\n", argv[0]); return 1; }
+    int n = atoi(argv[1]);
+    if (n < 1 || n > 64) { fprintf(stderr, "N out of range\n"); return 1; }
+
+    size_t fsize = sizeof(struct mach_header_64) + (size_t)n * sizeof(struct bvc);
+    uint8_t *buf = calloc(1, fsize);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->ncmds = (uint32_t)n;
+    h->sizeofcmds = (uint32_t)(n * sizeof(struct bvc));
+
+    struct bvc *c = (struct bvc *)(buf + sizeof(*h));
+    for (int i = 0; i < n; i++) {
+        c[i].cmd = LC_BUILD_VERSION;
+        c[i].cmdsize = sizeof(struct bvc);
+    }
+
+    FILE *f = fopen(argv[2], "wb");
+    if (!f) { perror("fopen"); return 1; }
+    if (fwrite(buf, 1, fsize, f) != fsize) { perror("fwrite"); fclose(f); return 1; }
+    fclose(f);
+    return 0;
+}
+EOF
+"$CC" -O2 -I "$SRC_DIR" -o "$T/mkmanylc" "$T/mkmanylc.c"
+
+pm_manylc_case() {
+    n="$1"; expect="$2"   # expect: "clean" (refuses/errors without crashing) or "cap" (refuses, names the cap)
+    "$T/mkmanylc" "$n" "$T/manylc_$n.macho"
+    before_md5=$(md5 -q "$T/manylc_$n.macho" 2>/dev/null || md5sum "$T/manylc_$n.macho" | awk '{print $1}')
+    rc=0
+    "$BIN/patch_macho" "$T/manylc_$n.macho" "$T/manylc_${n}_out.macho" \
+        >"$T/manylc_$n.out" 2>"$T/manylc_$n.err" || rc=$?
+    after_md5=$(md5 -q "$T/manylc_$n.macho" 2>/dev/null || md5sum "$T/manylc_$n.macho" | awk '{print $1}')
+
+    if [ "$rc" -gt 127 ]; then
+        bad "patch_macho: N=$n LC_BUILD_VERSION" "killed by a signal (exit $rc) -- the to_remove[] overflow this fixture exists to catch"
+        return
+    fi
+    if [ "$expect" = "cap" ]; then
+        if [ "$rc" -eq 1 ] && grep -q "more than 4 load commands to strip" "$T/manylc_$n.err"; then
+            ok "patch_macho: N=$n LC_BUILD_VERSION refuses, naming the to_remove[] cap"
+        else
+            bad "patch_macho: N=$n LC_BUILD_VERSION" "expected exit 1 + cap message, got exit $rc: $(cat "$T/manylc_$n.err")"
+        fi
+        [ "$before_md5" = "$after_md5" ] \
+            && ok "patch_macho: N=$n LC_BUILD_VERSION leaves the input untouched on refusal" \
+            || bad "patch_macho: N=$n LC_BUILD_VERSION" "input was modified despite the refusal"
+    else
+        [ "$rc" -eq 1 ] \
+            && ok "patch_macho: N=$n LC_BUILD_VERSION completes without crashing (exit $rc, under the cap)" \
+            || bad "patch_macho: N=$n LC_BUILD_VERSION" "expected a clean exit 1 (no chained fixups), got exit $rc: $(cat "$T/manylc_$n.err")"
+    fi
+}
+
+pm_manylc_case 3 clean
+pm_manylc_case 4 clean
+pm_manylc_case 5 cap
+pm_manylc_case 6 cap
+
+if [ -f /usr/lib/libgmalloc.dylib ]; then
+    for n in 5 6; do
+        "$T/mkmanylc" "$n" "$T/manylc_gm_$n.macho"
+        rc=0
+        DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
+            "$BIN/patch_macho" "$T/manylc_gm_$n.macho" "$T/manylc_gm_${n}_out.macho" \
+            >"$T/manylc_gm_$n.out" 2>"$T/manylc_gm_$n.err" || rc=$?
+        if [ "$rc" -gt 127 ]; then
+            bad "patch_macho: N=$n LC_BUILD_VERSION (libgmalloc)" "killed by a signal (exit $rc) under libgmalloc"
+        else
+            ok "patch_macho: N=$n LC_BUILD_VERSION (libgmalloc): completed without crashing (exit $rc)"
+        fi
+    done
+else
+    skip "patch_macho: N=5/6 LC_BUILD_VERSION (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
 echo "leaf-tool-crashes: $fails failure(s)"
