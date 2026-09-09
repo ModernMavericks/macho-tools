@@ -14,14 +14,17 @@
  * fields, and a whole unrelated LC_UUID load command) gets a sentinel value
  * checked byte-for-byte unchanged afterward -- that is the "and that nothing
  * else changed" half of the brief. A second, full-coverage fixture
- * (test_bump_all_every_field_discriminates) puts every one of the 14
- * bumped fields, and every case label that shares the dataoff bump
- * (including three commands the first fixture never builds at all), at a
- * unique value strictly above `insert` -- see that function's own comment
- * for why the first fixture alone cannot catch a missing bump on five of
- * its fields. A third case (test_bump_all_refuses_on_overflow) pins that a
- * field which would overflow a uint32_t after growing is refused, not
- * silently wrapped.
+ * (test_bump_all_every_field_discriminates) puts every one of the 17
+ * bumped fields -- the original 14 plus LC_TWOLEVEL_HINTS.offset and
+ * LC_ENCRYPTION_INFO[_64].cryptoff, added in a later review round -- and
+ * every case label that shares the dataoff bump (including three commands
+ * the first fixture never builds at all), at a unique value strictly
+ * above `insert` -- see that function's own comment for why the first
+ * fixture alone cannot catch a missing bump on five of its fields, and for
+ * the later gap (three fields added to ml_bump_all with no matching
+ * coverage here at all) that this fixture now also closes. A third case
+ * (test_bump_all_refuses_on_overflow) pins that a field which would
+ * overflow a uint32_t after growing is refused, not silently wrapped.
  *
  * Build: clang -O2 -Wall -Isrc -o /tmp/linkedit_test tests/linkedit_test.c
  *   src/linkedit.c src/image.c && /tmp/linkedit_test
@@ -276,7 +279,7 @@ static void test_bump_all_zero_grow_is_a_no_op(void) {
     free(b.buf);
 }
 
-/* ---- full discrimination: every one of the 14 bumped fields, and every
+/* ---- full discrimination: every one of the 17 bumped fields, and every
  * case label that shares the dataoff bump, gets its own value >= insert ----
  *
  * The fixture above is deliberately semantic (below/at/above/absent), which
@@ -284,25 +287,36 @@ static void test_bump_all_zero_grow_is_a_no_op(void) {
  * weak_bind_off, export_off -- and the LC_DATA_IN_CODE/LC_CODE_SIGNATURE
  * case labels sit below `insert` or at the absent value 0, so deleting
  * THEIR OWN bump call changes nothing observable there (a code review
- * caught this: deleting each of the 14 ml_bump calls in turn found five
- * that the fixture above could not detect, plus four case labels --
- * LC_DATA_IN_CODE, LC_DYLIB_CODE_SIGN_DRS, LC_DYLD_EXPORTS_TRIE, and plain
- * LC_DYLD_INFO -- that were either never reached with a discriminating
- * value or never present in the fixture at all). This is the mirror image
- * of the sentinel bug this file's own commit already fixed once: there,
- * "never touched" fields sat below insert so a wrongful bump went
- * unnoticed; here, "must be touched" fields sat below insert so a MISSING
- * bump goes unnoticed. Same root cause, opposite direction.
+ * caught this: deleting each of the 14 __LINKEDIT-table ml_bump calls in
+ * turn found five that the fixture above could not detect, plus four case
+ * labels -- LC_DATA_IN_CODE, LC_DYLIB_CODE_SIGN_DRS, LC_DYLD_EXPORTS_TRIE,
+ * and plain LC_DYLD_INFO -- that were either never reached with a
+ * discriminating value or never present in the fixture at all). This is
+ * the mirror image of the sentinel bug this file's own commit already
+ * fixed once: there, "never touched" fields sat below insert so a
+ * wrongful bump went unnoticed; here, "must be touched" fields sat below
+ * insert so a MISSING bump goes unnoticed. Same root cause, opposite
+ * direction.
  *
- * Fix: a second image where EVERY bumped field -- all 14, plus every
- * linkedit_data_command-family command this module recognizes (including
- * the three the first fixture never built at all: plain LC_DYLD_INFO,
- * LC_DYLD_EXPORTS_TRIE, LC_DYLIB_CODE_SIGN_DRS -- and, for full measure,
- * LC_SEGMENT_SPLIT_INFO/LC_LINKER_OPTIMIZATION_HINT/LC_DYLD_CHAINED_FIXUPS
- * too, even though the code review did not name them) -- sits strictly
- * above `insert` with a UNIQUE value, so any one missing bump (or any one
- * case label quietly falling through to `default`) changes exactly one
- * assertion and cannot hide behind another field's correct result. */
+ * A LATER round of review found the pattern had repeated: when
+ * LC_TWOLEVEL_HINTS.offset and LC_ENCRYPTION_INFO[_64].cryptoff were added
+ * to ml_bump_all (they used to be misclassified "inert" and never bumped
+ * at all), this fixture was not extended to cover them -- fixing one
+ * instance of "a bumped field with no discriminating coverage" without
+ * fixing the pattern that produces new instances of it. All three are
+ * covered here now, for the same reason as everything else in this
+ * fixture: each at a unique value strictly above `insert`.
+ *
+ * Fix: a second image where EVERY bumped field -- all 17 (the original 14
+ * plus these three), plus every linkedit_data_command-family command this
+ * module recognizes (including the three the first fixture never built at
+ * all: plain LC_DYLD_INFO, LC_DYLD_EXPORTS_TRIE, LC_DYLIB_CODE_SIGN_DRS --
+ * and, for full measure, LC_SEGMENT_SPLIT_INFO/
+ * LC_LINKER_OPTIMIZATION_HINT/LC_DYLD_CHAINED_FIXUPS too, even though the
+ * code review did not name them) -- sits strictly above `insert` with a
+ * UNIQUE value, so any one missing bump (or any one case label quietly
+ * falling through to `default`) changes exactly one assertion and cannot
+ * hide behind another field's correct result. */
 struct built2 {
     uint8_t *buf;
     struct symtab_command *symtab;
@@ -317,6 +331,9 @@ struct built2 {
     struct linkedit_data_command *loh;
     struct linkedit_data_command *exports_trie;
     struct linkedit_data_command *chained_fixups;
+    struct twolevel_hints_command *twolevel;
+    struct encryption_info_command *encinfo;
+    struct encryption_info_command_64 *encinfo64;
 };
 
 static struct built2 build_image_full_coverage(void) {
@@ -363,6 +380,24 @@ static struct built2 build_image_full_coverage(void) {
     b.exports_trie->dataoff = 0x3801;
     b.chained_fixups = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_DYLD_CHAINED_FIXUPS, sizeof(struct linkedit_data_command));
     b.chained_fixups->dataoff = 0x3901;
+
+    b.twolevel = (struct twolevel_hints_command *)append_lc(hdr, &lcp, LC_TWOLEVEL_HINTS, sizeof(struct twolevel_hints_command));
+    b.twolevel->offset = 0x3a01;
+
+    /* encryption_info_command is 20 bytes (5 uint32_t fields) -- NOT a
+     * multiple of 8, so a REAL 64-bit Mach-O (which mi_validate requires
+     * every cmdsize to be 8-byte-aligned) could never carry it at its
+     * natural size; padded to 24 here, matching encryption_info_command_64's
+     * already-8-byte-aligned size, so this synthetic command validates the
+     * same way a real padded one would. ml_bump_lc only reads/writes
+     * cryptoff at its correct fixed offset regardless of cmdsize. */
+    b.encinfo = (struct encryption_info_command *)append_lc(
+        hdr, &lcp, LC_ENCRYPTION_INFO,
+        (uint32_t)((sizeof(struct encryption_info_command) + 7) & ~(size_t)7));
+    b.encinfo->cryptoff = 0x3b01;
+
+    b.encinfo64 = (struct encryption_info_command_64 *)append_lc(hdr, &lcp, LC_ENCRYPTION_INFO_64, sizeof(struct encryption_info_command_64));
+    b.encinfo64->cryptoff = 0x3c01;
 
     return b;
 }
@@ -411,6 +446,15 @@ static void test_bump_all_every_field_discriminates(void) {
     CHECK(b.loh->dataoff == 0x3701 + GROW, "LC_LINKER_OPTIMIZATION_HINT dataoff bumped (got %#x)", b.loh->dataoff);
     CHECK(b.exports_trie->dataoff == 0x3801 + GROW, "LC_DYLD_EXPORTS_TRIE dataoff bumped (got %#x)", b.exports_trie->dataoff);
     CHECK(b.chained_fixups->dataoff == 0x3901 + GROW, "LC_DYLD_CHAINED_FIXUPS dataoff bumped (got %#x)", b.chained_fixups->dataoff);
+
+    /* Added later than the rest of this fixture: round 2 taught ml_bump_all
+     * to bump these three (they used to be misclassified "inert" and never
+     * touched), but did not extend this fixture to cover them -- the same
+     * "fixed one instance, not the pattern" gap this file's own top comment
+     * now warns about. */
+    CHECK(b.twolevel->offset == 0x3a01 + GROW, "LC_TWOLEVEL_HINTS offset bumped (got %#x)", b.twolevel->offset);
+    CHECK(b.encinfo->cryptoff == 0x3b01 + GROW, "LC_ENCRYPTION_INFO cryptoff bumped (got %#x)", b.encinfo->cryptoff);
+    CHECK(b.encinfo64->cryptoff == 0x3c01 + GROW, "LC_ENCRYPTION_INFO_64 cryptoff bumped (got %#x)", b.encinfo64->cryptoff);
 
     free(b.buf);
 }

@@ -10,9 +10,13 @@
  * signature, and their less common siblings (split-info, code-sign DRs,
  * linker-optimization hints, the standalone export trie, chained fixups,
  * the two-level namespace hint table, and an encrypted range's bounds).
- * This module is that list, single-sourced in one place and independently
- * testable (tests/linkedit_test.c), rather than spread across macho_grow.h
- * call sites the way it used to be.
+ * This module is that list. It was already single-sourced before this
+ * extraction -- at the commit this module was carved out of, all 17
+ * `mg_bump` calls sat in one contiguous switch inside one function,
+ * `mg_grow_header` -- so the improvement here is not deduplication of a
+ * scattered copy; it is that the table now has its own file and its own
+ * hermetic test (tests/linkedit_test.c) instead of being untestable
+ * except by exercising the rest of `mg_grow_header` around it.
  *
  * NOT exhaustive by construction, on purpose: LC_NOTE and LC_ATOM_INFO also
  * carry a load-command-relative file offset, but this module does not touch

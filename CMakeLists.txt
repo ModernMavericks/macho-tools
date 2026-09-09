@@ -113,7 +113,17 @@ enable_testing()
 # against synthetic images built in memory. -Wno-unused-function because the
 # header exposes helpers this translation unit does not all use.
 add_executable(macho_grow_test macho_grow_test.c)
-target_compile_options(macho_grow_test PRIVATE -O2 -Wno-unused-function)
+# -Wall deploys lesson nine's detection net (tests/README.md): a
+# -Wfortify-source "will always overflow" diagnostic on a strcpy into a
+# char[16] segname/sectname fires here at COMPILE time, on any host, well
+# before a modern-clang runner would abort at RUNTIME building the same
+# fixture -- and this file holds the fixture builders. It was missing
+# -Wall entirely (silent since c06bdce first added this target); adding it
+# produces exactly one warning, already present without it and unrelated
+# to this file (macho_grow.h:198's mg_trie_scan, pre-existing, not
+# reachable from user input). -Wno-unused-function stays: the header
+# exposes helpers this translation unit does not all use.
+target_compile_options(macho_grow_test PRIVATE -O2 -Wall -Wno-unused-function)
 target_link_libraries(macho_grow_test PRIVATE macho9core)
 add_test(NAME macho_grow_test COMMAND macho_grow_test)
 

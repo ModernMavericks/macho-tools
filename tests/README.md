@@ -156,6 +156,31 @@ reproducing the failure in new shapes:
   worth compiling every hand-written fixture helper with those flags as a
   check before trusting it.
 
+- **A mutation test proves nothing if the rebuild silently didn't happen.**
+  Mutation testing (deliberately break the code, confirm the test you're
+  trusting actually fails, then revert) is this project's primary technique
+  for proving a test discriminates — used throughout `macho_grow_test.c`,
+  `trie_test.c`, and `linkedit_test.c`'s own commit history. It depends
+  entirely on the binary under test actually reflecting the source edit.
+  On at least one host, `cmake --build` after a one-line source edit
+  produced IDENTICAL results for two different mutations — because the
+  edited source file and its stale `.o` ended up with the same one-second
+  `mtime`, so `make`'s timestamp comparison judged the object current and
+  skipped recompiling it entirely. The mutation silently never took effect;
+  the test wasn't discriminating anything, it was just re-running against
+  the unmodified binary. This is a strictly worse failure mode than a test
+  that's wrong: it looks identical to both "the mutation was caught" and
+  "the mutation was missed", so a result from a build that might have
+  skipped the rebuild is not evidence either way. It only surfaced because
+  two mutation runs gave contradictory results for what should have been
+  independent, reproducible outcomes. FIX: when mutating for verification,
+  force the rebuild and confirm it actually happened — compile the test
+  directly with `cc` (as this repo's hermetic tests' own header comments
+  already suggest, e.g. `trie_test.c`'s), or `touch` the source and use
+  `cmake --build --clean-first`, or otherwise check the object's mtime
+  genuinely advanced past the edit. Never trust a mutation result from a
+  build you did not affirmatively force.
+
 ## Known gap
 
 `fixture.macho` was built on 10.9, so it carries **no chained fixups** and does
