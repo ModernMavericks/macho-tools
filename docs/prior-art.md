@@ -10,7 +10,7 @@ Measured 2026-09-08 against its `main.c` at HEAD:
 
 | | insert_dylib | macho-tools |
 |---|---|---|
-| export trie | **rebuilds it** — handles a ULEB that widens | in place at original width; **refuses** if one would widen |
+| export trie | **rebuilds it** — handles a ULEB that widens | in place at original width; **rebuilds it** (src/trie.c) when one would widen |
 | 32-bit (`LC_SEGMENT`) | yes | **no** — 64-bit only |
 | fat binaries in the rewrite path | yes | **no** in `change_dylib`; only `fix_macho` handles fat |
 | `S_INIT_FUNC_OFFSETS` | yes | yes |
@@ -26,14 +26,14 @@ Two independent implementations converging on the same trick is evidence the
 trick is right. It also means neither is finished: each covers cases the other
 misses, and the union is what the tool should be.
 
-The three gaps on this side are tracked as issues. Until they close,
-**macho-tools is not a drop-in replacement for insert_dylib** on 32-bit or fat
-inputs, or on a binary whose export trie needs a wider ULEB — and it should not
-be described as one.
+The three gaps on this side were tracked as issues. All three are now closed
+(below); **macho-tools remains not a drop-in replacement for insert_dylib** on
+32-bit input specifically — that one stays refused on purpose, not as an open
+gap — see below.
 
 ## Status (toolkit plan Task 5)
 
-Of the three, two are resolved:
+All three are resolved:
 
 - **Fat binaries in the rewrite path**: closed. `change_dylib` now walks a fat
   container's slices the way `fix_macho` always has, rewriting each 64-bit
@@ -52,18 +52,41 @@ Of the three, two are resolved:
   regression-tested fact (`macho_grow_test.c`'s
   `test_grow_refuses_32bit_mach_header`, `tests/image_test.c`'s
   `test_wrap_refuses_32bit_mach_header`) instead of an incidental side effect.
-
-The **export trie rebuild** is the one gap left open — it is the licensing
-question above, which is the human maintainer's to resolve, not something to
-work around or reimplement from reading Wowfunhappy's commit.
+- **Export trie rebuild**: closed. When an address's ULEB would widen under an
+  in-place patch (`mg_trie_node`'s `return 1`), `mg_grow_header` now rebuilds
+  the trie from scratch (`src/trie.c`, `mt_trie_rebuild`) instead of refusing:
+  decode it, add the shift to every nonzero address, re-serialize with
+  everything minimally encoded. If the result still fits the original
+  `export_size`, it's patched in place, same as before; if it doesn't,
+  `__LINKEDIT` is grown to hold it (appended at its current end, which the
+  code first confirms really is the end of the file — refusing rather than
+  guess if it isn't). See `macho_grow_test.c`'s
+  `test_grow_rebuilds_widening_export_trie` (a fixture built specifically to
+  widen, per this task's own instruction to construct one rather than hunt for
+  one) and `tests/trie_test.c` for the module's own hermetic tests. The
+  licensing question below is now settled.
 
 ## On taking the code
 
 Neither `Wowfunhappy/insert_dylib` nor `tyilo/insert_dylib` states a licence, so
 the default is all rights reserved, and this repo is CC0.
 
-The trie rebuild is Wowfunhappy's own addition (`6d3aa61`), so it is his to
-relicense — he has already stated CC0/WTFPL terms for his original code in
-`Mavericks-Porting-Resources` and offered written consent for other licences on
-request. **Ask before taking.** The 32-bit and fat handling is closer to tyilo's
-base; reimplement rather than copy.
+**Settled 2026-09-08.** The trie rebuild is Wowfunhappy's own addition
+(`6d3aa61`), so it was his to relicense, and he has done so: in
+[`Wowfunhappy/Mavericks-Porting-Resources` issue
+#4](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/issues/4)
+(closed 2026-09-08) he states "Anything original in this repo is released into
+the public domain / licensed under CC0 / licensed under WTFPL, please use it
+for any purpose you'd like!" — a blanket statement covering his own additions
+across his repos, `insert_dylib` included, and the repo owner has confirmed
+this settles it. `src/trie.c`/`src/trie.h` are adapted (not copied) from that
+commit: no global mutable state, this repo's own `src/uleb.h` instead of a
+second ULEB implementation, and every one of the reference's fixed caps
+(`TRIE_MAX_EDGES` 128, `payload[64]`, `ch[].lbl[256]`) either removed (edges
+and labels are bounded only by the input's own encoding, not a second
+arbitrary limit) or replaced with an explicit refusal instead of the silent
+truncation those caps produced. See `src/trie.h`'s header comment for the
+full adaptation note.
+
+The 32-bit and fat handling is closer to tyilo's base, which states no
+licence; that part was reimplemented from the wire format, not copied.
