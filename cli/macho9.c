@@ -18,23 +18,24 @@
  * binary never have to move in lockstep (docs/PROPOSAL.md "Migration"). See
  * print_capabilities() below for the exact format and what is real today.
  *
- * DELEGATION, not reimplementation. `verify`, `info` and `grow` call straight
- * into the primitives Tasks 1-3 already built and tested (mg_plausible,
- * mi_open/mi_each_lc, mg_grow_header) -- they are thin shells over code that
- * already exists in this repo.
+ * DELEGATION, not reimplementation. Every verb here calls straight into the
+ * primitives src/ already builds and tests: `verify`, `info` and `grow` into
+ * mg_plausible, mi_open/mi_each_lc and mg_grow_header; `dylib`, `rpath` and
+ * `lc` into mr_apply_file (src/rewrite.h); `minos` into mv_add_version_min
+ * (src/version_min.h). Each verb is a thin shell over code that already
+ * exists in this repo, and each translates this grammar into the ONE
+ * implementation -- so the ordinal-renumbering logic that has twice shipped
+ * loader-crashing bugs (docs/PROPOSAL.md "verify") is exercised exactly once,
+ * however it is reached.
  *
- * `dylib`, `rpath` and `lc` are different: the load-command rewrite and the
- * library-ordinal renumbering they need live only inside change_dylib.c's
- * monolithic main(), not as a reusable function -- extracting that is its own
- * piece of future work, not this one (change_dylib.c is deliberately not in
- * this task's file list). So these three verbs delegate by RUNNING the
- * already-tested change_dylib binary as a subprocess, translating this
- * grammar's flags into its. That is still delegation, not duplication: the
- * ordinal-renumbering logic that has twice shipped loader-crashing bugs
- * (docs/PROPOSAL.md "verify") is exercised exactly once, in change_dylib,
- * however it is reached. `change_dylib` is expected to sit right next to
- * `macho9` (both install to bin/; both land in the same CMake build dir) --
- * see sibling_path() below.
+ * Those last four verbs used to be delegated by RUNNING change_dylib and
+ * add_version_min as subprocesses, found next to macho9 on disk. That made
+ * this binary depend at runtime on the very binaries the compat-retirement
+ * plan replaces with wrappers around it -- a cycle. Task 0.5 lifted the
+ * rewrite out of change_dylib.c's main() into src/rewrite.c and
+ * add_version_min.c's into src/version_min.c; both tools now parse their old
+ * grammars into the same calls this file makes, so there is no sibling binary
+ * to find, and no way for the two front-ends to drift apart.
  *
  * `declassify` (patch_macho's chained-fixups conversion, ~350 lines of its
  * own) is NOT implemented here yet; it errors clearly rather than pretending.
@@ -47,10 +48,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <limits.h>
-#include <libgen.h>
-#include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 
@@ -59,6 +56,8 @@
 #include "grow.h"
 #include "lc_kinds.h"
 #include "atomic_write.h"
+#include "rewrite.h"
+#include "version_min.h"
 #include "mach_compat.h"
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
@@ -67,24 +66,24 @@
  * on purpose, because of what it found" (not a Mach-O, not plausible, a
  * KIND/version this build doesn't support, mg_grow_header's own designed
  * refusal) apart from "something actually went wrong running macho9 itself"
- * (couldn't open/read/write, malloc failed, fork/exec failed, a usage
- * error). Refusal is load-bearing throughout this codebase -- "-grow refuses
- * rather than guesses" is a global rule, not an incidental behavior -- so a
+ * (couldn't open/read/write, malloc failed, a usage error). Refusal is
+ * load-bearing throughout this codebase -- "-grow refuses rather than
+ * guesses" is a global rule, not an incidental behavior -- so a
  * caller that wants to script around "this file just isn't one macho9 will
  * touch" (vs. "retry, or investigate an environment problem") deserves a way
  * to tell the two apart without scraping stderr text, which --capabilities
  * already exists to make unnecessary for everything else this binary
  * reports. EX_REFUSED is used ONLY at a point where macho9 itself examined
  * the input and made that call; it is never used for a genuine operational
- * failure (a syscall that failed, a missing sibling binary, a fork/waitpid
- * error, a bad number of command-line arguments) or for a delegated verb's
- * (dylib/rpath/lc) exit code, which is simply forwarded from the change_dylib
- * subprocess as before -- that subprocess does not make this distinction
- * itself, so forwarding it verbatim keeps this from claiming a precision it
- * does not have. 1 keeps meaning exactly what it always did, so a caller
- * that only checks "== 0" or "!= 0" needs no changes; --capabilities
- * documents both codes (see print_capabilities below) and tests/README.md
- * repeats it for humans. */
+ * failure (a syscall that failed, a malloc that failed, a bad number of
+ * command-line arguments) or for the exit code of the shared rewrite drivers
+ * (mr_apply_file, mv_add_version_min) that dylib/rpath/lc/minos hand back --
+ * those return 0 or 1 and do not make this distinction themselves, so
+ * forwarding them verbatim keeps this from claiming a precision it does not
+ * have. 1 keeps meaning exactly what it always did, so a caller that only
+ * checks "== 0" or "!= 0" needs no changes; --capabilities documents both
+ * codes (see print_capabilities below) and tests/README.md repeats it for
+ * humans. */
 #define EX_REFUSED 2
 
 /* The KIND vocabulary `lc -delete` accepts is LC_STRIP_KINDS (src/lc_kinds.h),
@@ -95,27 +94,37 @@
  * silently drift from what this function (and change_dylib) actually
  * accept -- that drift is exactly what a whole-branch review found here. */
 
-/* Operations `dylib`/`rpath` accept, and their change_dylib translation --
+/* Operations `dylib`/`rpath` accept, and which mr_ops array each one fills --
  * ONE table drives both cmd_dylib_or_rpath's parser (below) and
  * print_capabilities' "ops=" list, for the same reason LC_STRIP_KINDS is
  * shared: two hand-maintained lists (the parser's if/else chain and a
  * hardcoded ops= string) had already diverged from each other by the time of
- * review. A NULL child flag for a mode means "not supported in that mode" --
- * rpath has no -insert or -reexport equivalent in change_dylib, so both are
- * simply absent from rpath's derived ops= list and refused by the parser. */
+ * review. DOP_NONE for a mode means "not supported in that mode" -- there
+ * is no insert or reexport for an LC_RPATH (rpath -insert is a new capability
+ * this build does not claim; LC_RPATH has only one kind, so reexport is
+ * meaningless for it), so both are simply absent from rpath's derived ops=
+ * list and refused by the parser. */
+enum dylib_op_kind {
+    DOP_NONE = 0,   /* must stay 0: the ops= filter tests for falsiness */
+    DOP_REPLACE,
+    DOP_DELETE,
+    DOP_APPEND,
+    DOP_INSERT,
+    DOP_REEXPORT
+};
 struct dylib_op {
-    const char *flag;         /* this grammar's -OP spelling, e.g. "-replace" */
-    const char *cap_name;     /* same op's spelling in ops=, e.g. "replace" */
-    int nargs;                /* args consumed after the flag: 1 or 2 */
-    const char *dylib_child;  /* change_dylib flag when is_rpath==0, or NULL */
-    const char *rpath_child;  /* change_dylib flag when is_rpath==1, or NULL */
+    const char *flag;      /* this grammar's -OP spelling, e.g. "-replace" */
+    const char *cap_name;  /* same op's spelling in ops=, e.g. "replace" */
+    int nargs;             /* args consumed after the flag: 1 or 2 */
+    int dylib_kind;        /* what it does when is_rpath==0, or DOP_NONE */
+    int rpath_kind;        /* what it does when is_rpath==1, or DOP_NONE */
 };
 static const struct dylib_op DYLIB_OPS[] = {
-    { "-replace",  "replace",  2, "-change",   "-change-rpath" },
-    { "-delete",   "delete",   1, "-delete",   "-delete-rpath" },
-    { "-append",   "append",   1, "-add",      "-add-rpath"    },
-    { "-insert",   "insert",   1, "-insert",   NULL            },
-    { "-reexport", "reexport", 1, "-reexport", NULL            },
+    { "-replace",  "replace",  2, DOP_REPLACE,  DOP_REPLACE },
+    { "-delete",   "delete",   1, DOP_DELETE,   DOP_DELETE  },
+    { "-append",   "append",   1, DOP_APPEND,   DOP_APPEND  },
+    { "-insert",   "insert",   1, DOP_INSERT,   DOP_NONE    },
+    { "-reexport", "reexport", 1, DOP_REEXPORT, DOP_NONE    },
 };
 #define N_DYLIB_OPS (sizeof(DYLIB_OPS) / sizeof(DYLIB_OPS[0]))
 
@@ -131,7 +140,7 @@ static void print_kinds_csv(void) {
 static void print_ops_csv(int is_rpath) {
     int first = 1;
     for (size_t i = 0; i < N_DYLIB_OPS; i++) {
-        if (is_rpath ? !DYLIB_OPS[i].rpath_child : !DYLIB_OPS[i].dylib_child) continue;
+        if (is_rpath ? !DYLIB_OPS[i].rpath_kind : !DYLIB_OPS[i].dylib_kind) continue;
         printf("%s%s", first ? "" : ",", DYLIB_OPS[i].cap_name);
         first = 0;
     }
@@ -145,16 +154,18 @@ static void print_ops_csv(int is_rpath) {
  *   line 1: "format <N>"       -- bump N only if a later build changes this
  *                                  TEXT's shape in a way old parsing breaks.
  *   line 2: "exitcodes ok=0 refused=<N> failed=1" -- what this binary's own
- *       (non-delegated) exit codes mean: ok=0 always; refused=EX_REFUSED is
- *       used only where macho9 itself examined FILE and declined on purpose
- *       (bad magic, implausible, an unsupported KIND/version, a grow
- *       mg_grow_header itself refused); failed=1 is everything else
- *       (syscall/malloc/fork failure, usage error) -- unchanged from before
- *       this line existed, so a caller checking only nonzero needs no
- *       changes. dylib/rpath/lc forward whatever change_dylib returned,
- *       which does not yet make this distinction, so their exit codes are
- *       not covered by this line. See EX_REFUSED's own comment for the full
- *       reasoning.
+ *       exit codes mean: ok=0 always; refused=EX_REFUSED is used only where
+ *       macho9 itself examined FILE and declined on purpose (bad magic,
+ *       implausible, an unsupported KIND/version, a grow mg_grow_header
+ *       itself refused); failed=1 is everything else (syscall/malloc
+ *       failure, usage error) -- unchanged from before this line existed, so
+ *       a caller checking only nonzero needs no changes. dylib/rpath/lc/minos
+ *       return the shared rewrite drivers' own code (mr_apply_file,
+ *       mv_add_version_min: 0 or 1), which does not make this distinction,
+ *       so their exit codes are still not covered by this line -- except for
+ *       the checks macho9 makes BEFORE calling them (an unknown lc KIND, a
+ *       version other than 10.9), which are refusals and say so. See
+ *       EX_REFUSED's own comment for the full reasoning.
  *   line 3+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out.
@@ -166,50 +177,34 @@ static void print_ops_csv(int is_rpath) {
  *         flags=a,b      verb-level flags, e.g. allow-grow
  *
  * `dylib` lists all five brief ops; `rpath` deliberately omits `insert` --
- * change_dylib has no rpath-insert to delegate to (docs/PROPOSAL.md calls
- * rpath -insert "a new capability" change_dylib never had), so this build
- * does not claim it.
+ * docs/PROPOSAL.md calls rpath -insert "a new capability" change_dylib never
+ * had, and this build still does not implement it, so it is not claimed.
  *
- * dylib/rpath/lc/minos all depend on a sibling binary being reachable next
- * to macho9 (see sibling_path() below) -- if it isn't, every one of them
- * fails at runtime no matter what this build's own code can do. Advertising
- * them unconditionally would violate this function's own contract ("never
- * advertise one that errors out") the moment macho9 is packaged or copied
- * apart from change_dylib/add_version_min: a wrapper that trusts the probe
- * would see `verb dylib`, use it, and watch every rewrite fail -- exactly
- * the lockstep failure --capabilities exists to prevent. So each of those
- * four is gated on the sibling it needs actually being there and
- * executable, checked fresh on every call (cheap: one stat). */
-static int sibling_path(const char *name, char *out, size_t outsz);
-
-static int sibling_exists(const char *name) {
-    char path[PATH_MAX];
-    if (sibling_path(name, path, sizeof(path)) != 0) return 0;
-    return access(path, X_OK) == 0;
-}
-
+ * Every verb listed below is unconditional now. dylib/rpath/lc/minos used to
+ * be gated on a sibling binary (change_dylib / add_version_min) being present
+ * and executable next to macho9, because that is what they ran to do the
+ * work: advertising them when the sibling was missing would have violated
+ * this function's own contract ("never advertise one that errors out") the
+ * moment macho9 was packaged apart from them. Task 0.5 removed the
+ * subprocess -- the rewrite is linked in from src/rewrite.c and
+ * src/version_min.c now -- so there is no external file left whose absence
+ * could make an advertised verb fail, and nothing left to probe. */
 static int print_capabilities(void) {
-    int have_change_dylib = sibling_exists("change_dylib");
-    int have_add_version_min = sibling_exists("add_version_min");
-
     printf("format 1\n");
     printf("exitcodes ok=0 refused=%d failed=1\n", EX_REFUSED);
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
-    if (have_add_version_min)
-        printf("verb minos versions=10.9\n");
-    if (have_change_dylib) {
-        printf("verb lc ops=delete kinds=");
-        print_kinds_csv();
-        printf("\n");
-        printf("verb dylib ops=");
-        print_ops_csv(0);
-        printf(" flags=allow-grow\n");
-        printf("verb rpath ops=");
-        print_ops_csv(1);
-        printf(" flags=allow-grow\n");
-    }
+    printf("verb minos versions=10.9\n");
+    printf("verb lc ops=delete kinds=");
+    print_kinds_csv();
+    printf("\n");
+    printf("verb dylib ops=");
+    print_ops_csv(0);
+    printf(" flags=allow-grow\n");
+    printf("verb rpath ops=");
+    print_ops_csv(1);
+    printf(" flags=allow-grow\n");
     return 0;
 }
 
@@ -227,80 +222,6 @@ static void usage(const char *prog) {
         "       %s info FILE\n"
         "       %s verify FILE\n",
         prog, prog, prog, prog, prog, prog, prog, prog, prog);
-}
-
-/* ---- locating the sibling tools we delegate to --------------------------
- *
- * dylib/rpath/lc delegate to change_dylib by running it, not linking it (see
- * file header). It is expected right next to macho9: both are in MACHO_TOOLS'
- * install(TARGETS ... RUNTIME DESTINATION bin) and both land in the same
- * CMake build directory pre-install. _NSGetExecutablePath + realpath finds
- * macho9's own true location regardless of how it was invoked (bare name via
- * PATH, relative, symlinked), which a naive argv[0] read would not. */
-static int sibling_path(const char *name, char *out, size_t outsz) {
-    char stackbuf[PATH_MAX];
-    char *exe = stackbuf;
-    uint32_t sz = sizeof(stackbuf);
-    char *heapbuf = NULL;
-    if (_NSGetExecutablePath(exe, &sz) != 0) {
-        /* Too small: _NSGetExecutablePath's documented contract is to set
-         * `sz` to the size that WOULD have worked when it returns -1, and
-         * this used to just give up right here instead of using that. A
-         * PATH_MAX stack buffer covers essentially every real install, but
-         * the whole reason this resolves the executable path at all (rather
-         * than trusting argv[0]) is to keep finding the sibling tool
-         * regardless of how this binary was invoked or how deep it lives --
-         * so honor the retry the API is explicitly offering rather than
-         * failing on a case it already told us how to handle. */
-        heapbuf = (char *)malloc(sz);
-        if (!heapbuf) return -1;
-        exe = heapbuf;
-        if (_NSGetExecutablePath(exe, &sz) != 0) { free(heapbuf); return -1; }
-    }
-    char resolved[PATH_MAX];
-    int rok = (realpath(exe, resolved) != NULL);
-    free(heapbuf);
-    if (!rok) return -1;
-    char dirbuf[PATH_MAX];
-    strncpy(dirbuf, resolved, sizeof(dirbuf) - 1);
-    dirbuf[sizeof(dirbuf) - 1] = '\0';
-    char *dir = dirname(dirbuf);   /* may return a pointer into dirbuf, or static storage */
-    int n = snprintf(out, outsz, "%s/%s", dir, name);
-    return (n < 0 || (size_t)n >= outsz) ? -1 : 0;
-}
-
-/* Run sibling `name` with `argv` (argv[0] conventionally the resolved path;
- * NULL-terminated) and wait for it, forwarding its exit status. Its stdout
- * and stderr are inherited, so its diagnostics -- "Header pad: N bytes
- * available", ordinal-renumbering summaries, refusal reasons -- reach the
- * caller exactly as they would running that tool directly. */
-static int run_sibling(const char *name, char **argv) {
-    char path[PATH_MAX];
-    if (sibling_path(name, path, sizeof(path)) != 0) {
-        fprintf(stderr, "macho9: could not determine my own location to find '%s'\n", name);
-        return 1;
-    }
-    if (access(path, X_OK) != 0) {
-        fprintf(stderr, "macho9: '%s' not found next to macho9 (expected at %s); this "
-                        "build delegates to it and cannot run without it\n", name, path);
-        return 1;
-    }
-    argv[0] = path;
-    pid_t pid = fork();
-    if (pid < 0) { perror("macho9: fork"); return 1; }
-    if (pid == 0) {
-        execv(path, argv);
-        perror("macho9: execv");
-        _exit(127);
-    }
-    int status;
-    if (waitpid(pid, &status, 0) < 0) { perror("macho9: waitpid"); return 1; }
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) {
-        fprintf(stderr, "macho9: %s terminated by signal %d\n", name, WTERMSIG(status));
-        return 128 + WTERMSIG(status);
-    }
-    return 1;
 }
 
 /* ---- verify: a thin shell over mg_plausible -----------------------------
@@ -487,39 +408,34 @@ static int cmd_grow(const char *path, const char *n_str) {
     return 0;
 }
 
-/* ---- minos: delegates to add_version_min --------------------------------
+/* ---- minos: a thin shell over mv_add_version_min ------------------------
  *
- * add_version_min only knows how to target 10.9 (it hardcodes
- * LC_VERSION_MIN_MACOSX 10.9.0 -- see add_version_min.c), which is exactly
+ * mv_add_version_min only knows how to target 10.9 (it hardcodes
+ * LC_VERSION_MIN_MACOSX 10.9.0 -- see src/version_min.c), which is exactly
  * why this verb's grammar spells the floor literally rather than taking any
  * version: there is only one this build can honor, so refusing anything else
- * up front is a clearer failure than delegating and hoping. */
+ * up front is a clearer failure than calling in and hoping. */
 static int cmd_minos(const char *path, const char *version) {
     if (strcmp(version, "10.9") != 0) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
     }
-    char *argv[3];
-    argv[1] = (char *)path;
-    argv[2] = NULL;
-    return run_sibling("add_version_min", argv);
+    return mv_add_version_min(path);
 }
 
-/* ---- lc -delete: delegates to change_dylib -strip-lc --------------------
+/* ---- lc -delete: a thin shell over mr_apply_file's strip_cmds -----------
  *
  * The KIND vocabulary is validated here (against the very table --
- * LC_STRIP_KINDS, shared with change_dylib itself -- that also drives
- * --capabilities) before anything runs, so a bad KIND fails with this
- * verb's own message rather than change_dylib's. */
+ * LC_STRIP_KINDS, shared with change_dylib's -strip-lc -- that also drives
+ * --capabilities) before anything runs, so a bad KIND fails with this verb's
+ * own message rather than somewhere deeper. Translating a KIND to the LC_*
+ * constant the rewriter wants is that same table's other column, so this verb
+ * decides nothing the vocabulary does not already say. */
 static int cmd_lc(int argc, char **argv) {
     /* argv[0]=macho9 argv[1]="lc" argv[2]=FILE argv[3..]=ops */
     const char *path = argv[2];
-    char **child = malloc((size_t)(argc + 2) * sizeof(char *));
-    if (!child) { perror("macho9 lc: malloc"); return 1; }
-    int k = 0;
-    child[k++] = NULL;             /* argv[0]: filled in by run_sibling */
-    child[k++] = (char *)path;
-    int ndeletes = 0;
+    uint32_t strip[MR_MAX_STRIP];
+    int nstrip = 0;
     for (int i = 3; i < argc; ) {
         if (strcmp(argv[i], "-delete") == 0 && i + 1 < argc) {
             const char *kind = argv[i + 1];
@@ -530,66 +446,69 @@ static int cmd_lc(int argc, char **argv) {
                 fprintf(stderr, "macho9 lc: unknown KIND '%s' (expected one of:", kind);
                 for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++) fprintf(stderr, " %s", LC_STRIP_KINDS[kk].name);
                 fprintf(stderr, ")\n");
-                free(child);
                 return EX_REFUSED;
             }
-            child[k++] = "-strip-lc";
-            child[k++] = (char *)kind;
-            ndeletes++;
+            if (nstrip == MR_MAX_STRIP) {
+                fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
+                return 1;
+            }
+            strip[nstrip++] = LC_STRIP_KINDS[kk].cmd;
             i += 2;
         } else {
             fprintf(stderr, "macho9 lc: unknown operation '%s' (only -delete KIND is supported)\n", argv[i]);
-            free(child);
             return 1;
         }
     }
-    if (ndeletes == 0) {
+    if (nstrip == 0) {
         fprintf(stderr, "macho9 lc: need at least one -delete KIND\n");
-        free(child);
         return 1;
     }
-    child[k] = NULL;
-    int rc = run_sibling("change_dylib", child);
-    free(child);
-    return rc;
+    mr_ops ops;
+    memset(&ops, 0, sizeof ops);
+    ops.strip_cmds = strip;
+    ops.n_strip_cmds = nstrip;
+    return mr_apply_file(path, &ops);
 }
 
-/* ---- dylib / rpath: delegate to change_dylib ----------------------------
+/* ---- dylib / rpath: a thin shell over mr_apply_file ---------------------
  *
- * Token-for-token translation into change_dylib's existing flags (see
- * change_dylib.c's usage comment for the -change/-add/-insert/-delete/
- * -reexport family and its -*-rpath twins). `--allow-grow` maps to -grow;
- * position within the OP list does not matter to change_dylib's own parser
- * (it loops over all of argv[2:] regardless of order), so this does not
- * enforce a position either.
+ * Token-for-token translation into an mr_ops (src/rewrite.h): -replace and
+ * -delete become entries in the dylib_changes (or rpath_changes) array,
+ * -append and -insert become dylib_appends/rpath_appends and dylib_inserts,
+ * -reexport becomes a change with an empty new_path, and `--allow-grow`
+ * becomes allow_grow. Position within the OP list does not matter -- the
+ * rewriter applies whole arrays, not a sequence -- so this does not enforce
+ * one; only the order WITHIN each array is meaningful, and that is the order
+ * the operations were typed.
  *
- * rpath -insert has no change_dylib equivalent (see print_capabilities'
- * comment) -- refuse it explicitly rather than silently downgrading it to
- * -append, which would put the new search path LAST instead of FIRST and
- * change what the brief calls "a new capability" into a wrong answer that
- * merely runs.
+ * rpath -insert is not implemented (see print_capabilities' comment) --
+ * refuse it explicitly rather than silently downgrading it to -append, which
+ * would put the new search path LAST instead of FIRST and change what the
+ * brief calls "a new capability" into a wrong answer that merely runs.
  */
 static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     const char *path = argv[2];
-    /* Upper bound: every input token maps to at most one output token, plus
-     * the FILE and the NULL terminator. */
-    char **child = malloc((size_t)(argc + 2) * sizeof(char *));
-    if (!child) { perror("macho9: malloc"); return 1; }
-    int k = 0;
-    child[k++] = NULL;             /* argv[0]: filled in by run_sibling */
-    child[k++] = (char *)path;
+    /* Fixed-size, capped exactly where change_dylib's own parser caps (see
+     * MR_MAX_OPS in src/rewrite.h) so the two front-ends refuse the same
+     * inputs -- but in this grammar's vocabulary, since the wrapper contract
+     * is that macho9 never leaks change_dylib's flag spellings. */
+    mr_change changes[MR_MAX_OPS];   int nchanges = 0;
+    mr_change rchanges[MR_MAX_OPS];  int nrchanges = 0;
+    const char *appends[MR_MAX_OPS]; int nappends = 0;
+    const char *inserts[MR_MAX_OPS]; int ninserts = 0;
     /* Counts actual -replace/-delete/-append/-insert/-reexport ops only --
-     * NOT --allow-grow. `k` alone can't distinguish "no ops" from "only
-     * --allow-grow" (both leave k > 2), which previously let
-     * `dylib FILE --allow-grow` with nothing else fall through to
-     * change_dylib and print ITS usage -- leaking the exact -change/-add/
-     * -strip-lc spellings this grammar deliberately doesn't offer. */
+     * NOT --allow-grow, which on its own is not something to do to a file.
+     * Without this, `dylib FILE --allow-grow` with nothing else used to fall
+     * through to change_dylib and print ITS usage -- leaking the exact
+     * -change/-add/-strip-lc spellings this grammar deliberately doesn't
+     * offer. */
     int nops = 0;
+    int allow_grow = 0;
 
     for (int i = 3; i < argc; ) {
         const char *tok = argv[i];
         if (strcmp(tok, "--allow-grow") == 0) {
-            child[k++] = "-grow";
+            allow_grow = 1;
             i += 1;
             continue;
         }
@@ -604,38 +523,70 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         if (oi == N_DYLIB_OPS || i + DYLIB_OPS[oi].nargs >= argc) {
             fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
                     is_rpath ? "rpath" : "dylib", tok);
-            free(child);
             return 1;
         }
         const struct dylib_op *op = &DYLIB_OPS[oi];
-        const char *cflag = is_rpath ? op->rpath_child : op->dylib_child;
-        if (!cflag) {
+        int kind = is_rpath ? op->rpath_kind : op->dylib_kind;
+        if (kind == DOP_NONE) {
             if (is_rpath && strcmp(op->flag, "-insert") == 0) {
                 fprintf(stderr, "macho9 rpath: -insert is not implemented in this build "
-                                "(change_dylib has no rpath-insert to delegate to; a "
-                                "workaround is deleting and re-adding every other -rpath "
-                                "to reshuffle them, per docs/PROPOSAL.md)\n");
+                                "(nothing here places an LC_RPATH ahead of the existing "
+                                "ones; a workaround is deleting and re-adding every other "
+                                "-rpath to reshuffle them, per docs/PROPOSAL.md)\n");
             } else {
                 fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
                         is_rpath ? "rpath" : "dylib", tok);
             }
-            free(child);
             return 1;
         }
-        child[k++] = (char *)cflag;
-        for (int a = 1; a <= op->nargs; a++) child[k++] = argv[i + a];
+
+        mr_change *chs = is_rpath ? rchanges : changes;
+        int *nchs = is_rpath ? &nrchanges : &nchanges;
+        int full = 0;
+        switch (kind) {
+        case DOP_REPLACE:
+        case DOP_DELETE:
+        case DOP_REEXPORT:
+            if (*nchs == MR_MAX_OPS) { full = 1; break; }
+            chs[*nchs].old_path = argv[i + 1];
+            chs[*nchs].new_path = (kind == DOP_REPLACE) ? argv[i + 2]
+                                : (kind == DOP_REEXPORT) ? "" : NULL;
+            chs[*nchs].reexport = (kind == DOP_REEXPORT);
+            (*nchs)++;
+            break;
+        case DOP_APPEND:
+            if (nappends == MR_MAX_OPS) { full = 1; break; }
+            appends[nappends++] = argv[i + 1];
+            break;
+        case DOP_INSERT:
+            if (ninserts == MR_MAX_OPS) { full = 1; break; }
+            inserts[ninserts++] = argv[i + 1];
+            break;
+        }
+        if (full) {
+            fprintf(stderr, "macho9 %s: too many %s operations (max %d)\n",
+                    is_rpath ? "rpath" : "dylib", op->flag, MR_MAX_OPS);
+            return 1;
+        }
         nops++;
         i += 1 + op->nargs;
     }
     if (nops == 0) {
         fprintf(stderr, "macho9 %s: need at least one operation\n", is_rpath ? "rpath" : "dylib");
-        free(child);
         return 1;
     }
-    child[k] = NULL;
-    int rc = run_sibling("change_dylib", child);
-    free(child);
-    return rc;
+
+    mr_ops ops;
+    memset(&ops, 0, sizeof ops);
+    ops.dylib_changes = changes;    ops.n_dylib_changes = nchanges;
+    ops.dylib_appends = is_rpath ? NULL : appends;
+    ops.n_dylib_appends = is_rpath ? 0 : nappends;
+    ops.dylib_inserts = inserts;    ops.n_dylib_inserts = ninserts;
+    ops.rpath_changes = rchanges;   ops.n_rpath_changes = nrchanges;
+    ops.rpath_appends = is_rpath ? appends : NULL;
+    ops.n_rpath_appends = is_rpath ? nappends : 0;
+    ops.allow_grow = allow_grow;
+    return mr_apply_file(path, &ops);
 }
 
 int main(int argc, char **argv) {

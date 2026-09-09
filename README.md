@@ -16,7 +16,8 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 
 - `src/` — the shared toolkit library (`macho9core`): image parsing, ULEB,
   ordinals, fat-arch validation, export-trie rebuild, `__LINKEDIT` bumping,
-  header growth, LC-kind tables, the atomic-write helper.
+  header growth, LC-kind tables, the atomic-write helper, the dylib/rpath
+  load-command rewriter, and the `LC_VERSION_MIN_MACOSX` appender.
 - `compat/` — these six tools' own sources. They predate `macho9` and are kept
   under their original names because `install.sh` builds some of them by
   name; see `compat/README.md`.
@@ -103,8 +104,9 @@ Two independent checks back that up:
   with the wrong delta all look the same to it: a moved address.
 - **`mg_plausible`** asks a different question of the finished file — do
   initializers and unwind entries still land on an address `LC_FUNCTION_STARTS`
-  lists? It needs no "before" image, so `change_dylib` runs it immediately before
-  writing and refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1`
+  lists? It needs no "before" image, so the shared rewriter (`change_dylib` and
+  `macho9 dylib`/`rpath`/`lc` alike) runs it immediately before writing and
+  refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1`
   opts out.
 
 That gate exists because every defect ever found in this code has been a silent

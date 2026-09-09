@@ -54,7 +54,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -85,15 +85,16 @@ foreach(tool IN LISTS MACHO_TOOLS)
   mavericks_assert_binary_compatible(${tool})
 endforeach()
 
-# change_dylib includes src/grow.h, which includes src/uleb.h, and src/fat.h
-# directly; patch_macho includes src/image.h directly; fix_macho includes
-# src/fat.h directly (Task 5: both fat-aware tools now validate a fat file's
-# arch table through the same code, src/fat.c, instead of each having its own
-# hand-rolled walk that could -- and did -- disagree about validation).
-# add_version_min, rename_segment and retag_swift_classes join here one at a
-# time as Task 1 (docs/superpowers/plans/2026-09-08-macho9-toolkit.md)
-# converts each off its own open/fstat/malloc/read/ncmds-walk preamble onto
-# src/image.h.
+# change_dylib is now only its old argument grammar: it includes src/rewrite.h
+# (the whole rewrite, shared with macho9's dylib/rpath/lc) and src/lc_kinds.h.
+# add_version_min likewise includes only src/version_min.h. patch_macho
+# includes src/image.h directly; fix_macho includes src/fat.h directly (Task 5:
+# both fat-aware tools now validate a fat file's arch table through the same
+# code, src/fat.c, instead of each having its own hand-rolled walk that could
+# -- and did -- disagree about validation). rename_segment and
+# retag_swift_classes join here one at a time as Task 1
+# (docs/superpowers/plans/2026-09-08-macho9-toolkit.md) converts each off its
+# own open/fstat/malloc/read/ncmds-walk preamble onto src/image.h.
 target_link_libraries(change_dylib PRIVATE macho9core)
 target_link_libraries(patch_macho PRIVATE macho9core)
 target_link_libraries(fix_macho PRIVATE macho9core)
@@ -101,13 +102,16 @@ target_link_libraries(add_version_min PRIVATE macho9core)
 target_link_libraries(rename_segment PRIVATE macho9core)
 target_link_libraries(retag_swift_classes PRIVATE macho9core)
 
-# The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): `verify`/`info`/`grow`
-# delegate in-process to macho9core (including src/grow.h); `dylib`/`rpath`/`lc`
-# delegate by running change_dylib (see cli/macho9.c's file header for why --
-# its rewrite+renumbering logic is not yet a reusable function). Kept out of
-# the ${tool}.c-named foreach above because its source lives in cli/. No root
-# include path is needed: every header it includes now lives in src/, reached
-# via macho9core's PUBLIC src include (below), same as every other tool.
+# The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): every verb it
+# implements delegates in-process to macho9core -- `verify`/`info`/`grow` to
+# src/grow.h and src/image.h, `dylib`/`rpath`/`lc` to src/rewrite.h and
+# `minos` to src/version_min.h. Those last four used to be run as SUBPROCESSES
+# (change_dylib / add_version_min next to macho9), which made macho9 depend at
+# runtime on the very binaries it is meant to replace; Task 0.5 extracted the
+# rewrite into src/ so both callers share the code instead of the binary. Kept
+# out of the ${tool}.c-named foreach above because its source lives in cli/. No
+# root include path is needed: every header it includes now lives in src/,
+# reached via macho9core's PUBLIC src include (below), same as every other tool.
 add_executable(macho9 cli/macho9.c)
 target_compile_options(macho9 PRIVATE -O2 -Wall)
 target_link_libraries(macho9 PRIVATE macho9core)

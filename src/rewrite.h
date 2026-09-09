@@ -1,0 +1,108 @@
+#ifndef MACHO9_REWRITE_H
+#define MACHO9_REWRITE_H
+/*
+ * mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs in place.
+ *
+ * This is change_dylib's whole operation set, lifted out of that tool's
+ * main() so it is a library function rather than a program. Two front-ends
+ * call it now and must keep behaving identically: compat/change_dylib.c
+ * (the old grammar: -change/-delete/-reexport/-add/-insert/-strip-lc and the
+ * -*-rpath twins) and cli/macho9.c's `dylib`/`rpath`/`lc` verbs (the new one:
+ * -replace/-delete/-append/-insert/-reexport). macho9 used to fork and exec
+ * change_dylib to get this work done; that made `change_dylib` a runtime
+ * dependency of `macho9`, which is a cycle once change_dylib becomes a
+ * wrapper around macho9. Sharing the code instead of the binary breaks it.
+ *
+ * The parsing stays in each front-end -- the two grammars are genuinely
+ * different, and neither is this module's business. What crosses the boundary
+ * is an mr_ops: the operation SET, already parsed, pointing at caller-owned
+ * arrays.
+ *
+ * Every diagnostic these functions print is part of the contract, not an
+ * implementation detail: both front-ends' output has to stay what
+ * change_dylib's has always been (tests/change_dylib_test.sh and
+ * tests/characterize.sh both pin it), so messages live down here, once,
+ * rather than being re-emitted by each caller.
+ *
+ * LIBRARY ORDINALS. In a two-level-namespace image every undefined symbol
+ * records which dylib it comes from, as a 1-based index into the dylib load
+ * commands in load order. The index lives in two places: the nlist n_desc of
+ * each undefined symbol, and the SET_DYLIB_ORDINAL opcodes of the LC_DYLD_INFO
+ * bind/weak/lazy streams. Appending is safe because it only hands out new
+ * indices, but INSERTING or DELETING shifts every later one.
+ *
+ * Leaving them stale does not produce a subtle bug so much as an unloadable
+ * binary: the highest ordinal usually belongs to libSystem (dyld_stub_binder),
+ * so after a deletion dyld rejects the image with "library ordinal (N) too big".
+ * Where the shifted index does stay in range it is worse, because it silently
+ * names a different library. Either way the rewrite has to renumber, so
+ * inserts and deletes do, and a delete refuses outright if any symbol still
+ * binds to the dylib being removed.
+ */
+#include <stdint.h>
+
+/* One dylib-path (or rpath) operation.
+ *
+ * new_path == NULL  -- delete the command naming old_path
+ * new_path == ""    -- leave the path alone (used with reexport, which only
+ *                      changes the command's KIND)
+ * otherwise         -- rewrite the path to new_path, growing the command if
+ *                      the longer string needs it
+ *
+ * `reexport` promotes LC_LOAD_DYLIB to LC_REEXPORT_DYLIB and is meaningless
+ * for an rpath operation (LC_RPATH has only one kind), so mr_ops' rpath
+ * arrays always leave it 0. */
+typedef struct {
+    const char *old_path;
+    const char *new_path;
+    int reexport;
+} mr_change;
+
+/* Everything one run of the rewriter is being asked to do. Each array is
+ * caller-owned and read-only for the duration of the call; a count of 0 means
+ * that operation was not requested and its pointer is never dereferenced.
+ *
+ * Order within an array is the order the operations were given on the command
+ * line, and it is observable: inserted dylibs become ordinals 1..n in the
+ * order they appear here, and appended ones land after every existing
+ * dependency in the order they appear here. */
+typedef struct {
+    const mr_change *dylib_changes;    /* rewrite/delete/reexport a dependency */
+    int              n_dylib_changes;
+    const char *const *dylib_appends;  /* brand-new LC_LOAD_DYLIB, placed last */
+    int              n_dylib_appends;
+    const char *const *dylib_inserts;  /* brand-new LC_LOAD_DYLIB, placed first */
+    int              n_dylib_inserts;
+    const uint32_t  *strip_cmds;       /* whole load commands to drop, by LC_* */
+    int              n_strip_cmds;
+    const mr_change *rpath_changes;    /* rewrite/delete an LC_RPATH */
+    int              n_rpath_changes;
+    const char *const *rpath_appends;  /* brand-new LC_RPATH, placed last */
+    int              n_rpath_appends;
+    int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
+} mr_ops;
+
+/* How many times one operation may repeat in a single run. Both front-ends
+ * accumulate into fixed-size arrays and both refuse at the same point, so
+ * `change_dylib -delete ... x33` and `macho9 dylib -delete ... x33` agree
+ * about being too many -- each in its own vocabulary, since the two grammars
+ * spell the operations differently. */
+#define MR_MAX_OPS   32
+#define MR_MAX_STRIP 16
+
+/*
+ * Apply `ops` to the Mach-O at `path`, in place, and write it back atomically
+ * if anything changed. Handles both a thin 64-bit Mach-O and a classic
+ * (32-bit-offset fat_arch) fat container, whose slices are each rewritten and
+ * then reassembled; a 64-bit fat container (fat_arch_64) is refused
+ * explicitly, and a fat slice this rewriter does not understand is passed
+ * through byte-for-byte.
+ *
+ * Returns 0 on success -- including the "nothing matched, file untouched"
+ * case -- or 1 with a message already printed on stderr. On any failure the
+ * file on disk is left exactly as it was found: every refusal happens before
+ * the single atomic replace at the end.
+ */
+int mr_apply_file(const char *path, const mr_ops *ops);
+
+#endif /* MACHO9_REWRITE_H */
