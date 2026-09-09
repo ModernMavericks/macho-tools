@@ -38,6 +38,64 @@ fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
 
+# ordinal_of FILE SYMBOL: prints the 1-based library ordinal an undefined
+# nlist symbol's n_desc records, or exits nonzero with a message on stderr.
+# Case 8 needs this because neither `otool -L` nor a runtime re-run is enough
+# to check an ordinal VALUE was written correctly (see that case's comment
+# for what was tried and ruled out). It reads the same GET_LIBRARY_ORDINAL
+# macro change_dylib itself uses, over our own minimal LC_SYMTAB walk -- not
+# a text format any Apple tool controls the shape of across OS versions, so
+# it asks the same question on a 10.9 host and a 2020s one.
+cat > "$T/ordinal_of.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file symbol\n", argv[0]); return 2; }
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); return 2; }
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+    uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    struct symtab_command *st_cmd = NULL;
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_SYMTAB) st_cmd = (struct symtab_command *)lcp;
+        lcp += lc->cmdsize;
+    }
+    if (!st_cmd) { fprintf(stderr, "no LC_SYMTAB\n"); return 2; }
+    struct nlist_64 *syms = (struct nlist_64 *)(buf + st_cmd->symoff);
+    const char *strtab = (const char *)(buf + st_cmd->stroff);
+    for (uint32_t i = 0; i < st_cmd->nsyms; i++) {
+        struct nlist_64 *n = &syms[i];
+        if (n->n_type & N_STAB) continue;
+        uint8_t type = n->n_type & N_TYPE;
+        if (type != N_UNDF && type != N_PBUD) continue;
+        const char *name = strtab + n->n_un.n_strx;
+        if (strcmp(name, argv[2]) == 0) {
+            printf("%d\n", GET_LIBRARY_ORDINAL(n->n_desc));
+            return 0;
+        }
+    }
+    fprintf(stderr, "symbol not found: %s\n", argv[2]);
+    return 1;
+}
+EOF
+"$CC" -O2 -o "$T/ordinal_of" "$T/ordinal_of.c"
+
 # --- fixtures: three dylibs, and a main that calls into two of them ----------
 cat > "$T/a.c" <<'EOF'
 int a_sym(void) { return 11; }
@@ -210,12 +268,30 @@ fi
 # drops the flag for an executable (confirmed separately) -- and only once the
 # referenced dylib already exists on disk for ld to open. This builds that for
 # real (libupd_a upward-depends on libupd_b, a plain sibling dylib), a genuine
-# linker-produced load command, not a fabricated one. Nothing in libupd_a
-# actually calls into libupd_b -- the upward edge is structural only here, so
-# deleting it cannot orphan a bound symbol and this case stays about ordinals,
-# not about the separate orphan-refusal behaviour case 3 already covers.
+# linker-produced load command, not a fabricated one.
+#
+# The ordinal check reads the ordinal VALUE directly (via ordinal_of, above)
+# rather than parsing a debug tool's text output or inferring correctness from
+# a re-run. Two things were tried and ruled out first:
+#   - `nm -m`, grepping its "(from libSystem)" annotation for dyld_stub_binder:
+#     passed on this 10.9 host, came back EMPTY on a modern cross-runner --
+#     that annotation's shape isn't something this suite can rely on holding
+#     across a decade of Xcode, and nothing else here depended on it.
+#   - re-running a program that calls into libupd_a.dylib, on the theory that
+#     a wrong ordinal must make dyld refuse to load (as it does for case 7,
+#     where the wrong ordinal is on the EXECUTABLE's own dyld_stub_binder).
+#     Built and ran this for real: a lazily-bound symbol (_getpid) with a
+#     wrong-but-in-range ordinal on a DEPENDENCY dylib did NOT crash and did
+#     NOT refuse to load on this host -- old two-level-namespace dyld falls
+#     back to searching other loaded images for a lazy bind that isn't where
+#     its ordinal says, so the broken case silently "worked" too. A test that
+#     can't fail on its own bug fixture is worse than no test.
+# ordinal_of sidesteps both: it reads GET_LIBRARY_ORDINAL(n_desc) straight out
+# of LC_SYMTAB, so it reports what change_dylib actually wrote, not what some
+# other tool's formatter or dyld's fallback search happens to paper over.
 cat > "$T/upd_a.c" <<'EOF'
-int upd_a_sym(void) { return 10; }
+#include <unistd.h>
+int upd_a_sym(void) { return getpid() > 0 ? 10 : -1; }
 EOF
 cat > "$T/upd_b.c" <<'EOF'
 int upd_b_sym(void) { return 42; }
@@ -228,10 +304,14 @@ EOF
 if ! otool -l "$T/libupd_a.dylib" | grep -q LC_LOAD_UPWARD_DYLIB; then
     bad "upward fixture" "linker did not produce LC_LOAD_UPWARD_DYLIB; skipping case 8"
 else
-    # ordinals as linked: 1=libspare, 2=libupd_b (upward), 3=libSystem.
-    # Deleting both 1 and 2 must leave only libSystem, now ordinal 1, with
-    # dyld_stub_binder's nlist entry renumbered to match -- not left pointing
-    # at whatever ordinal 1 happens to be in the (possibly wrong) new table.
+    before=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>&1)
+    [ "$before" = "3" ] || bad "upward fixture" "fixture itself not as expected before any rewrite: _getpid ordinal is '$before', wanted 3"
+    # ordinals as linked: 1=libspare, 2=libupd_b (upward), 3=libSystem, so
+    # _getpid (a real libSystem call, not foldable by the optimizer) starts
+    # at ordinal 3. Deleting 1 and 2 must leave only libSystem, now ordinal 1,
+    # with _getpid's nlist entry renumbered to match -- not left stale at 3
+    # (now out of range) and not left pointing at whatever load command
+    # happens to occupy slot 1 in a table that disagreed with the map.
     #
     # This fixture's plain __TEXT layout doesn't satisfy mg_plausible's
     # LC_FUNCTION_STARTS heuristic (macho_grow.h) on this host regardless of
@@ -249,10 +329,18 @@ else
     else
         ok "-delete: an LC_LOAD_UPWARD_DYLIB is matched/deleted like any other dylib LC"
     fi
-    binder=$(nm -m "$T/libupd_a.dylib" | grep dyld_stub_binder || true)
-    case "$binder" in
-        *libSystem*) ok "-delete: dyld_stub_binder's ordinal renumbered to libSystem" ;;
-        *) bad "-delete upward renumber" "dyld_stub_binder ordinal wrong: $binder" ;;
+    after=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>&1)
+    case "$after" in
+        [0-9]*)
+            if [ "$after" = "1" ]; then
+                ok "-delete: _getpid's ordinal renumbered to the surviving libSystem (1)"
+            else
+                bad "-delete upward renumber" "_getpid's ordinal is $after, expected 1"
+            fi
+            ;;
+        *)
+            bad "-delete upward renumber" "ordinal_of returned no number, not a wrong number: $after"
+            ;;
     esac
 fi
 
