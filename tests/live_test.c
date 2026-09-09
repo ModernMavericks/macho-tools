@@ -345,11 +345,31 @@ static void test_each_lc_refuses_cmdsize_past_sizeofcmds(void) {
     CHECK(rc == -1, "mlive_each_lc(cmdsize striding past sizeofcmds) refuses (got %d)", rc);
 }
 
+/* Pins live.h:195, `lc->cmdsize < sizeof(struct segment_command_64)`.
+ *
+ * NOTE on what this test can and can't prove: 205's own comparison value,
+ * `want = sizeof(segment_command_64) + nsects*sizeof(section_64)`, is always
+ * >= 72 regardless of `nsects` (unsigned, so the product can't go negative).
+ * Any cmdsize < 72 -- the exact regime 195 exists for -- therefore ALWAYS
+ * fails 205's `cmdsize != want` too, on ANY value `sg->nsects` happens to
+ * hold. So no return-value-based test, however built, can mutation-isolate
+ * 195 from 205: with 195 alone deleted, this test's own CHECK below still
+ * observes rc == -1, via 205. This was confirmed the hard way -- a first
+ * version of this test used a trailing PROT_NONE guard page so a deleted
+ * 195 would read `sg->nsects` out of bounds and crash. It crashed reliably
+ * at -O0; built at -O2 (this project's real test flag, see CMakeLists.txt)
+ * the compiler proved 205's outcome can't depend on `sg->nsects`'s value
+ * here and elided the load entirely -- the guard page was never touched,
+ * mutated or not, making that version permanently green regardless of 195's
+ * presence: a test that cannot fail, strictly worse than no test. So this
+ * is the same plain fixture image_test.c's own analogous
+ * test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct uses for
+ * mi_validate's identical pair of checks (image.c has the exact same `want`
+ * formula, so the exact same subsumption holds there too) -- real coverage
+ * of the documented invariant "cmdsize < sizeof(segment_command_64) is
+ * refused", just not a check that can be pinned to 195 alone in isolation
+ * from 205. See this wave's report for the fuller trace. */
 static void test_each_lc_refuses_segment_shorter_than_struct(void) {
-    /* Pins live.h:195, `lc->cmdsize < sizeof(struct segment_command_64)` --
-     * an LC_SEGMENT_64 whose cmdsize doesn't even cover the fixed-size
-     * struct, let alone any trailing sections. Without this,
-     * mlive_find_section would read segname/nsects past the mapped region. */
     uint8_t buf[sizeof(struct mach_header_64) + 8];
     memset(buf, 0, sizeof buf);
     struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
@@ -358,7 +378,7 @@ static void test_each_lc_refuses_segment_shorter_than_struct(void) {
     hdr->sizeofcmds = 8;
     struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
     lc->cmd = LC_SEGMENT_64;
-    lc->cmdsize = 8;   /* far below sizeof(struct segment_command_64) */
+    lc->cmdsize = 8;   /* far below sizeof(struct segment_command_64) (72) */
 
     int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
                             count_segments_cb, NULL);
@@ -385,8 +405,19 @@ static void test_each_lc_refuses_nsects_disagreeing_with_cmdsize(void) {
     sg->cmdsize = (uint32_t)sizeof(struct segment_command_64);   /* covers 0 sections */
     sg->nsects = 5;   /* claims 5 trailing section_64 entries that don't fit */
 
+    /* A real context, not NULL: with 205 deleted, mlive_each_lc's own bound
+     * check no longer refuses this segment, so the callback DOES run (see
+     * this wave's report -- an earlier version of this test passed NULL
+     * here on the assumption the callback could never actually be reached,
+     * which held only as long as 205 was intact; deleting 205 let the
+     * callback run and NULL-deref, crashing the whole test binary instead
+     * of failing this one CHECK cleanly). count_segments_cb only reads
+     * lc->cmd and increments ctx->nseg, so a real context keeps this test's
+     * own discrimination entirely in rc, matching the other three checks in
+     * this family. */
+    count_ctx ctx = { 0 };
     int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
-                            count_segments_cb, NULL);
+                            count_segments_cb, &ctx);
     CHECK(rc == -1,
           "mlive_each_lc(LC_SEGMENT_64 nsects disagreeing with cmdsize) refuses (got %d)",
           rc);
