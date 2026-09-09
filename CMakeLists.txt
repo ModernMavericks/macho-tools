@@ -80,11 +80,15 @@ endforeach()
 # directly; patch_macho includes src/image.h directly; fix_macho includes
 # src/fat.h directly (Task 5: both fat-aware tools now validate a fat file's
 # arch table through the same code, src/fat.c, instead of each having its own
-# hand-rolled walk that could -- and did -- disagree about validation). The
-# other three reach nothing in src/ yet.
+# hand-rolled walk that could -- and did -- disagree about validation).
+# add_version_min, rename_segment and retag_swift_classes join here one at a
+# time as Task 1 (docs/superpowers/plans/2026-09-08-macho9-toolkit.md)
+# converts each off its own open/fstat/malloc/read/ncmds-walk preamble onto
+# src/image.h.
 target_link_libraries(change_dylib PRIVATE macho9core)
 target_link_libraries(patch_macho PRIVATE macho9core)
 target_link_libraries(fix_macho PRIVATE macho9core)
+target_link_libraries(add_version_min PRIVATE macho9core)
 
 # The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): `verify`/`info`/`grow`
 # delegate in-process to macho9core + macho_grow.h; `dylib`/`rpath`/`lc`
