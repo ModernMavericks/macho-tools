@@ -11,6 +11,8 @@
 # itself. That is the honest outcome: the check did not run, rather than passed.
 set -eu
 BIN="${1:?usage: chained-fixups.sh <bindir>}"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SRC_DIR="$SCRIPT_DIR/../src"
 T=$(mktemp -d /tmp/chained-fixups.XXXXXX)
 trap 'rm -rf "$T"' EXIT INT TERM
 
@@ -62,8 +64,56 @@ int main(int argc, char **argv) {
 }
 CEOF
 "${CC:-cc}" -O2 -o "$T/has_lc" "$T/has_lc.c"
-LC_DYLD_CHAINED_FIXUPS=0x80000034
-LC_DYLD_INFO_ONLY=0x22
+
+# The bug this replaced: LC_DYLD_INFO_ONLY was hand-typed here as 0x22,
+# dropping the LC_REQ_DYLD bit ((0x22|LC_REQ_DYLD) = 0x80000022) that
+# `#define LC_DYLD_INFO_ONLY` in <mach-o/loader.h> carries. The OLD
+# otool-text oracle never had this bug because it matched on the NAME otool
+# prints, so the bit never entered into it -- converting to a numeric
+# comparison (this wave's own fix, see git history) made the bit load-
+# bearing, and a hand-copied literal dropped it. has_lc's `==` is exact, so
+# this silently searched for the wrong command and reported "absent" on a
+# file that had one -- caught only on a cross runner where the host linker
+# actually emits LC_DYLD_INFO_ONLY (10.9's does not, so this SKIPs here
+# regardless, and the bug was invisible on this host).
+#
+# Fix, and fix the CLASS: never hand-type an LC_REQ_DYLD-bearing constant
+# in shell again. Read both values out of the same headers this project's
+# own C source trusts (src/mach_compat.h over <mach-o/loader.h>) via a
+# throwaway C program, so a shell constant can no longer drift from the
+# header that defines it -- the identical reasoning tests/README.md's
+# "never parse otool text" lesson gives, applied one level deeper: don't
+# hand-transcribe a NUMBER out of a header either, read it back out of the
+# header via the compiler instead.
+cat > "$T/lc_const.c" <<'CEOF'
+#include <stdio.h>
+#include <mach-o/loader.h>
+#include "mach_compat.h"
+int main(void) {
+    printf("%#x %#x\n", LC_DYLD_CHAINED_FIXUPS, LC_DYLD_INFO_ONLY);
+    return 0;
+}
+CEOF
+"${CC:-cc}" -O2 -I "$SRC_DIR" -o "$T/lc_const" "$T/lc_const.c"
+lc_const_out=$("$T/lc_const")
+LC_DYLD_CHAINED_FIXUPS=${lc_const_out%% *}
+LC_DYLD_INFO_ONLY=${lc_const_out##* }
+
+# This assertion runs on EVERY host, including 10.9 where the rest of this
+# script SKIPs -- it is the one part of this fix that a 10.9-only run can
+# actually prove, since the end-to-end conversion path below never executes
+# here. 0x80000034 and 0x80000022 are this project's own long-standing
+# values (mach_compat.h's LC_DYLD_CHAINED_FIXUPS comment, and
+# <mach-o/loader.h>'s LC_DYLD_INFO_ONLY); if the header ever changes them,
+# this is meant to fail loudly, not silently track a moving target.
+[ "$LC_DYLD_CHAINED_FIXUPS" = "0x80000034" ] || {
+    echo "chained-fixups: LC_DYLD_CHAINED_FIXUPS read as $LC_DYLD_CHAINED_FIXUPS, expected 0x80000034 -- header definition changed?" >&2
+    exit 1
+}
+[ "$LC_DYLD_INFO_ONLY" = "0x80000022" ] || {
+    echo "chained-fixups: LC_DYLD_INFO_ONLY read as $LC_DYLD_INFO_ONLY, expected 0x80000022 -- header definition changed?" >&2
+    exit 1
+}
 
 # CMake exports SDKROOT / MACOSX_DEPLOYMENT_TARGET for the 10.9 cross build, and
 # inheriting those here would defeat the point: we want the HOST's own defaults,
