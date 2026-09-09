@@ -53,6 +53,11 @@
 /* Load-command/section-type constants newer than the 10.9 SDK headers. */
 #include "mach_compat.h"
 
+/* The __LINKEDIT offset-bump table: mg_bump and mg_bump_all, covering
+ * LC_SYMTAB/LC_DYSYMTAB/LC_DYLD_INFO[_ONLY] and the linkedit_data_command
+ * family. See src/linkedit.h for the exact field list. */
+#include "linkedit.h"
+
 #define MG_EXPORT_KIND_MASK        0x03
 #define MG_EXPORT_REEXPORT         0x08
 #define MG_EXPORT_STUB_AND_RESOLVER 0x10
@@ -99,11 +104,6 @@ static uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
         lcp += lc->cmdsize;
     }
     return first == UINT32_MAX ? 4096 : first;
-}
-
-/* Shift one file-offset field down by `grow` if it points at/after `insert`. */
-static void mg_bump(uint32_t *off, uint32_t insert, uint32_t grow) {
-    if (*off >= insert) *off += grow;
 }
 
 /* ---- ULEB128, for the LC_FUNCTION_STARTS leading-delta re-encode ----------
@@ -1076,32 +1076,6 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             }
             break;
         }
-        case LC_SYMTAB: {
-            struct symtab_command *c = (struct symtab_command *)lcp;
-            mg_bump(&c->symoff, insert, grow);
-            mg_bump(&c->stroff, insert, grow);
-            break;
-        }
-        case LC_DYSYMTAB: {
-            struct dysymtab_command *c = (struct dysymtab_command *)lcp;
-            mg_bump(&c->tocoff, insert, grow);
-            mg_bump(&c->modtaboff, insert, grow);
-            mg_bump(&c->extrefsymoff, insert, grow);
-            mg_bump(&c->indirectsymoff, insert, grow);
-            mg_bump(&c->extreloff, insert, grow);
-            mg_bump(&c->locreloff, insert, grow);
-            break;
-        }
-        case LC_DYLD_INFO:
-        case LC_DYLD_INFO_ONLY: {
-            struct dyld_info_command *c = (struct dyld_info_command *)lcp;
-            mg_bump(&c->rebase_off, insert, grow);
-            mg_bump(&c->bind_off, insert, grow);
-            mg_bump(&c->weak_bind_off, insert, grow);
-            mg_bump(&c->lazy_bind_off, insert, grow);
-            mg_bump(&c->export_off, insert, grow);
-            break;
-        }
         case LC_MAIN: {
             /* entryoff is a file offset within __TEXT; bumping it keeps the
              * entry's vm address fixed (base went down by the same amount). */
@@ -1111,23 +1085,21 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             c->entryoff = e;
             break;
         }
-        case LC_FUNCTION_STARTS:
-        case LC_DATA_IN_CODE:
-        case LC_CODE_SIGNATURE:
-        case LC_SEGMENT_SPLIT_INFO:
-        case LC_DYLIB_CODE_SIGN_DRS:
-        case LC_LINKER_OPTIMIZATION_HINT:
-        case LC_DYLD_EXPORTS_TRIE:
-        case LC_DYLD_CHAINED_FIXUPS: {
-            struct linkedit_data_command *c = (struct linkedit_data_command *)lcp;
-            mg_bump(&c->dataoff, insert, grow);
-            break;
-        }
         default:
-            break;  /* LC_LOAD_DYLIB/DYLINKER/UUID/VERSION_MIN carry no file offsets */
+            break;  /* everything else -- the __LINKEDIT-resident structures
+                      * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
+                      * linkedit_data_command family) plus anything carrying
+                      * no file offset at all -- is mg_bump_all's job, below. */
         }
         lcp += lc->cmdsize;
     }
+
+    /* The __LINKEDIT offset-bump table (src/linkedit.h): symtab, strtab,
+     * indirect symbols, dyld-info streams, function starts, data-in-code,
+     * code signature and siblings. A second pass over the same load-command
+     * chain the loop above just walked -- disjoint switch cases, so running
+     * them in either order or in one merged switch produces identical bytes. */
+    mg_bump_all(buf, hdr, insert, grow);
 
     /* Re-point the dyld4 initializer offsets: the base dropped by `grow`, the
      * constructors did not move, so each offset must gain `grow`. Section file
