@@ -747,19 +747,16 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    /* Locate the donor (__PAGEZERO) and the header-bearing segment (__TEXT). */
-    struct segment_command_64 *pagezero = NULL, *text = NULL;
-    uint8_t *lcp = buf + sizeof(*hdr);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            if (strcmp(seg->segname, "__PAGEZERO") == 0) pagezero = seg;
-            else if (seg->fileoff == 0 && seg->filesize > 0) text = seg;
-        }
-        lcp += lc->cmdsize;
+    /* Locate the donor (__PAGEZERO) and confirm a header-bearing segment
+     * (__TEXT) exists, via the same finders every other converted walk in
+     * this toolkit uses instead of a third hand-rolled copy of the search. */
+    mi_image find_im;
+    if (mi_wrap(buf, fsize, &find_im) != 0) {
+        fprintf(stderr, "macho_grow: internal error -- the header no longer validates\n");
+        return -1;
     }
-    if (!text) {
+    struct segment_command_64 *pagezero = mi_find_segment(&find_im, "__PAGEZERO");
+    if (!mi_text_base(&find_im)) {
         fprintf(stderr, "macho_grow: no __TEXT-like segment holds the header\n");
         return -1;
     }
@@ -902,7 +899,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     /* Patch the header. Load commands live before `insert`, so memmove didn't
      * touch them; we walk them now and adjust only file-offset fields, plus the
      * three VM fields that keep every address fixed. */
-    lcp = buf + sizeof(*hdr);
+    uint8_t *lcp = buf + sizeof(*hdr);
     for (uint32_t i = 0; i < hdr->ncmds; i++) {
         struct load_command *lc = (struct load_command *)lcp;
         switch (lc->cmd) {
