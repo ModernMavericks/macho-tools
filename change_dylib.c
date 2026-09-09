@@ -415,12 +415,21 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
      * under libgmalloc: SIGSEGV). This doesn't know here which existing
      * command a given -change will match (that's decided later, by name,
      * inside build_lcs) or that command's actual `base` (dc->dylib.name.
-     * offset / rc->path.offset), so it bounds the worst case the same way
-     * -add above does: as if the match grew a brand-new, full-size
+     * offset / rc->path.offset), so it bounds it the same way -add above
+     * does: as if the match grew a brand-new, full-size
      * dylib_command/rpath_command header plus the new path -- at least as
      * large as `base + new_len` can ever be for a well-formed command,
      * whatever the match turns out to be (or if it turns out not to match
-     * anything at all, in which case this is simply unused slack). */
+     * anything at all, in which case this is simply unused slack).
+     *
+     * NOT a worst-case bound, though: this budgets ONE grown command per
+     * `-change`/`-change-rpath` TERM, but the matching loop above grows
+     * every LOAD COMMAND that matches -- one term can match more than one
+     * command. A binary carrying the same install name (or rpath) on two or
+     * more load commands and a single `-change`/`-change-rpath` for it will
+     * still under-budget add_bytes and can overflow new_lcs, same class of
+     * bug as the one this comment used to describe. Unhandled; not fixed
+     * here. */
     for (int c = 0; c < nchanges; c++)
         if (changes[c].new_path != NULL && changes[c].new_path[0] != '\0')
             add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(changes[c].new_path) + 1 + 7) & ~7UL);
@@ -876,7 +885,8 @@ static int write_atomic(const char *path, mode_t mode, const uint8_t *buf, size_
     const char *target = (realpath(path, real) != NULL) ? real : path;
 
     struct stat tst;
-    if (stat(target, &tst) == 0 && tst.st_nlink > 1) {
+    int have_stat = (stat(target, &tst) == 0);
+    if (have_stat && tst.st_nlink > 1) {
         return write_in_place(target, buf, size);
     }
 
@@ -888,7 +898,12 @@ static int write_atomic(const char *path, mode_t mode, const uint8_t *buf, size_
     int tfd = mkstemp(tmpl);
     if (tfd < 0) { perror("mkstemp"); free(tmpl); return 1; }
     fchmod(tfd, mode);   /* best-effort: match the original file's permissions */
-    fchown(tfd, tst.st_uid, tst.st_gid);   /* best-effort: needs privilege to change owner */
+    /* tst is only valid when the stat above succeeded -- an uninitialized
+     * st_uid/st_gid must never reach fchown. main() only ever gets here
+     * having already opened `path` O_RDWR, so this stat cannot realistically
+     * fail; the guard exists for defined behavior, not because failure is
+     * expected in practice. */
+    if (have_stat) fchown(tfd, tst.st_uid, tst.st_gid);   /* best-effort: needs privilege to change owner */
     if (copy_xattrs(target, tfd) != 0) {
         fprintf(stderr, "warning: %s: could not copy all extended attributes "
                         "(e.g. com.apple.quarantine) to the updated file\n", target);

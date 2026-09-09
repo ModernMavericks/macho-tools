@@ -929,7 +929,54 @@ after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{p
 # multiple hard links: the sibling name keeps the stale content because
 # rename() gives its own name a fresh inode. Both are covered here, plus the
 # ordinary (single-link, non-symlink) case that must keep its atomicity win.
-rpath_present() { otool -l "$1" | grep -A2 LC_RPATH | grep -q "path $2 "; }
+# Structural reader, not otool text: otool -l's "path X (offset N)" wording
+# and its -A2 line spacing both drift across Xcode versions -- this suite
+# went red on the modern cross runner seven times during this project, every
+# one a test assumption exactly like that. Per tests/README.md ("never parse
+# nm/otool human-readable output as an oracle"), read the LC_RPATH load
+# commands directly out of the Mach-O and compare the path bytes, so this
+# behaves identically on a 2014 and a 2026 toolchain -- same pattern as
+# has_lc.c below.
+cat > "$T/has_rpath.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+/* Exit 0 if `file` carries an LC_RPATH command whose path is exactly
+ * `path`, 1 if it doesn't, 2 on a usage/read error. */
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file path\n", argv[0]); return 2; }
+    const char *want = argv[2];
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+    uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_RPATH) {
+            struct rpath_command *rc = (struct rpath_command *)lcp;
+            const char *p = (const char *)lcp + rc->path.offset;
+            if (strcmp(p, want) == 0) return 0;
+        }
+        lcp += lc->cmdsize;
+    }
+    return 1;
+}
+EOF
+"$CC" -O2 -o "$T/has_rpath" "$T/has_rpath.c"
+rpath_present() { "$T/has_rpath" "$1" "$2"; }
 
 # 14a. symlink: change_dylib is pointed at the LINK; the LINK must still be
 # a symlink to the same name afterward, and the REAL file it names must be
