@@ -667,6 +667,171 @@ static void test_grow_rebases_export_trie(void) {
     free(buf);
 }
 
+/* ---- THE gap this task closes: a trie that genuinely WIDENS under grow ----
+ * Node A's address is 16000 (0x3E80): a 2-byte ULEB (16000 < 16384), but
+ * 16000 + 0x1000 = 20096 needs 3 (>= 16384). An in-place patch (the path
+ * above) cannot absorb that -- see mg_trie_node's `return 1`. Before this
+ * task, mg_grow_header refused outright; now it must REBUILD the trie via
+ * src/trie.c's mt_trie_rebuild and, when the rebuild no longer fits the
+ * original space (it doesn't here: 18 bytes where there were 17), grow
+ * __LINKEDIT to hold it.
+ *
+ * This fixture is deliberately NOT build_image()'s 8192-byte layout: that
+ * fixture has trailing zero padding past its trie, which would make
+ * __LINKEDIT's declared end fall short of the file's actual end -- exactly
+ * the "unknown trailing data" shape mg_grow_header's append path refuses
+ * rather than guess about. This one is sized so __LINKEDIT's export trie is
+ * the LAST thing in the file, byte for byte, so the append path's own
+ * precondition holds. */
+#define WT_LC_END   ((uint32_t)(sizeof(struct mach_header_64) \
+                     + sizeof(struct segment_command_64)                         /* __PAGEZERO */ \
+                     + sizeof(struct segment_command_64) + sizeof(struct section_64) /* __TEXT */ \
+                     + sizeof(struct segment_command_64)                         /* __LINKEDIT */ \
+                     + sizeof(struct dyld_info_command)))
+#define WT_SECT_OFF 4096u
+#define WT_TEXT_FILESIZE 4352u          /* > WT_SECT_OFF+4, page-friendly */
+#define WT_TRIE_OFF WT_TEXT_FILESIZE    /* __LINKEDIT starts right after __TEXT */
+#define WT_TRIE_SIZE 17u
+#define WT_FSIZE (WT_TRIE_OFF + WT_TRIE_SIZE)   /* trie is the LAST file byte */
+
+static uint8_t *build_widening_trie_image(size_t *fsize_out) {
+    uint8_t *buf = (uint8_t *)calloc(1, WT_FSIZE);
+
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+    h->ncmds = 4;
+
+    struct segment_command_64 *pz = (struct segment_command_64 *)(buf + sizeof *h);
+    pz->cmd = LC_SEGMENT_64;
+    pz->cmdsize = sizeof *pz;
+    strcpy(pz->segname, "__PAGEZERO");
+    pz->vmaddr = 0; pz->vmsize = 0x100000000ull;
+    pz->fileoff = 0; pz->filesize = 0;
+
+    struct segment_command_64 *tx = (struct segment_command_64 *)((uint8_t *)pz + pz->cmdsize);
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx + sizeof(struct section_64);
+    strcpy(tx->segname, "__TEXT");
+    tx->vmaddr = 0x100000000ull;
+    tx->vmsize = WT_TEXT_FILESIZE;
+    tx->fileoff = 0;
+    tx->filesize = WT_TEXT_FILESIZE;
+    tx->nsects = 1;
+    struct section_64 *sc = (struct section_64 *)((uint8_t *)tx + sizeof *tx);
+    strncpy(sc->sectname, "__data", sizeof sc->sectname);
+    strncpy(sc->segname, "__TEXT", sizeof sc->segname);
+    sc->addr = 0x100000000ull + WT_SECT_OFF;
+    sc->size = 4;
+    sc->offset = WT_SECT_OFF;
+    sc->flags = S_REGULAR;
+
+    struct segment_command_64 *le =
+        (struct segment_command_64 *)((uint8_t *)tx + tx->cmdsize);
+    le->cmd = LC_SEGMENT_64;
+    le->cmdsize = sizeof *le;
+    strcpy(le->segname, "__LINKEDIT");
+    le->vmaddr = tx->vmaddr + tx->vmsize;
+    le->vmsize = 0x1000;
+    le->fileoff = WT_TRIE_OFF;
+    le->filesize = WT_TRIE_SIZE;   /* == exactly the (original) trie: it is
+                                     * the only thing in __LINKEDIT here */
+
+    struct dyld_info_command *di =
+        (struct dyld_info_command *)((uint8_t *)le + le->cmdsize);
+    di->cmd = LC_DYLD_INFO_ONLY;
+    di->cmdsize = sizeof *di;
+    di->export_off = WT_TRIE_OFF;
+    di->export_size = WT_TRIE_SIZE;
+
+    h->sizeofcmds = (uint32_t)(pz->cmdsize + tx->cmdsize + le->cmdsize + di->cmdsize);
+    CHECK(sizeof(*h) + h->sizeofcmds == WT_LC_END,
+          "fixture invariant: load commands end where WT_LC_END says (got %zu want %u)",
+          sizeof(*h) + h->sizeofcmds, WT_LC_END);
+    CHECK(WT_LC_END <= WT_SECT_OFF, "fixture invariant: load commands fit before the section");
+
+    /* Same 17-byte hand-built trie as test_grow_rebases_export_trie's
+     * MG_T_TRIE fixture, except node A's address is 16000 (0x3E80, ULEB
+     * 80 7D) instead of 0x1000 -- see the block comment above this
+     * function for why that one value forces the widen. */
+    static const uint8_t trie[WT_TRIE_SIZE] = {
+        0x00, 0x02,
+        'A', 0x00, 8,
+        'B', 0x00, 13,
+        0x03, 0x00, 0x80, 0x7D, 0x00,     /* A: termsz3 flags0 addr16000(2B) nch0 */
+        0x02, 0x00, 0x00, 0x00            /* B: termsz2 flags0 addr0       nch0 */
+    };
+    memcpy(buf + WT_TRIE_OFF, trie, sizeof trie);
+
+    *fsize_out = WT_FSIZE;
+    return buf;
+}
+
+static void test_grow_rebuilds_widening_export_trie(void) {
+    size_t fsize;
+    uint8_t *buf = build_widening_trie_image(&fsize);
+    const uint32_t g = 0x1000;
+    CHECK(fsize == WT_FSIZE, "fixture is exactly WT_FSIZE bytes (got %zu)", fsize);
+
+    int r = mg_grow_header(&buf, &fsize, g);
+    CHECK(r == 0, "grow succeeds on a WIDENING export trie -- no longer refuses (got %d)", r);
+    if (r != 0) { free(buf); return; }
+
+    /* Hand-computed rebuilt trie (see the task report / commit message for
+     * the by-hand ULEB derivation): 18 bytes, one more than the original 17
+     *   root (8B):   00 02 'A' 00 08 'B' 00 0E
+     *   node A (6B): 04 00 80 9D 01 00     (addr 20096 = 0x4E80, ULEB 80 9D 01)
+     *   node B (4B): 02 00 00 00
+     */
+    static const uint8_t expect[18] = {
+        0x00, 0x02, 'A', 0x00, 0x08, 'B', 0x00, 0x0E,
+        0x04, 0x00, 0x80, 0x9D, 0x01, 0x00,
+        0x02, 0x00, 0x00, 0x00,
+    };
+
+    uint32_t new_export_off = 0, new_export_size = 0;
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *lcp = buf + sizeof *h;
+    struct segment_command_64 *le2 = NULL;
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
+            if (strcmp(seg->segname, "__LINKEDIT") == 0) le2 = seg;
+        } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
+            struct dyld_info_command *di = (struct dyld_info_command *)lcp;
+            new_export_off = di->export_off; new_export_size = di->export_size;
+        }
+        lcp += lc->cmdsize;
+    }
+
+    CHECK(new_export_size == sizeof expect,
+          "export_size grew to 18 (got %u) -- __LINKEDIT genuinely resized", new_export_size);
+    CHECK(fsize == WT_FSIZE + g + sizeof expect,
+          "file grew by header-pad(%u) + the trie's 1-byte growth: got %zu want %u",
+          g, fsize, (unsigned)(WT_FSIZE + g + sizeof expect));
+    CHECK(le2 != NULL, "__LINKEDIT segment still present");
+    if (le2) {
+        CHECK(le2->fileoff + le2->filesize == fsize,
+              "__LINKEDIT still ends exactly at the (new) end of the file "
+              "(fileoff=%llu filesize=%llu file=%zu)",
+              (unsigned long long)le2->fileoff, (unsigned long long)le2->filesize, fsize);
+        CHECK(new_export_off == le2->fileoff + le2->filesize - new_export_size,
+              "export_off points at the rebuilt trie's actual location");
+    }
+    if (new_export_off && new_export_size == sizeof expect &&
+        (uint64_t)new_export_off + new_export_size <= fsize) {
+        CHECK(memcmp(buf + new_export_off, expect, sizeof expect) == 0,
+              "rebuilt trie bytes match the hand-computed result exactly");
+        uint64_t a = 0;
+        int n = mu_decode(buf + new_export_off + 10, buf + new_export_off + new_export_size, &a);
+        CHECK(n == 3 && a == 16000 + g, "node A address is 16000+grow=20096 in 3 bytes "
+              "(got n=%d v=%#llx)", n, (unsigned long long)a);
+    }
+    free(buf);
+}
+
 /* ---- unknown means unsafe ----
  * The handlers above cover what we know. This is about what we do not: a load
  * command or section type nobody classified might carry offsets from the image
@@ -835,6 +1000,7 @@ int main(void) {
     test_grow_applies_init_offsets_once();
     test_grow_rebases_data_in_code();
     test_grow_rebases_export_trie();
+    test_grow_rebuilds_widening_export_trie();
     test_grow_refuses_unknown_load_command();
     test_grow_refuses_linker_optimization_hint();
     test_grow_refuses_unknown_section_type();
