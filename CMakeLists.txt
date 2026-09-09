@@ -135,6 +135,14 @@ target_compile_options(trie_test PRIVATE -O2 -Wall)
 target_link_libraries(trie_test PRIVATE macho9core)
 add_test(NAME trie_test COMMAND trie_test)
 
+# Hermetic tests for src/linkedit.c's ml_bump_all (Task 2b): a synthetic
+# image built by hand via mi_wrap, so no fixture file is needed -- same
+# reasoning as trie_test.
+add_executable(linkedit_test tests/linkedit_test.c)
+target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(linkedit_test PRIVATE macho9core)
+add_test(NAME linkedit_test COMMAND linkedit_test)
+
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Needs the
 # source dir because it compiles change_dylib.c itself.

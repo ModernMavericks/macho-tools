@@ -53,7 +53,7 @@
 /* Load-command/section-type constants newer than the 10.9 SDK headers. */
 #include "mach_compat.h"
 
-/* The __LINKEDIT offset-bump table: mg_bump and mg_bump_all, covering
+/* The __LINKEDIT offset-bump table: ml_bump and ml_bump_all, covering
  * LC_SYMTAB/LC_DYSYMTAB/LC_DYLD_INFO[_ONLY] and the linkedit_data_command
  * family. See src/linkedit.h for the exact field list. */
 #include "linkedit.h"
@@ -1071,8 +1071,8 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             }
             struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
             for (uint32_t j = 0; j < seg->nsects; j++) {
-                mg_bump(&sect[j].offset, insert, grow);   /* addr stays fixed */
-                if (sect[j].reloff) mg_bump(&sect[j].reloff, insert, grow);
+                ml_bump(&sect[j].offset, insert, grow);   /* addr stays fixed */
+                if (sect[j].reloff) ml_bump(&sect[j].reloff, insert, grow);
             }
             break;
         }
@@ -1081,7 +1081,7 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
              * entry's vm address fixed (base went down by the same amount). */
             struct entry_point_command *c = (struct entry_point_command *)lcp;
             uint32_t e = (uint32_t)c->entryoff;
-            mg_bump(&e, insert, grow);
+            ml_bump(&e, insert, grow);
             c->entryoff = e;
             break;
         }
@@ -1089,7 +1089,7 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             break;  /* everything else -- the __LINKEDIT-resident structures
                       * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
                       * linkedit_data_command family) plus anything carrying
-                      * no file offset at all -- is mg_bump_all's job, below. */
+                      * no file offset at all -- is ml_bump_all's job, below. */
         }
         lcp += lc->cmdsize;
     }
@@ -1098,8 +1098,22 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * indirect symbols, dyld-info streams, function starts, data-in-code,
      * code signature and siblings. A second pass over the same load-command
      * chain the loop above just walked -- disjoint switch cases, so running
-     * them in either order or in one merged switch produces identical bytes. */
-    mg_bump_all(buf, hdr, insert, grow);
+     * them in either order or in one merged switch produces identical bytes.
+     * Re-wrapped rather than reusing a stale mi_image: buf/hdr above may be
+     * the realloc'd pointer from the __LINKEDIT-grow path earlier in this
+     * function, and cmdsize/ncmds/nsects are exactly what the loop just
+     * walked without changing, so this wrap can only re-confirm what is
+     * already true. */
+    {
+        mi_image im;
+        if (mi_wrap(buf, final_size, &im) != 0) {
+            fprintf(stderr, "macho_grow: internal error -- the header we just patched "
+                            "no longer validates\n");
+            mg_snapshot_free(&snap);
+            return -1;
+        }
+        ml_bump_all(&im, insert, grow);
+    }
 
     /* Re-point the dyld4 initializer offsets: the base dropped by `grow`, the
      * constructors did not move, so each offset must gain `grow`. Section file
