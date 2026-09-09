@@ -1082,6 +1082,80 @@ else
         || bad "LC_LAZY_LOAD_DYLIB" "input was modified despite the refusal"
 fi
 
+# --- 16. src/fat.c's declared-slice overlap check, exercised through -------
+#         fix_macho -- its ONLY protection against this.
+#
+# mfat_parse (src/fat.c:~55-61) walks every DECLARED fat_arch entry and
+# refuses if any two overlap each other -- a read-side check, independent of
+# what any caller does with the file afterward. Before this check existed
+# this exact malformed input silently let change_dylib's reassembly
+# corrupt one slice's bytes with another's (case 12/13 above cover THAT,
+# the write-side consequence, for change_dylib specifically). But fix_macho
+# has no write-side check of its own to fall back on -- mfat_parse's
+# read-side refusal is 100% of what stands between fix_macho and indexing
+# into overlapping/aliased slice data as if the two slices were independent.
+# A prior review deleted this check and the entire suite (32/32 at the time)
+# stayed green, because nothing exercised it -- this closes that hole
+# directly, against the tool that actually depends on it.
+#
+# fix_macho is built from source here (like change_dylib above) rather than
+# consumed as a CMake target, for the same standalone-script reason; it
+# needs only fat.c from src/.
+"$CC" -O2 -I src -o "$T/fix_macho" fix_macho.c src/fat.c
+
+cat > "$T/mk2fat_overlap.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <mach-o/fat.h>
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+int main(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "usage: %s out\n", argv[0]); return 2; }
+    /* Two DECLARED slices whose byte ranges genuinely intersect:
+     * slice0 = [0x1000, 0x3000), slice1 = [0x2000, 0x3000) -- overlap at
+     * [0x2000, 0x3000). Neither runs past the file or into the header/arch
+     * table, so this exercises ONLY the pairwise overlap check, nothing
+     * else mfat_parse also refuses. */
+    uint32_t total = 0x3000;
+    uint8_t *out = calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)out;
+    fh->magic = sw32(FAT_MAGIC);
+    fh->nfat_arch = sw32(2);
+    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
+    ar[0].cputype = sw32(7); ar[0].cpusubtype = sw32(3);
+    ar[0].offset = sw32(0x1000); ar[0].size = sw32(0x2000); ar[0].align = sw32(12);
+    ar[1].cputype = sw32(0x1000007); ar[1].cpusubtype = sw32(3);
+    ar[1].offset = sw32(0x2000); ar[1].size = sw32(0x1000); ar[1].align = sw32(12);
+    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) { perror("open out"); return 2; }
+    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
+    close(ofd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mk2fat_overlap" "$T/mk2fat_overlap.c"
+"$T/mk2fat_overlap" "$T/fat_two_declared_slices"
+before_md5=$(md5 -q "$T/fat_two_declared_slices" 2>/dev/null || md5sum "$T/fat_two_declared_slices" | awk '{print $1}')
+
+rc=0
+"$T/fix_macho" "$T/fat_two_declared_slices" -strip_build_version >"$T/overlap_fix.out" 2>&1 || rc=$?
+after_md5=$(md5 -q "$T/fat_two_declared_slices" 2>/dev/null || md5sum "$T/fat_two_declared_slices" | awk '{print $1}')
+
+[ "$rc" -ne 0 ] \
+    && ok "fat declared-overlap: fix_macho refuses (exit $rc)" \
+    || bad "fat declared-overlap" "fix_macho exited 0 on two declared slices that overlap each other"
+grep -qi "overlapping" "$T/overlap_fix.out" \
+    && ok "fat declared-overlap: refusal names the overlap" \
+    || bad "fat declared-overlap" "refused without mentioning overlap: $(cat "$T/overlap_fix.out")"
+[ "$before_md5" = "$after_md5" ] \
+    && ok "fat declared-overlap: input left completely untouched on refusal" \
+    || bad "fat declared-overlap" "input was modified despite the refusal"
+
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
 echo "change_dylib_test: $fails FAILED"; exit 1
