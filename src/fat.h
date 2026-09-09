@@ -29,15 +29,18 @@ typedef struct {
 } mfat_arch;
 
 /* Validate buf[0..size) as a fat (universal) Mach-O: magic is FAT_MAGIC or
- * FAT_CIGAM, the fat_arch table (narch entries) fits inside `size`, and
- * EVERY entry's offset+size is in bounds AND does not start before the end
- * of the fat header + arch table (a slice cannot overlap the very structure
- * that describes it -- a hostile or corrupt file could otherwise claim a
- * slice that aliases the header). Returns 0 on success and sets *narch_out
- * and *swapped_out (nonzero if the file is byte-swapped relative to this
- * host -- true for every real fat file read on a little-endian machine).
- * Returns non-zero on any failure and touches neither output; it prints
- * nothing, so the caller can phrase its own diagnostic. */
+ * FAT_CIGAM, the fat_arch table (narch entries) fits inside `size`, EVERY
+ * entry's offset+size is in bounds AND does not start before the end of the
+ * fat header + arch table (a slice cannot overlap the very structure that
+ * describes it -- a hostile or corrupt file could otherwise claim a slice
+ * that aliases the header), AND no two entries' [offset, offset+size) ranges
+ * overlap EACH OTHER (a fat file whose own arch table already aliases two
+ * slices is malformed on the read side, independent of what any caller
+ * intends to do with it). Returns 0 on success and sets *narch_out and
+ * *swapped_out (nonzero if the file is byte-swapped relative to this host --
+ * true for every real fat file read on a little-endian machine). Returns
+ * non-zero on any failure and touches neither output; it prints nothing, so
+ * the caller can phrase its own diagnostic. */
 int mfat_parse(const uint8_t *buf, size_t size, uint32_t *narch_out, int *swapped_out);
 
 /* Fetch arch `idx`'s fields, byte-order-corrected to host-native. `idx` must

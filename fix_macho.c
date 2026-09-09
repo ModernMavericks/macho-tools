@@ -17,6 +17,16 @@
 #include <mach-o/fat.h>
 #include "fat.h"
 
+/* The 10.9 SDK's <mach-o/fat.h> predates the 64-bit fat container and does
+ * not define these -- see change_dylib.c's identical guard for the fuller
+ * reasoning. Values match every SDK that DOES define them. */
+#ifndef FAT_MAGIC_64
+#define FAT_MAGIC_64 0xcafebabfu
+#endif
+#ifndef FAT_CIGAM_64
+#define FAT_CIGAM_64 0xbfbafecau
+#endif
+
 #define LC_BUILD_VERSION_CMD 0x00000032
 
 struct change_entry {
@@ -164,11 +174,16 @@ int main(int argc, char **argv) {
          * outright and index buf+offset with them unchecked, an
          * out-of-bounds READ on a malformed or hostile fat file. A failed
          * parse now refuses the whole file instead of reading past the end
-         * of `buf`. */
+         * of `buf`. mfat_parse also refuses two declared slices that overlap
+         * EACH OTHER, not just ones that run past the file or into the
+         * header -- a fat file whose own arch table already aliases two
+         * slices is malformed input, on the read side, regardless of what a
+         * tool does with it. */
         uint32_t narch; int swap;
         if (mfat_parse(buf, fsize, &narch, &swap) != 0) {
             fprintf(stderr, "Malformed fat file (bad magic, arch table past the end, "
-                            "or a slice overlapping the header)\n");
+                            "a slice overlapping the header, or two slices overlapping "
+                            "each other)\n");
             close(fd);
             free(buf);
             return 1;
@@ -186,6 +201,15 @@ int main(int argc, char **argv) {
         printf("Processing thin Mach-O:\n");
         int r = process_macho(buf, fsize, changes, nchanges, strip_bv, renames, nrenames);
         if (r > 0) modified = 1;
+    } else if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
+        /* Genuinely a Mach-O (a 64-bit fat container, fat_arch_64 -- wide
+         * offsets, used for arm64e/watchOS-style slices); this tool just
+         * doesn't speak that variant. Say so, rather than the generic "not a
+         * Mach-O file" below, which reads as "this isn't Mach-O at all". */
+        fprintf(stderr, "64-bit fat Mach-O (fat_arch_64); not supported -- only the "
+                        "32-bit-offset fat_arch container is (magic=0x%x)\n", magic);
+        close(fd);
+        return 1;
     } else {
         fprintf(stderr, "Not a Mach-O file (magic=0x%x)\n", magic);
         close(fd);

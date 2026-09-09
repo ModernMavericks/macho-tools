@@ -89,6 +89,18 @@ static const struct { const char *name; uint32_t cmd; } strippable[] = {
 #define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
 #endif
 
+/* The 10.9 SDK's <mach-o/fat.h> predates the 64-bit fat container (wide
+ * offsets, for arm64e/watchOS-style slices with a component that overflows
+ * 32 bits) and does not define these -- so they are not conditional on
+ * anything this codebase controls, only on which SDK headers happened to be
+ * on the include path. Values match every SDK that DOES define them. */
+#ifndef FAT_MAGIC_64
+#define FAT_MAGIC_64 0xcafebabfu
+#endif
+#ifndef FAT_CIGAM_64
+#define FAT_CIGAM_64 0xbfbafecau
+#endif
+
 /* Caps on how many times one option may repeat. Each option accumulates into a
  * fixed-size array; nothing reads a length back, so an unchecked write past the
  * end corrupts whatever follows instead of failing. Check every one. */
@@ -568,15 +580,19 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
 
     /* mfat_parse (src/fat.c) is the ONE place both change_dylib and
      * fix_macho validate a fat file's arch table -- magic, the table fitting
-     * inside the file, and every entry's offset+size in bounds and not
-     * overlapping the header/table region itself. Before this, each tool
-     * had its own hand-rolled walk and they disagreed about validation
-     * (fix_macho trusted an arch's offset/size outright); see fat.h's file
-     * header for the fuller story. */
+     * inside the file, every entry's offset+size in bounds and not
+     * overlapping the header/table region itself, AND no two declared
+     * slices overlapping EACH OTHER (a fat file whose own arch table already
+     * aliases two slices is malformed on the read side, before this rewrite
+     * ever computes a single new offset). Before this, each tool had its own
+     * hand-rolled walk and they disagreed about validation (fix_macho
+     * trusted an arch's offset/size outright); see fat.h's file header for
+     * the fuller story. */
     uint32_t narch; int swap;
     if (mfat_parse(buf, fsize, &narch, &swap) != 0) {
         fprintf(stderr, "ERROR: malformed fat file (bad magic, arch table past the end, "
-                        "or a slice overlapping the header)\n");
+                        "a slice overlapping the header, or two slices overlapping "
+                        "each other)\n");
         return 1;
     }
 
@@ -684,6 +700,35 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
         cursor = want + ssize[j];
         if (cursor > max_end) max_end = cursor;
         if (ssize[j] != osize[j]) shift = 1;
+    }
+
+    /* Refuse rather than guess: an unshifted slice keeps its ORIGINAL offset
+     * unconditionally (see above), but a later, SHIFTED slice's sequential
+     * packing has no idea where that still-fixed slice sits -- on a
+     * non-ascending table it can walk a shifted slice's new range right on
+     * top of a still-fixed one's. That is silent data loss with an exit 0
+     * (the final memcpy below would just overwrite one slice's bytes with
+     * another's) -- exactly the failure class the previous fix closed the
+     * memory-safety half of; this closes the correctness half. Check every
+     * pair -- not just neighbors in table order, since the colliding pair
+     * need not be adjacent -- BEFORE allocating or writing anything, so a
+     * refusal here leaves the input completely untouched. */
+    for (uint32_t a = 0; a < narch; a++) {
+        uint64_t a0 = noff[a], a1 = a0 + ssize[a];
+        for (uint32_t b = a + 1; b < narch; b++) {
+            uint64_t b0 = noff[b], b1 = b0 + ssize[b];
+            if (a0 < b1 && b0 < a1) {
+                fprintf(stderr, "ERROR: reassembly would place arch %u [%llu,%llu) and "
+                                "arch %u [%llu,%llu) at overlapping offsets; refusing "
+                                "rather than guess a different layout\n",
+                        a, (unsigned long long)a0, (unsigned long long)a1,
+                        b, (unsigned long long)b0, (unsigned long long)b1);
+                for (uint32_t k = 0; k < narch; k++) free(sbuf[k]);
+                free(sbuf); free(ssize); free(ooff); free(osize);
+                free(cputype); free(cpusubtype); free(align); free(noff);
+                return 1;
+            }
+        }
     }
 
     uint8_t *newbuf = calloc(1, (size_t)max_end);
@@ -883,6 +928,18 @@ int main(int argc, char **argv) {
     uint32_t magic = *(uint32_t *)buf;
     int modified = 0;
     int rc;
+
+    /* A 64-bit fat container (fat_arch_64 -- wide offsets, used for arm64e /
+     * watchOS-style slices) genuinely IS a Mach-O; this tool just doesn't
+     * speak that variant, only the classic 32-bit-offset fat_arch one. Say
+     * so explicitly rather than falling through to the thin path's "not a
+     * readable 64-bit Mach-O", which reads as "this isn't Mach-O at all". */
+    if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
+        fprintf(stderr, "%s: 64-bit fat Mach-O (fat_arch_64); not supported -- only the "
+                        "32-bit-offset fat_arch container is\n", path);
+        free(buf);
+        return 1;
+    }
 
     if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
         rc = process_fat(&buf, &fsize, changes, nchanges, adds, nadds,
