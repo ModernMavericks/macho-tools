@@ -465,6 +465,17 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
     return 0;
 }
 
+/* Deliberately left as a hand-rolled walk, not converted to mi_each_lc: this
+ * function's signature takes `buf` alone, with no `fsize` -- both of its
+ * call sites (mg_find_trie just below, and mg_grow_header's widen-append
+ * path) already hold a validated buffer at a known size when they call it,
+ * so the omission was never a bounds-safety gap. Converting would mean
+ * widening this function's (and mg_find_trie's, its own only caller-facing
+ * wrapper) public signature purely to obtain an mi_image via mi_wrap -- a
+ * re-validation this two-branch search does not need and neither current
+ * caller would otherwise want to pay for. That is a lateral move, not a
+ * de-duplication: it grows public API surface (this function is declared in
+ * grow.h) without removing any real risk. Left as-is; see the task report. */
 int mg_find_trie_lc(const uint8_t *buf, long *lc_off, uint32_t *cmd) {
     const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
     const uint8_t *sp = buf + sizeof *h;
