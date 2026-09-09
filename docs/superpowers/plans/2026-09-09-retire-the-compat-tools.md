@@ -144,18 +144,172 @@ A surprising result in the sweep starts a conversation. A failure against a
 known caller stops the work. Enumerate the callers before writing a line of
 wrapper, and make each one an end-to-end test:
 
-| caller | what it does | how to verify |
-|---|---|---|
-| `mavericksforever.com/claude/install.sh` | builds `patch_macho`, `change_dylib`, `add_version_min` **by name** and runs them against a real Claude Code binary | fetch it, read what it actually invokes, replay those exact invocations |
-| `Wowfunhappy/Mavericks-Porting-Resources` | the upstream this repo was extracted from (`PROVENANCE.md`) | check whether it still calls these tools and how |
-| this repo's own suites | `tests/change_dylib_test.sh`, `tests/cli_test.sh`, `tests/characterize.sh`, `tests/chained-fixups.sh` | already run in CI |
-| avxemu | consumes `src/live.h`, NOT these tools | confirm it is unaffected; do not assume |
+**Task 0 evidence (2026-09-09).** `install.sh` was fetched directly
+(`curl -fsSL https://mavericksforever.com/claude/install.sh`, 336 lines, read in
+full — no WebFetch summarization). `~/Documents/code/trees/mavericks-*` and
+`~/Documents/trees/mavericks-*` were both grepped for the six names (every
+checkout listed by name below, including zero-hit ones); the two roots turned
+out to be the same filesystem object (identical inode/device numbers), so this
+was one search surfaced twice, not two independent ones. Full method, raw
+grep output, and self-review are in
+`.superpowers/sdd/2026-09-09-retire-the-compat-tools/task-0-report.md`.
 
-- [ ] **Task 0 (do this first): enumerate the real callers and their exact
+| caller | what was actually found | evidence |
+|---|---|---|
+| `mavericksforever.com/claude/install.sh` | Confirmed, real, production. Its top level downloads pre-built `patch_macho`, `change_dylib`, `add_version_min` **by name** from `$BASE_URL` — it does **not** compile them (no `fix_macho`/`rename_segment`/`retag_swift_classes` anywhere in it). The `/usr/local/bin/claude` wrapper it generates invokes all three, in order, against the user's real Claude Code binary, only when a byte-pattern check on the binary shows it isn't already patched. Exact invocations and stdout/exit-code handling are in the subsection below. | fetched and read the full script directly, 2026-09-09 |
+| `Wowfunhappy/Mavericks-Porting-Resources` | **Refined, not confirmed as written.** A local checkout exists (`~/Documents/code/trees/Mavericks-Porting-Resources`, remotes `origin=schmonz/…` `upstream=Wowfunhappy/…`). It ships its own copies of all six `.c` files and its own hermetic `change_dylib_test.sh`, but that test compiles *its own* `change_dylib.c` from scratch — it is not a caller of this repo's binaries, it's the source lineage PROVENANCE.md already documents. Separately, `gh pr list --repo Wowfunhappy/Mavericks-Porting-Resources` shows PRs #11 and #12 (the fixes this repo already carries) still **OPEN**, unmerged — confirming PROVENANCE.md's claim live rather than just repeating it. | read the checkout directly; `git remote -v`, `git log`; `gh pr list` (network, live) |
+| this repo's own suites | The plan named four; **there are five**. `tests/change_dylib_test.sh`, `tests/cli_test.sh`, `tests/characterize.sh`, `tests/chained-fixups.sh`, and `tests/leaf-tool-crashes.sh` (missed by the original table) are all registered via `add_test(...)` in `CMakeLists.txt` (lines 177, 190, 194, 202, 211) and run under `ctest`, which `.github/workflows/release.yml` runs in CI, with `chained-fixups` and `characterize` additionally called out as their own explicit steps. | read `CMakeLists.txt` and `.github/workflows/release.yml` directly |
+| avxemu | **Confirmed unaffected, and the table's own premise was more optimistic than reality.** `grep -rn` over the complete `~/Documents/code/trees/mavericks-avxemu` checkout is zero hits for all six tool names **and** for `src/live.h`/`macho9` — avxemu does not consume `live.h` today; that link is still aspirational (`docs/PROPOSAL.md`, and this plan's own Task 4-adjacent note that `live.h` has no install/export rule yet). | `grep -rn` over the full checkout; zero hits confirmed two ways |
+| **added — not in the original table:** a personal, repo-owner-controlled script pair in `~/Documents/code/trees/mavericks-claude-ongoing` (`scripts/mf-build-local.sh`, `scripts/mf-wrapper-rebase.sh`) | Builds `change_dylib` **from `Mavericks-Porting-Resources`, not from this repo**, with plain `clang -O2 -Wall -std=c11` (no `macho9core`), specifically because it needs `-insert` (merged upstream as PR #6, but not yet rebuilt onto the CDN `install.sh` fetches from). Invokes it to link `libavxemu.dylib` as an ordinary `LC_LOAD_DYLIB` dependency instead of `DYLD_INSERT_LIBRARIES`. `docs/linking-avxemu.md` says this has been "done and running here since 2026-09-08" — real and ongoing, but a personal dev tool on the repo owner's own machine, not something distributed to other users. | read `docs/linking-avxemu.md`, `scripts/mf-build-local.sh`, `scripts/mf-wrapper-rebase.sh` directly |
+| **checked and struck — not a real caller:** `mavericks-macdown3000`'s porting plan | Its plan document names exact `fix_macho`/`add_version_min`/`change_dylib` invocations it *intends* to run, but its own `HANDOFF.md` says outright: "**Status:** Planned, not started. No binary has been patched." No `PORTING-LOG.md` exists, no `build/` directory exists, and every task checkbox in the plan is unchecked. Never named by the original table; investigated because the family-wide grep surfaced it. | read `HANDOFF.md`; checked for `PORTING-LOG.md` and `build/` (absent); read the plan's checkbox state |
+| **checked and struck — ad hoc, not a repeatable caller:** `mavericks-magic-trackpad2/.claude/settings.local.json` | Records four approved Bash permission entries invoking the already-*installed* `~/.local/share/claude-mavericks/{patch_macho,add_version_min,change_dylib}` against a real Claude binary (`2.1.181`) — real invocations that ran at some point, but manual/agent debugging inside an unrelated (trackpad-driver) project, not a script anyone runs repeatedly. Identical entries also appear in its `voodooinput-fork-history` worktree copy (same session history, not a second instance). | read `.claude/settings.local.json` directly in both locations |
+
+Every other `mavericks-*` checkout under both roots (`1password`, `apfs`,
+`ca-certs`, `cctools`, `clang`, `compat`, `consomme`, `container-tools`,
+`ed25519`, `flavours-darkmode`, `golang`, `hypervisor`, `legacysupport`,
+`mosh`, `ninja`, `nodejs`, `openssh`, `openssl`, `orion`, `porthole`, `remote`,
+`reverse-engineering`, `rust`, `sdl`, `signal-desktop`, `swift-runtime`,
+`swift-toolchain`, `tailscale`, `zfs`, `1password`, and the local
+`mavericks-machotools.orig`/`Mavericks-Porting-Resources` extraction leftovers
+already covered above) had **zero** hits for the six names. `mavericks-shipyard`
+had one hit, in `SKILL.md`, describing `macho9`'s own fork/exec design — not a
+caller.
+
+### Exact invocation lines (quoted verbatim from source)
+
+`install.sh`'s embedded `/usr/local/bin/claude` wrapper, the only production
+invocation of these tools by name:
+
+```sh
+"$MF/patch_macho"     "$REAL" "$T" >/dev/null || { echo "claude: patch_macho failed"     >&2; exit 1; }
+"$MF/add_version_min" "$T"         >/dev/null || { echo "claude: add_version_min failed" >&2; exit 1; }
+"$MF/change_dylib"    "$T" -strip-lc uuid -strip-lc codesig \
+    -change "/usr/lib/libSystem.B.dylib"  "@loader_path/../S.dylib" \
+    -change "/usr/lib/libicucore.A.dylib" "@loader_path/../I.dylib" \
+    -change "/usr/lib/libc++.1.dylib"     "@loader_path/../c++.1.dylib" \
+    >/dev/null || { echo "claude: change_dylib failed" >&2; exit 1; }
+```
+
+This repo's own CI equivalence gate, `tests/characterize.sh` (lines 22-26,
+quoted exactly):
+
+```sh
+"$BIN/patch_macho"     "$T/in" "$T/out" >/dev/null
+"$BIN/add_version_min" "$T/out"         >/dev/null
+"$BIN/change_dylib"    "$T/out" -strip-lc uuid -strip-lc codesig \
+    -change "/usr/lib/libSystem.B.dylib" "@loader_path/../S.dylib" >/dev/null
+"$BIN/rename_segment"  "$T/out" >/dev/null 2>&1 || true
+```
+
+`tests/chained-fixups.sh` (lines 133-160), which covers `patch_macho`'s
+chained-fixups conversion the `characterize` fixture can't reach, runs the
+same `patch_macho` -> `add_version_min` -> `change_dylib` pipeline (same
+`-strip-lc`/`-change` flags as above) against a dynamically-built fixture,
+twice, to also prove determinism — it does not call `rename_segment`.
+
+`mavericks-claude-ongoing/scripts/mf-wrapper-rebase.sh`'s local, `-insert`-using
+call (built from `Mavericks-Porting-Resources`, per the row above):
+
+```sh
+mf_change_dylib "$MFL/change_dylib" "$AVXOPS"
+# where AVXOPS is "-strip-lc uuid -strip-lc codesig -change ... -insert <path>"
+```
+
+`mavericks-magic-trackpad2`'s ad hoc, already-installed invocations (struck
+above as not a repeatable caller, but real and exact):
+
+```sh
+/Users/schmonz/.local/share/claude-mavericks/patch_macho /tmp/claude-2.1.181 /tmp/c181.patched
+/Users/schmonz/.local/share/claude-mavericks/patch_macho /tmp/claude-2.1.181 /tmp/c181.b
+/Users/schmonz/.local/share/claude-mavericks/add_version_min /tmp/c181.b
+/Users/schmonz/.local/share/claude-mavericks/change_dylib /tmp/c181.b -change /usr/lib/libSystem.B.dylib /usr/lib/sysW.dylib -change /usr/lib/libicucore.A.dylib /usr/lib/icuW.dylib -change /usr/lib/libc++.1.dylib /usr/lib/cxx.dylib
+```
+
+Full invocation lines for every other test case in `change_dylib_test.sh`,
+`cli_test.sh`, and `leaf-tool-crashes.sh` are in the task report
+(`.superpowers/sdd/2026-09-09-retire-the-compat-tools/task-0-report.md`) —
+they're plentiful (dozens of combinations) and already live, verbatim, in
+those test files themselves.
+
+### How the callers use stdout, stderr, and exit codes
+
+- **`install.sh`'s embedded wrapper** redirects all three tools' stdout to
+  `/dev/null` — nothing is parsed as data. The **exit code is checked**: every
+  call is `"$MF/$tool" ... >/dev/null || { echo "claude: $tool failed" >&2; exit 1; }`,
+  so a nonzero exit aborts the wrapper outright. **Stderr is not captured or
+  parsed** — it passes straight through to whatever launched `claude` (a
+  terminal), for a human to read. Whether to run the three tools at all is
+  decided separately, by `grep -qE` over the raw bytes of the *target binary*
+  itself, not over any tool's output.
+- **This repo's own suites** (`change_dylib_test.sh`, `cli_test.sh`,
+  `chained-fixups.sh`, `leaf-tool-crashes.sh`) follow the same shape throughout:
+  `>/dev/null` on every invocation whose output isn't the thing under test,
+  `||`/`$?` exit-code checks everywhere, and stdout/stderr captured into a
+  variable only on the specific cases that assert a particular message (e.g.
+  `change_dylib_test.sh`'s case 8b, `fix_macho -change` on an
+  `LC_LOAD_UPWARD_DYLIB` fixture, captures with `out=$(... 2>&1)` to check for
+  "no changes needed"; `leaf-tool-crashes.sh` checks exact exit codes and
+  greps captured stderr for specific diagnostic wording). `characterize.sh`
+  never reads any tool's stdout at all — it `shasum`s the **output file's
+  bytes**, which is the whole point of characterization.
+- **`Wowfunhappy/Mavericks-Porting-Resources`'s own `change_dylib_test.sh`**
+  (a self-test of its own binary, not a caller of this repo's) is the same
+  shape again: `>/dev/null` on every tool run, `||`/exit-code checks, and
+  stderr captured to a file only in the six capacity-refusal cases, where it's
+  grepped for the substring `"too many"` — a diagnostic-message check, not a
+  byte-exact one.
+- **`mavericks-claude-ongoing`'s `mf-wrapper-rebase.sh`** is `>/dev/null` on
+  the `change_dylib` call with a hard `|| exit 1` on failure — unsurprising,
+  since it's a rebase of `install.sh`'s own wrapper.
+- **`mavericks-macdown3000`'s plan** (struck above, never executed) specifies
+  a human reading `otool -L` output afterward, not a script parsing the
+  tool's own stdout — moot, since it never ran.
+
+**What this means for Task 2's byte-identity requirement:** no real caller
+found parses these six tools' stdout as machine-readable data. Every one
+either discards it (`>/dev/null`) or — only inside this repo's own tests and
+upstream's own test — captures it deliberately to assert on one specific,
+named message, not a byte-exact transcript. Exit codes are checked by every
+caller that checks anything at all, and are the thing that actually gates
+control flow (`install.sh`'s wrapper aborts on nonzero). Stderr is read by a
+human in the one production caller, and grepped for a diagnostic substring
+(never byte-compared) in the test suites. Conclusion: `characterize`'s
+byte-identical-stdout requirement is stricter than any real caller needs
+today — but it should stay the internal gate anyway, because this repo's own
+tests are real callers too, and at least one of them (case 8b) does assert
+specific stdout wording that a wrapper must still produce.
+
+### Evidence for the open question — is there only one caller, and does the repo owner control it?
+
+**No, on both counts.**
+
+- **Not only one.** Found: the production `install.sh`/wrapper; this repo's
+  own five-suite CI gate; and a second, repo-owner-controlled tool
+  (`mavericks-claude-ongoing`'s `mf-build-local.sh`/`mf-wrapper-rebase.sh`)
+  that also invokes `change_dylib` — built from Wowfunhappy's tree, with
+  `-insert` — for an ongoing personal avxemu-linkage experiment.
+- **The one production caller is not repo-owner-controlled.**
+  `mavericks-claude-ongoing/docs/upstream/mf-installer-link-avxemu/REPORT.md`
+  is addressed, in its own words, "For: mavericksforever.com / Wowfunhappy —
+  the `claude` wrapper `install.sh` emits." `gh pr list --repo
+  Wowfunhappy/Mavericks-Porting-Resources` (checked live, 2026-09-09) shows
+  PRs #11 and #12 — the two fixes this repo already has — still **OPEN**
+  against Wowfunhappy's repo, unmerged. Wowfunhappy, not this repo's owner,
+  controls when (or whether) `install.sh` and its CDN artifacts move.
+- **Implication:** going straight to phase two (Task 3, "translate and
+  refuse") would force a migration on a third party who does not control this
+  repo's release cadence and has two of this repo's own fixes still
+  unreviewed. The plan's phase-one-then-phase-two sequencing is the safer
+  call, not an unnecessary precaution to skip.
+
+- [x] **Task 0 (do this first): enumerate the real callers and their exact
       invocations.** Do not guess. Fetch `install.sh` and read it. Grep the
       family checkouts under `~/Documents/code/trees/mavericks-*` for calls to
       these six names. Write the list into this plan before proceeding — if the
       list is wrong, everything after it is built on sand.
+      **Done 2026-09-09** — see the evidence and tables above, and the full
+      method/self-review in
+      `.superpowers/sdd/2026-09-09-retire-the-compat-tools/task-0-report.md`.
 
 ## Global Constraints
 
