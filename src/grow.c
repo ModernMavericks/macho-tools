@@ -694,6 +694,88 @@ static int mg_fs_find_cb(const struct load_command *lc, void *ctx_) {
     return 1;
 }
 
+struct mg_patch_ctx {
+    uint32_t insert;
+    uint32_t grow;
+    int error;
+};
+
+/* mg_grow_header's mi_each_lc callback for the header-patch pass: edits
+ * LC_SEGMENT_64's own fileoff/vmaddr/vmsize/filesize (and every section's
+ * offset/reloff via ml_bump) plus LC_MAIN's entryoff -- never lc->cmd,
+ * lc->cmdsize, or hdr->ncmds, so it stays inside mi_each_lc's mutation
+ * contract. Returns non-zero to stop on the first refusal (an entryoff or
+ * section offset/reloff that would overflow); ctx->error carries that so the
+ * caller does ONE free(mg_new_trie)+mg_snapshot_free+return, not one copy per
+ * refusal site the way the hand-rolled loop needed. */
+static int mg_patch_cb(const struct load_command *lc_in, void *ctx_) {
+    struct mg_patch_ctx *ctx = (struct mg_patch_ctx *)ctx_;
+    struct load_command *lc = (struct load_command *)lc_in;
+    switch (lc->cmd) {
+    case LC_SEGMENT_64: {
+        struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+        /* Identify segments by criteria, not by a saved pointer: the earlier
+         * realloc may have moved the buffer, invalidating any pointer found
+         * during validation. The header-bearing segment is the one mapped
+         * at file offset 0 with content (i.e. __TEXT, not __PAGEZERO). */
+        if (strcmp(seg->segname, "__PAGEZERO") == 0) {
+            seg->vmsize -= ctx->grow;            /* donate space below __TEXT */
+        } else if (seg->fileoff == 0 && seg->filesize > 0) {
+            seg->vmaddr  -= ctx->grow;           /* lower the image base */
+            seg->vmsize  += ctx->grow;
+            seg->filesize += ctx->grow;          /* fileoff stays 0 */
+        } else if (seg->fileoff >= ctx->insert) {
+            seg->fileoff += ctx->grow;           /* later segment: file moves, vm fixed */
+        }
+        struct section_64 *sect = (struct section_64 *)(seg + 1);
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            /* ml_bump refuses (returns -1, prints why) rather than wrap
+             * a section offset/reloff that sits within `grow` of
+             * UINT32_MAX -- same guard as src/linkedit.h's table, same
+             * reason: a wrapped file offset is a corrupt binary that
+             * still looks plausible. */
+            if (ml_bump(&sect[j].offset, ctx->insert, ctx->grow) != 0 ||   /* addr stays fixed */
+                (sect[j].reloff && ml_bump(&sect[j].reloff, ctx->insert, ctx->grow) != 0)) {
+                ctx->error = 1;
+                return 1;
+            }
+        }
+        break;
+    }
+    case LC_MAIN: {
+        /* entryoff is a file offset within __TEXT; bumping it keeps the
+         * entry's vm address fixed (base went down by the same amount).
+         * entryoff is a uint64_t (entry_point_command), NOT uint32_t --
+         * bumped and overflow-checked directly at its own width, rather
+         * than through ml_bump's 32-bit-only guard, which would first
+         * silently truncate any entryoff at or past 4GB before ever
+         * checking anything. Real binaries never have an entryoff that
+         * large (it is a file offset within __TEXT), but "refuse rather
+         * than guess" means checking the real field, not an assumption
+         * about its range. */
+        struct entry_point_command *c = (struct entry_point_command *)lc;
+        if (c->entryoff >= (uint64_t)ctx->insert) {
+            if (c->entryoff > UINT64_MAX - (uint64_t)ctx->grow) {
+                fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
+                                "a 64-bit field after growing by %#x; refusing rather "
+                                "than wrap\n",
+                        (unsigned long long)c->entryoff, ctx->grow);
+                ctx->error = 1;
+                return 1;
+            }
+            c->entryoff += ctx->grow;
+        }
+        break;
+    }
+    default:
+        break;  /* everything else -- the __LINKEDIT-resident structures
+                  * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
+                  * linkedit_data_command family) plus anything carrying
+                  * no file offset at all -- is ml_bump_all's job, below. */
+    }
+    return 0;
+}
+
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
@@ -904,76 +986,32 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     size_t final_size = fsize + grow;
 
     /* Patch the header. Load commands live before `insert`, so memmove didn't
-     * touch them; we walk them now and adjust only file-offset fields, plus the
-     * three VM fields that keep every address fixed. */
-    uint8_t *lcp = buf + sizeof(*hdr);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        switch (lc->cmd) {
-        case LC_SEGMENT_64: {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            /* Identify segments by criteria, not by a saved pointer: realloc
-             * above may have moved the buffer, invalidating the pointers found
-             * during validation. The header-bearing segment is the one mapped
-             * at file offset 0 with content (i.e. __TEXT, not __PAGEZERO). */
-            if (strcmp(seg->segname, "__PAGEZERO") == 0) {
-                seg->vmsize -= grow;            /* donate space below __TEXT */
-            } else if (seg->fileoff == 0 && seg->filesize > 0) {
-                seg->vmaddr  -= grow;           /* lower the image base */
-                seg->vmsize  += grow;
-                seg->filesize += grow;          /* fileoff stays 0 */
-            } else if (seg->fileoff >= insert) {
-                seg->fileoff += grow;           /* later segment: file moves, vm fixed */
-            }
-            struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                /* ml_bump refuses (returns -1, prints why) rather than wrap
-                 * a section offset/reloff that sits within `grow` of
-                 * UINT32_MAX -- same guard as src/linkedit.h's table, same
-                 * reason: a wrapped file offset is a corrupt binary that
-                 * still looks plausible. */
-                if (ml_bump(&sect[j].offset, insert, grow) != 0 ||   /* addr stays fixed */
-                    (sect[j].reloff && ml_bump(&sect[j].reloff, insert, grow) != 0)) {
-                    free(mg_new_trie);
-                    mg_snapshot_free(&snap);
-                    return -1;
-                }
-            }
-            break;
+     * touch them; mg_patch_cb (below) adjusts only file-offset fields, plus the
+     * three VM fields that keep every address fixed -- never lc->cmd,
+     * lc->cmdsize, or hdr->ncmds, so this stays inside mi_each_lc's mutation
+     * contract despite editing several fields in place per command. */
+    {
+        mi_image patch_im;
+        if (mi_wrap(buf, final_size, &patch_im) != 0) {
+            fprintf(stderr, "macho_grow: internal error -- the header we just moved no "
+                            "longer validates\n");
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
         }
-        case LC_MAIN: {
-            /* entryoff is a file offset within __TEXT; bumping it keeps the
-             * entry's vm address fixed (base went down by the same amount).
-             * entryoff is a uint64_t (entry_point_command), NOT uint32_t --
-             * bumped and overflow-checked directly at its own width, rather
-             * than through ml_bump's 32-bit-only guard, which would first
-             * silently truncate any entryoff at or past 4GB before ever
-             * checking anything. Real binaries never have an entryoff that
-             * large (it is a file offset within __TEXT), but "refuse rather
-             * than guess" means checking the real field, not an assumption
-             * about its range. */
-            struct entry_point_command *c = (struct entry_point_command *)lcp;
-            if (c->entryoff >= (uint64_t)insert) {
-                if (c->entryoff > UINT64_MAX - (uint64_t)grow) {
-                    fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
-                                    "a 64-bit field after growing by %#x; refusing rather "
-                                    "than wrap\n",
-                            (unsigned long long)c->entryoff, grow);
-                    free(mg_new_trie);
-                    mg_snapshot_free(&snap);
-                    return -1;
-                }
-                c->entryoff += grow;
-            }
-            break;
+        struct mg_patch_ctx pctx = { insert, grow, 0 };
+        mi_each_lc(&patch_im, mg_patch_cb, &pctx);
+        if (pctx.error) {
+            /* mg_patch_cb already printed why (LC_MAIN's entryoff would
+             * overflow, or ml_bump refused a section offset/reloff). Fields on
+             * commands visited before the one that failed are already patched
+             * in place -- not rolled back, same as every other internal
+             * failure path in this function: the caller must discard this
+             * buffer, never write it out. */
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
         }
-        default:
-            break;  /* everything else -- the __LINKEDIT-resident structures
-                      * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
-                      * linkedit_data_command family) plus anything carrying
-                      * no file offset at all -- is ml_bump_all's job, below. */
-        }
-        lcp += lc->cmdsize;
     }
 
     /* The __LINKEDIT offset-bump table (src/linkedit.h): symtab, strtab,
