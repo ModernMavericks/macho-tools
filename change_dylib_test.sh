@@ -40,6 +40,11 @@ trap 'rm -rf "$T"' EXIT INT TERM
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
+# Not a failure: the assertion could not be exercised on this host (e.g. its
+# linker didn't produce the load command being tested). Printed loudly and
+# distinctly from PASS/FAIL, per-assertion, rather than silently omitted --
+# a silent skip is how coverage rots. Does not touch $fails.
+skip() { echo "SKIP $1: $2"; }
 
 # ordinal_of FILE SYMBOL: prints the 1-based library ordinal an undefined
 # nlist symbol's n_desc records, or exits nonzero with a message on stderr.
@@ -985,6 +990,96 @@ if rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && [ "$before_ino" != "$af
     ok "write_atomic: ordinary case still goes through mkstemp+rename (new inode)"
 else
     bad "write_atomic ordinary" "expected the change applied via a fresh inode (rpath present=$(rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && echo y || echo n), inode $before_ino -> $after_ino)"
+fi
+
+# --- 15. LC_LAZY_LOAD_DYLIB (legacy -lazy_library) must be an explicit ------
+#         REFUSAL, never silent mis-renumbering.
+#
+# mo_is_ordinal_lc() (src/ordinals.c) treats LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB,
+# LC_REEXPORT_DYLIB and LC_LOAD_UPWARD_DYLIB as ordinal-bearing -- the kinds
+# this codebase's renumbering has actually been exercised against -- but
+# NOT LC_LAZY_LOAD_DYLIB (cmd 0x20, the legacy -lazy_library form), even
+# though dyld gives it a library ordinal exactly like LC_LOAD_DYLIB does.
+# mg_classify (macho_grow.h, used by -grow) already accepts it as inert
+# under a base move, which is a different question -- ordinal renumbering,
+# not rebasing -- so that acceptance says nothing about renumbering safety.
+# Before the fix, mo_map_build simply skipped it while building the old-
+# ordinal -> new-ordinal map: any symbol bound to it, or to a dylib load
+# command listed AFTER it, silently got the wrong ordinal once -insert or
+# -delete renumbered. No crash, no message -- a binary that loads the wrong
+# library, or that dyld refuses at launch with no clue why. The fix refuses
+# outright the moment mo_map_build sees the load command, saying so.
+#
+# HOST PORTABILITY: `-lazy_library` is a legacy ld flag; nothing guarantees
+# a modern linker still emits LC_LAZY_LOAD_DYLIB for it (or accepts the flag
+# at all). This does not assume it does -- it builds the fixture, then reads
+# the fixture's OWN load commands with a tiny C reader (never otool/nm text)
+# to confirm LC_LAZY_LOAD_DYLIB is actually present before asserting
+# anything about change_dylib's behavior on it. If this host's linker didn't
+# produce one, that's a fact about the host, not about change_dylib -- SKIP
+# loudly rather than pass (or fail) on a fixture that doesn't test what it
+# claims to.
+cat > "$T/has_lc.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file cmd-hex\n", argv[0]); return 2; }
+    uint32_t want = (uint32_t)strtoul(argv[2], NULL, 16);
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+    uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == want) return 0;
+        lcp += lc->cmdsize;
+    }
+    return 1;
+}
+EOF
+"$CC" -O2 -o "$T/has_lc" "$T/has_lc.c"
+
+cat > "$T/lazy_a.c" <<'EOF'
+int lazy_a_sym(void) { return 77; }
+EOF
+cat > "$T/lazy_main.c" <<'EOF'
+int lazy_a_sym(void);
+int main(void) { return lazy_a_sym() == 77 ? 0 : 1; }
+EOF
+"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/liblazy_a.dylib" \
+    "$T/lazy_a.c" -o "$T/liblazy_a.dylib"
+"$CC" -O2 $FIXTURE_FLAGS "$T/lazy_main.c" \
+    -Xlinker -lazy_library -Xlinker "$T/liblazy_a.dylib" -o "$T/lazy_main" 2>"$T/lazy_link.err" || true
+
+if [ ! -x "$T/lazy_main" ] || ! "$T/has_lc" "$T/lazy_main" 0x20; then
+    skip "LC_LAZY_LOAD_DYLIB refusal" "this host's linker did not produce an LC_LAZY_LOAD_DYLIB from -lazy_library ($(head -1 "$T/lazy_link.err" 2>/dev/null || echo "no diagnostic"))"
+else
+    before_md5=$(md5 -q "$T/lazy_main" 2>/dev/null || md5sum "$T/lazy_main" | awk '{print $1}')
+    rc=0
+    "$T/change_dylib" "$T/lazy_main" -add-rpath /opt/should_never_apply >"$T/lazy_out.txt" 2>"$T/lazy_err.txt" || rc=$?
+    after_md5=$(md5 -q "$T/lazy_main" 2>/dev/null || md5sum "$T/lazy_main" | awk '{print $1}')
+
+    [ "$rc" -ne 0 ] \
+        && ok "LC_LAZY_LOAD_DYLIB: change_dylib refuses (exit $rc)" \
+        || bad "LC_LAZY_LOAD_DYLIB" "change_dylib exited 0 instead of refusing"
+    grep -qi "LC_LAZY_LOAD_DYLIB" "$T/lazy_err.txt" \
+        && ok "LC_LAZY_LOAD_DYLIB: refusal names the load command, not a generic error" \
+        || bad "LC_LAZY_LOAD_DYLIB" "refused without naming LC_LAZY_LOAD_DYLIB: $(cat "$T/lazy_err.txt")"
+    [ "$before_md5" = "$after_md5" ] \
+        && ok "LC_LAZY_LOAD_DYLIB: input left completely untouched on refusal" \
+        || bad "LC_LAZY_LOAD_DYLIB" "input was modified despite the refusal"
 fi
 
 echo

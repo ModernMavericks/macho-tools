@@ -15,6 +15,14 @@
 #define LC_DYLD_CHAINED_FIXUPS 0x80000034
 #endif
 
+/* Same story as LC_DYLD_CHAINED_FIXUPS above, and the same guarded fallback
+ * value macho_grow.h already carries for its own (unrelated) purposes: the
+ * 10.9 SDK's <mach-o/loader.h> predates this constant. mo_map_build needs it
+ * below to REFUSE the load command, not to classify it -- see that comment. */
+#ifndef LC_LAZY_LOAD_DYLIB
+#define LC_LAZY_LOAD_DYLIB 0x20
+#endif
+
 int mo_is_ordinal_lc(uint32_t cmd) {
     return cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB ||
            cmd == LC_REEXPORT_DYLIB || cmd == LC_LOAD_UPWARD_DYLIB;
@@ -28,6 +36,32 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
 
     for (uint32_t i = 0; i < ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)p;
+        /* LC_LAZY_LOAD_DYLIB (0x20, the legacy -lazy_library form) carries a
+         * library ordinal exactly like LC_LOAD_DYLIB does -- undefined
+         * symbols can bind against it by index -- but mo_is_ordinal_lc()
+         * deliberately does not treat it as ordinal-bearing (see its own
+         * comment: only the four dylib kinds this codebase has actually
+         * tested renumbering for). Silently skipping it here would leave it
+         * out of the map entirely, so any symbol bound to it -- or to a
+         * dylib load command AFTER it -- gets a wrong or stale ordinal once
+         * mo_map_apply runs: a renumbering that is silently wrong, not one
+         * that fails loudly. Teaching mo_is_ordinal_lc to count it instead
+         * would fix that, but would also be new, untested renumbering
+         * semantics (does LC_LAZY_LOAD_DYLIB slot into the ordinal sequence
+         * at the same position LC_LOAD_DYLIB would? nothing here has ever
+         * exercised that). This codebase's rule for "we don't know" is to
+         * refuse, not guess -- so refuse explicitly, with a clear reason,
+         * rather than either of those. */
+        if (lc->cmd == LC_LAZY_LOAD_DYLIB) {
+            fprintf(stderr, "ERROR: LC_LAZY_LOAD_DYLIB present (this binary was linked "
+                            "with the legacy -lazy_library flag); refusing rather than "
+                            "renumbering library ordinals. It carries an ordinal like "
+                            "LC_LOAD_DYLIB does, but this codebase has never exercised "
+                            "renumbering it, so guessing at the semantics is not safe -- "
+                            "re-link without -lazy_library, or leave this binary's "
+                            "dylib/rpath load commands untouched.\n");
+            return -1;
+        }
         if (mo_is_ordinal_lc(lc->cmd)) {
             const struct dylib_command *dc = (const struct dylib_command *)p;
             const char *name = (const char *)p + dc->dylib.name.offset;

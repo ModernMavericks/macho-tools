@@ -71,7 +71,12 @@ int mo_is_ordinal_lc(uint32_t cmd);
  * receives the highest new ordinal handed out (base + count of survivors),
  * which is also the ordinal ceiling for mo_map_validate. Returns 0, or -1
  * (with a message on stderr) if there are more than MO_MAX_DYLIBS
- * ordinal-bearing dylibs. */
+ * ordinal-bearing dylibs, OR if an LC_LAZY_LOAD_DYLIB (legacy -lazy_library)
+ * is present -- it carries a library ordinal like the four kinds
+ * mo_is_ordinal_lc() counts, but is deliberately not one of them (untested
+ * renumbering semantics), so this refuses rather than silently leaving it
+ * out of the map and mis-renumbering everything after it. See mo_map_build's
+ * own comment (in ordinals.c) on that check for the reasoning. */
 int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
                   int (*is_deleted)(const char *name, void *ctx), void *ctx,
                   mo_map *map, int *out_nnew);
