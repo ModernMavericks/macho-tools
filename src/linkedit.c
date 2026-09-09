@@ -24,6 +24,66 @@ struct ml_bump_ctx {
     uint32_t grow;
 };
 
+/* One function per member of linkedit.h's ML_PLAIN_OFFSET_LCS, named
+ * ml_bump_<cmd> by the SAME macro that names it in grow.c's accept bucket
+ * (see linkedit.h's own comment on the macro for why). Forward-declared
+ * here via the macro too: add a member to ML_PLAIN_OFFSET_LCS without
+ * defining its ml_bump_<cmd> body below and the build fails at link time
+ * (undefined symbol) -- not silently, and not merely a test someone could
+ * forget to run. That is what makes this coupling real rather than
+ * advisory: grow.c's accept-bucket case labels for this group (see
+ * mg_classify_cb) are generated from this same list, so a load command
+ * cannot join grow.c's "safe, plain offset" bucket without a matching,
+ * present ml_bump_<cmd> definition existing right here. */
+#define ML_DECLARE(cmd) static int ml_bump_##cmd(struct load_command *m, struct ml_bump_ctx *ctx);
+ML_PLAIN_OFFSET_LCS(ML_DECLARE)
+#undef ML_DECLARE
+
+static int ml_bump_LC_SYMTAB(struct load_command *m, struct ml_bump_ctx *ctx) {
+    struct symtab_command *c = (struct symtab_command *)m;
+    int r = 0;
+    r |= ml_bump(&c->symoff, ctx->insert, ctx->grow);
+    r |= ml_bump(&c->stroff, ctx->insert, ctx->grow);
+    return r;
+}
+
+static int ml_bump_LC_DYSYMTAB(struct load_command *m, struct ml_bump_ctx *ctx) {
+    struct dysymtab_command *c = (struct dysymtab_command *)m;
+    int r = 0;
+    r |= ml_bump(&c->tocoff, ctx->insert, ctx->grow);
+    r |= ml_bump(&c->modtaboff, ctx->insert, ctx->grow);
+    r |= ml_bump(&c->extrefsymoff, ctx->insert, ctx->grow);
+    r |= ml_bump(&c->indirectsymoff, ctx->insert, ctx->grow);
+    r |= ml_bump(&c->extreloff, ctx->insert, ctx->grow);
+    r |= ml_bump(&c->locreloff, ctx->insert, ctx->grow);
+    return r;
+}
+
+static int ml_bump_LC_CODE_SIGNATURE(struct load_command *m, struct ml_bump_ctx *ctx) {
+    struct linkedit_data_command *c = (struct linkedit_data_command *)m;
+    return ml_bump(&c->dataoff, ctx->insert, ctx->grow);
+}
+
+static int ml_bump_LC_DYLIB_CODE_SIGN_DRS(struct load_command *m, struct ml_bump_ctx *ctx) {
+    struct linkedit_data_command *c = (struct linkedit_data_command *)m;
+    return ml_bump(&c->dataoff, ctx->insert, ctx->grow);
+}
+
+static int ml_bump_LC_TWOLEVEL_HINTS(struct load_command *m, struct ml_bump_ctx *ctx) {
+    struct twolevel_hints_command *c = (struct twolevel_hints_command *)m;
+    return ml_bump(&c->offset, ctx->insert, ctx->grow);
+}
+
+static int ml_bump_LC_ENCRYPTION_INFO(struct load_command *m, struct ml_bump_ctx *ctx) {
+    struct encryption_info_command *c = (struct encryption_info_command *)m;
+    return ml_bump(&c->cryptoff, ctx->insert, ctx->grow);
+}
+
+static int ml_bump_LC_ENCRYPTION_INFO_64(struct load_command *m, struct ml_bump_ctx *ctx) {
+    struct encryption_info_command_64 *c = (struct encryption_info_command_64 *)m;
+    return ml_bump(&c->cryptoff, ctx->insert, ctx->grow);
+}
+
 /* mi_each_lc callback: bump the __LINKEDIT-resident offset field(s) of one
  * load command. Returns 0 to keep walking, or 1 to stop the walk the
  * instant any ml_bump call refuses (overflow) -- once one field cannot be
@@ -38,22 +98,13 @@ static int ml_bump_lc(const struct load_command *lc, void *vctx) {
     int r = 0;
 
     switch (m->cmd) {
-    case LC_SYMTAB: {
-        struct symtab_command *c = (struct symtab_command *)m;
-        r |= ml_bump(&c->symoff, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->stroff, ctx->insert, ctx->grow);
-        break;
-    }
-    case LC_DYSYMTAB: {
-        struct dysymtab_command *c = (struct dysymtab_command *)m;
-        r |= ml_bump(&c->tocoff, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->modtaboff, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->extrefsymoff, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->indirectsymoff, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->extreloff, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->locreloff, ctx->insert, ctx->grow);
-        break;
-    }
+    /* Case labels generated from linkedit.h's ML_PLAIN_OFFSET_LCS, dispatch
+     * to the like-named ml_bump_<cmd> functions defined above -- see that
+     * macro's own comment for what this couples and what it deliberately
+     * does not. */
+#define ML_CASE(cmd) case cmd: r |= ml_bump_##cmd(m, ctx); break;
+    ML_PLAIN_OFFSET_LCS(ML_CASE)
+#undef ML_CASE
     case LC_DYLD_INFO:
     case LC_DYLD_INFO_ONLY: {
         struct dyld_info_command *c = (struct dyld_info_command *)m;
@@ -66,29 +117,12 @@ static int ml_bump_lc(const struct load_command *lc, void *vctx) {
     }
     case LC_FUNCTION_STARTS:
     case LC_DATA_IN_CODE:
-    case LC_CODE_SIGNATURE:
     case LC_SEGMENT_SPLIT_INFO:
-    case LC_DYLIB_CODE_SIGN_DRS:
     case LC_LINKER_OPTIMIZATION_HINT:
     case LC_DYLD_EXPORTS_TRIE:
     case LC_DYLD_CHAINED_FIXUPS: {
         struct linkedit_data_command *c = (struct linkedit_data_command *)m;
         r |= ml_bump(&c->dataoff, ctx->insert, ctx->grow);
-        break;
-    }
-    case LC_TWOLEVEL_HINTS: {
-        struct twolevel_hints_command *c = (struct twolevel_hints_command *)m;
-        r |= ml_bump(&c->offset, ctx->insert, ctx->grow);
-        break;
-    }
-    case LC_ENCRYPTION_INFO: {
-        struct encryption_info_command *c = (struct encryption_info_command *)m;
-        r |= ml_bump(&c->cryptoff, ctx->insert, ctx->grow);
-        break;
-    }
-    case LC_ENCRYPTION_INFO_64: {
-        struct encryption_info_command_64 *c = (struct encryption_info_command_64 *)m;
-        r |= ml_bump(&c->cryptoff, ctx->insert, ctx->grow);
         break;
     }
     default:

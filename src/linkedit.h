@@ -44,6 +44,63 @@
 
 #include "image.h"
 
+/* Load commands whose ENTIRE __LINKEDIT footprint is one or more plain file-
+ * offset fields, with no VM-address CONTENT inside that this toolkit's
+ * base-lowering trick needs to re-base (their payload is either opaque
+ * bytes at that offset, like a code signature, or file-offset-relative
+ * sub-tables, like LC_DYSYMTAB's indirect-symbol table -- nothing keyed off
+ * the image's VM base the way LC_FUNCTION_STARTS' leading ULEB delta or the
+ * export trie's addresses are). For exactly this group, "src/grow.c's
+ * mg_classify_cb accepts it" and "ml_bump_lc bumps its offset(s)" are the
+ * same fact stated twice, so both switches build their case labels for
+ * this group from ONE list here instead of two independently maintained
+ * ones -- a load command cannot be added to grow.c's accept side of this
+ * bucket without being added here, and adding it here is what teaches
+ * ml_bump_lc to bump it (a hand-written case+body per member still, since
+ * the fields differ, but the case LABEL for both switches comes from this
+ * macro, not a second hand-typed copy).
+ *
+ * A whole-branch review's mutation testing found the original gap this
+ * closes: mg_classify_cb and ml_bump_lc were two switch statements
+ * deciding one question with nothing coupling them, so moving a load
+ * command between them could silently disagree (see tests/grow_test.c's
+ * test_grow_refuses_note for the exact repro this project hit). This macro
+ * makes that specific disagreement impossible for this group, not merely
+ * tested.
+ *
+ * Deliberately NOT every load command either function touches:
+ *   - LC_SEGMENT_64, LC_FUNCTION_STARTS, LC_DATA_IN_CODE,
+ *     LC_DYLD_INFO[_ONLY], LC_DYLD_EXPORTS_TRIE are accepted by grow.c
+ *     ONLY because it ALSO re-bases VM-address CONTENT inside them
+ *     (mg_reencode_funcstarts_base, mg_trie_walk) -- ml_bump_lc's bump of
+ *     their file-offset field is a second, separate requirement on top of
+ *     that content re-base, not interchangeable with it, so they stay out
+ *     of this list even though ml_bump_lc does bump them (see ml_bump_lc's
+ *     own switch).
+ *   - LC_SEGMENT_SPLIT_INFO, LC_LINKER_OPTIMIZATION_HINT, and
+ *     LC_DYLD_CHAINED_FIXUPS share ml_bump_lc's identical dataoff case
+ *     with this list's members, but grow.c REFUSES all three anyway: their
+ *     PAYLOAD also needs content-level re-basing this toolkit does not
+ *     implement. Folding them into this list would silently WIDEN grow.c's
+ *     acceptance to cover them -- exactly the mistake "refuse rather than
+ *     guess" exists to prevent -- so this macro must never grow to include
+ *     them without also implementing that content re-base.
+ *   - This mechanism covers ONLY the case where "ml_bump_lc supports it"
+ *     and "safe for grow.c to accept" are truly the same question. It
+ *     cannot and does not cover a load command whose file offset
+ *     ml_bump_lc has never been taught to bump at all -- the LC_NOTE
+ *     shape, a genuinely different struct layout needing genuinely new
+ *     code on both sides, not just a new macro entry. That class stays
+ *     covered by testing the refusal directly:
+ *     tests/grow_test.c's test_grow_refuses_note/test_grow_refuses_atom_info
+ *     are the template; extend it with a new MG_T_* fixture whenever a
+ *     load command outside both this macro and that pair of tests is
+ *     added to either switch. */
+#define ML_PLAIN_OFFSET_LCS(X) \
+    X(LC_SYMTAB) X(LC_DYSYMTAB) X(LC_CODE_SIGNATURE) \
+    X(LC_DYLIB_CODE_SIGN_DRS) X(LC_TWOLEVEL_HINTS) \
+    X(LC_ENCRYPTION_INFO) X(LC_ENCRYPTION_INFO_64)
+
 /* Shift one file-offset field down by `grow` if it points at/after
  * `insert`; leaves it untouched otherwise (a field of 0, meaning "this
  * stream is absent", is always < insert and so is never bumped, UNLESS

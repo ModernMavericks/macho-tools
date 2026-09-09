@@ -542,18 +542,29 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
             break;
 
         /* Inert under a base move: absolute addresses (which do not change),
-         * file offsets (shifted by the walk), indices, strings, or build metadata. */
-        case LC_SYMTAB: case LC_DYSYMTAB: case LC_UUID:
+         * file offsets (shifted by the walk), indices, strings, or build metadata.
+         *
+         * The seven case labels below this comment (LC_SYMTAB through
+         * LC_ENCRYPTION_INFO_64) are generated from src/linkedit.h's
+         * ML_PLAIN_OFFSET_LCS, not hand-typed here -- see that macro's own
+         * comment for what this couples (this accept decision and
+         * ml_bump_lc's matching case cannot disagree for this group; a
+         * load command cannot be added here without also being added
+         * there, checked at link time) and what it deliberately does not
+         * (a load command needing content re-basing on top of its file
+         * offset, or one ml_bump_lc has never been taught at all). */
+#define GROW_PLAIN_OFFSET_CASE(cmd) case cmd:
+        ML_PLAIN_OFFSET_LCS(GROW_PLAIN_OFFSET_CASE)
+#undef GROW_PLAIN_OFFSET_CASE
+        case LC_UUID:
         case LC_LOAD_DYLIB: case LC_ID_DYLIB: case LC_LOAD_WEAK_DYLIB:
         case LC_REEXPORT_DYLIB: case LC_LAZY_LOAD_DYLIB: case LC_PREBOUND_DYLIB:
         case LC_LOAD_DYLINKER: case LC_ID_DYLINKER: case LC_DYLD_ENVIRONMENT:
         case LC_RPATH: case LC_MAIN: case LC_UNIXTHREAD: case LC_THREAD:
-        case LC_CODE_SIGNATURE: case LC_DYLIB_CODE_SIGN_DRS:
-        case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64:
         case LC_VERSION_MIN_MACOSX: case LC_VERSION_MIN_IPHONEOS:
         case LC_SOURCE_VERSION: case LC_BUILD_VERSION: case LC_LINKER_OPTION:
         case LC_SUB_FRAMEWORK: case LC_SUB_UMBRELLA:
-        case LC_SUB_CLIENT: case LC_SUB_LIBRARY: case LC_TWOLEVEL_HINTS:
+        case LC_SUB_CLIENT: case LC_SUB_LIBRARY:
         case LC_PREBIND_CKSUM: case LC_ROUTINES_64:
             break;
 
