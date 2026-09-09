@@ -35,38 +35,19 @@
 #      is SUPPRESSED and this wrapper prints rename_segment's own line, with
 #      the count from step 1 -- byte-identical to the C tool's, on every
 #      rename_segment row of tests/compat-matrix.tsv that produced output.
-#   3. mg_plausible. mr_apply_file runs it before writing and refuses if it
-#      fails; rename_segment had no such gate. REPRODUCED, by setting
-#      MACHO_NO_VERIFY=1 for the `macho9 segment` run -- the one thing that
-#      variable gates (src/rewrite.c's "Last gate before the bytes reach
-#      disk") and nothing else. That is not a decision taken lightly, so here
-#      is the whole argument:
+#   3. mg_plausible. mr_apply_file used to run it before writing, on every
+#      operation, and refuse if it failed; rename_segment had no such gate.
+#      NOT reproduced HERE, because it is no longer a divergence: src/rewrite.c
+#      now skips that gate for a rename-only operation set, and says at the
+#      site why that is a statement about what mg_plausible checks (an OFFSET
+#      question) rather than a concession. A rename writes characters into
+#      segname/sectname and moves nothing, so the gate could only ever
+#      re-decide a property the input already had -- which it got wrong on 14
+#      of the 16 thin binaries in a 120-file /usr/lib corpus.
 #
-#      MEASURED. tests/differential.sh, run over 120 real Mach-Os from
-#      /usr/lib and friends against a pre-wrapper build, reported this verb
-#      refusing 14 thin 64-bit system dylibs that rename_segment renamed
-#      happily -- "refusing to modify f -- it would carry base-relative
-#      offsets that name no known function". Different exit code AND different
-#      bytes, on 14 of the 16 thin inputs in that corpus. Left in, the wrapper
-#      would simply stop working on most real binaries.
-#
-#      AND THE GATE CANNOT BE PROTECTING ANYTHING HERE. mg_plausible needs no
-#      "before" image: it judges the FINAL bytes. A segment rename edits
-#      segname/sectname CONTENT only -- never a cmd, never a cmdsize, never an
-#      offset (src/segname.h says so, and it is why mr_build_lcs can apply it
-#      to an already-copied command) -- so it cannot make a plausible image
-#      implausible. A refusal here is therefore always about a property the
-#      input ALREADY had, which is exactly what cli/macho9.c's own divergence
-#      note says: "not because the rename is unsafe, but because the image was
-#      already implausible before anything touched it". Those 14 dylibs are
-#      stock 10.9 system libraries; the heuristic is wrong about them, and
-#      tests/change_dylib_test.sh's case 8 already passes MACHO_NO_VERIFY=1
-#      for the same reason on a fixture of its own.
-#
-#      SCOPE. Only this wrapper sets it, and only when the caller has not
-#      already spoken. compat/change_dylib.sh does NOT: change_dylib always
-#      went through mr_apply_file, so it always had this gate, and taking it
-#      away there would be a real change rather than a reproduction.
+#      This wrapper therefore sets NO environment variable and switches
+#      nothing off. Every operation that can move an offset still meets the
+#      gate, including every one compat/change_dylib.sh can reach.
 #
 # A FOURTH DIVERGENCE, not in that list, found by this task: THIN ONLY.
 # rename_segment ran mi_open, which fails on a fat container, and printed
@@ -85,15 +66,28 @@
 # LC_LAZY_LOAD_DYLIB -- "it carries an ordinal like LC_LOAD_DYLIB does, but
 # this codebase has never exercised renumbering it". A segment rename touches
 # no ordinal at all, so the refusal cannot be protecting anything here; it is
-# simply on the path. rename_segment, which never went near an ordinal map,
-# renamed such a binary happily.
+# simply on the path. rename_segment, which never went near mr_apply_file at
+# all, renamed such a binary happily.
 #
-# MEASURED: exactly one file in tests/differential.sh's 120-file /usr/lib
-# corpus (/usr/lib/libxcselect.dylib). Different exit code and different bytes
-# there. Not closed here because closing it means changing `macho9 segment` --
-# skipping the ordinal map when the operation set contains nothing that can
-# renumber -- and changing macho9 is not this wrapper's business. Reported as
-# a finding instead; there is no MACHO_NO_VERIFY-shaped escape hatch for it.
+# MEASURED, on /usr/lib/libxcselect.dylib -- the one file in
+# tests/differential.sh's corpus that carries one:
+#
+#   compat/rename_segment.c (pre-wrapper)  renamed it, exit 0
+#   macho9 segment                         refuses, exit 1
+#   macho9 lc -delete uuid                 refuses too, with the SAME message
+#   change_dylib (pre-wrapper)             refuses too, with the SAME message
+#
+# The last two lines are the point: this is NOT rename-specific and NOT
+# something these wrappers introduced. mo_map_build has refused this file for
+# every operation, through every front-end, for as long as the shared rewriter
+# has existed. What changed is only that the rename now travels through that
+# rewriter.
+#
+# It is the same SHAPE as divergence 3 -- an ordinal-related gate running on
+# an operation set that cannot renumber -- but a different call site, so it
+# does not fall out of that fix. The smallest fix would be to skip building
+# the ordinal map when nothing in the operation set can renumber, which is a
+# change to macho9, not to this wrapper. Reported rather than made.
 #
 # EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else -- the three
 # rename_segment had. Every nonzero from `macho9 segment` is mapped to 1: its
@@ -140,13 +134,6 @@ fi
 mw_n=$(awk -v want="segname=$mw_old" '$1 == want { n++ } END { print n + 0 }' "$MW_T/info")
 
 [ "$mw_n" -eq 0 ] && exit 2
-
-# MACHO_NO_VERIFY: see divergence 3 in this file's header for why, and for
-# why change_dylib's wrapper deliberately does not do this. Exported rather
-# than set as a command prefix because the run goes through `eval`, and only
-# when the caller has expressed no opinion of their own.
-MACHO_NO_VERIFY=${MACHO_NO_VERIFY:-1}
-export MACHO_NO_VERIFY
 
 mw_run >/dev/null || exit 1
 printf '%s: renamed %d segment(s) %s -> %s\n' "$mw_file" "$mw_n" "$mw_old" "$mw_new"

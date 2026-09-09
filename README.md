@@ -23,9 +23,17 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
   their original names because `install.sh` fetches some of them by name.
   Five are now `/bin/sh` wrappers that print the `macho9` equivalent of what
   they were asked to do and then do it through `macho9`; `fix_macho` is still
-  C, because it could not be wrapped without changing what it does. Also here:
-  `translate.sh`, the old-grammar-to-`macho9` translator the wrappers source,
-  and `macho9-compat.sh`, the machinery they share. See `compat/README.md`.
+  C, because it could not be wrapped without changing what it does — so this
+  repo still ships **two** Mach-O rewriting binaries, not the one the
+  retirement plan is aiming at. Also here: `translate.sh`, the
+  old-grammar-to-`macho9` translator the wrappers source, and
+  `macho9-compat.sh`, the machinery they share. See `compat/README.md`.
+
+  **Packaging note:** the five wrappers need `macho9`, `macho9-compat.sh` and
+  `macho9-translate.sh` installed beside them. Anything that fetches
+  `patch_macho`, `change_dylib` or `add_version_min` by name now has three
+  more files to fetch. `compat/README.md` says what that means for
+  `mavericksforever.com/claude/install.sh`, which has not been told.
 - `cli/` — `macho9`, the multi-verb CLI built on `src/`.
 - `tests/` — everything `ctest` runs, plus the fixtures it reads.
 

@@ -518,6 +518,22 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
 #define MR_SKIP  (-2)
 #define MR_ERROR (-1)
 
+/* True if the only thing this operation set asks for is a segment rename:
+ * no dylib or rpath change, append or insert, no load command to strip, and
+ * no header growth. It exists for one decision -- see the mg_plausible gate
+ * in mr_process_thin -- and is written as "everything else is empty" rather
+ * than "a rename is requested" on purpose, so that an mr_ops field added
+ * later makes this predicate FALSE (the conservative answer, keeping the
+ * gate) until someone considers it, rather than silently widening what the
+ * gate is skipped for. */
+static int mr_is_rename_only(const mr_ops *ops) {
+    return ops->segment_rename_old != NULL && ops->segment_rename_new != NULL &&
+           ops->n_dylib_changes == 0 && ops->n_dylib_appends == 0 &&
+           ops->n_dylib_inserts == 0 && ops->n_rpath_changes == 0 &&
+           ops->n_rpath_appends == 0 && ops->n_rpath_inserts == 0 &&
+           ops->n_strip_cmds == 0 && ops->allow_grow == 0;
+}
+
 /*
  * Apply every requested change to the single (thin) 64-bit Mach-O in
  * *pbuf, *pfsize, in place except that mg_grow_header may realloc *pbuf (its
@@ -707,8 +723,36 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * is what makes it usable across process boundaries.
      *
      * This is the difference between "binary replaced, re-download that version"
-     * and "patch refused, nothing lost". MACHO_NO_VERIFY=1 opts out. */
-    if (!getenv("MACHO_NO_VERIFY") && mg_plausible(buf, fsize) != 0) {
+     * and "patch refused, nothing lost". MACHO_NO_VERIFY=1 opts out.
+     *
+     * NOT RUN FOR A RENAME-ONLY OPERATION SET, and that is a statement about
+     * what mg_plausible checks rather than a concession. It asks whether the
+     * image's initializers and compact-unwind entries still name functions
+     * LC_FUNCTION_STARTS knows about (src/grow.h) -- an OFFSET question. A
+     * segment rename writes characters into segname/sectname fields and moves
+     * nothing: mseg_rename_lc touches neither cmd nor cmdsize (src/segname.h),
+     * mr_build_lcs applies it to a command it has already copied, and no
+     * offset in the image changes. So the gate cannot catch anything a rename
+     * did; it can only re-decide a property the INPUT already had, and refuse
+     * a file the caller never asked it to judge.
+     *
+     * That is not hypothetical. mg_plausible's heuristic has false positives
+     * on real, untouched 10.9 system dylibs -- `macho9 lc -delete uuid`
+     * refuses libSystem.B.dylib, libc++.1.dylib, libicucore.A.dylib and
+     * libz.1.dylib on this host and passes /bin/ls, /bin/cat, /usr/bin/grep
+     * and /usr/bin/awk -- so with the gate on this path, `macho9 segment`
+     * refused 14 of the 16 thin binaries in a 120-file /usr/lib corpus
+     * (tests/differential.sh), all of which compat/rename_segment.c renamed
+     * without complaint for as long as it existed.
+     *
+     * Scoped by mr_is_rename_only, not by an environment variable: an env var
+     * would switch the gate off for the whole macho9 invocation, would keep
+     * covering any operation a caller later added to the same command line,
+     * and would read like someone disabling a safety check. This says the one
+     * true thing instead, at the one site where it is true. Every operation
+     * that CAN move an offset still meets the gate exactly as before. */
+    if (!mr_is_rename_only(ops) && !getenv("MACHO_NO_VERIFY") &&
+        mg_plausible(buf, fsize) != 0) {
         fprintf(stderr, "ERROR: refusing to modify %s -- it would carry base-relative "
                         "offsets that name no known function. Left unmodified.\n", label);
         return MR_ERROR;

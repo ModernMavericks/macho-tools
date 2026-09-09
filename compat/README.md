@@ -3,6 +3,12 @@
 The six original entry points, kept for compatibility. Five of them are now
 `/bin/sh` wrappers around `macho9`; the sixth is still C.
 
+> **The goal is not met yet.** The retirement plan's headline is "`macho9`
+> becomes the only Mach-O rewriting binary this repo ships." This repo still
+> ships two: `macho9` and `fix_macho`. Five of six is real progress and it is
+> not the goal — see "Why `fix_macho` is still C" below, and do not read the
+> table above as saying otherwise.
+
 | installed name | what it is now |
 |---|---|
 | `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT` |
@@ -35,17 +41,38 @@ fixes to that repo, and if/when Wowfunhappy merges them, or
 `docs/PROPOSAL.md`, "one repo, first-party"), `install.sh`'s existing
 invocations have to already resolve to the same names here.
 
-**One thing a wrapper does change for that caller**, and it is a packaging
-fact rather than a behavioural one: a wrapper cannot work without `macho9`,
-`macho9-compat.sh` and `macho9-translate.sh` sitting in the same directory.
-A caller that fetches three files by name now needs six. That is inherent to
-replacing the binaries with wrappers at all, not to how these particular ones
-are written, and it is why all four are installed **flat** into the same
-`bin` rather than into a `libexec/` subdirectory.
+### What a packager has to change, and who has not been told
+
+**A wrapper cannot work without `macho9`, `macho9-compat.sh` and
+`macho9-translate.sh` sitting in the same directory.** `install.sh` fetches
+`patch_macho`, `change_dylib` and `add_version_min` **by name**, three files;
+those three now need three more beside them. Fetch the three alone and you get
+three names that cannot run.
+
+That is inherent to replacing the binaries with wrappers at all, not to how
+these particular ones are written, and it is why everything installs **flat**
+into one `bin` rather than into a `libexec/` subdirectory — a flat layout
+needs only extra file names from that script, where a subdirectory would need
+it restructured.
+
+**Nobody has told whoever owns that script.** `install.sh` lives at
+`mavericksforever.com` and is not this repo's to change; the retirement plan's
+Task 3 is already blocked on it moving, and this is a second, earlier reason
+the same conversation has to happen. Until it does, a CDN built from this repo
+would ship three names that cannot run. `.github/workflows/release.yml` puts
+all six files in the release artifact, which is the most this repo can do on
+its own.
 
 ## What "drop-in" means here, precisely
 
-The rewritten file's bytes and the exit codes are identical to the C tools'.
+The rewritten file's bytes and the exit codes are identical to the C tools',
+with **one known exception**: `rename_segment` on a binary carrying
+`LC_LAZY_LOAD_DYLIB` refuses where the C tool renamed, because the shared
+rewriter builds its library-ordinal map before it looks at whether any
+operation could renumber. `compat/rename_segment.sh`'s header has the
+measurement. It is one file out of 300 in `tests/differential.sh`'s corpus,
+and closing it means changing `macho9`.
+
 Stdout is identical everywhere a caller or an in-repo test can see it, and
 each wrapper's own header **enumerates** the places where it is not, with the
 measurement behind each one (`tests/compat-matrix.tsv` records what all 1227
@@ -61,7 +88,7 @@ go on stderr.
 production `install.sh` wrapper pipeline first — and `tests/wrapper_test.sh`
 covers the wrappers' own grammar, exit-code and stdout mapping.
 
-## Why `fix_macho` is still C
+## Why `fix_macho` is still C — and why the plan's goal is not met
 
 It was attempted as a wrapper and measured, on real 10.9, against the
 binaries that shipped before the wrappers. It cannot be wrapped without
@@ -73,6 +100,10 @@ smaller differences follow (no `mg_plausible` gate, a tolerated bad fat
 slice, and stdout nothing could reconstruct). `compat/fix_macho.c`'s own
 header has the detail. Converging it in C is the honest way to retire it, and
 that is a decision to take deliberately rather than a wrapper to slip in.
+
+So this repo still ships **two** Mach-O rewriting binaries, not one.
+Converging `fix_macho` onto the shared drivers in C is real work with its own
+behaviour decisions, and it belongs to its own task.
 
 Its two repeated options are capped now, in `fix_macho.c`, with
 `change_dylib`'s exact wording — the fixed-size arrays they filled had no

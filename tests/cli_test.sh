@@ -1477,7 +1477,7 @@ fi
 # `macho9 info` prints a segment's segname but NOT the copy of that name each
 # section_64 carries, and the section copies are half of what this verb must
 # change (getsectiondata matches on the section's copy -- see
-# compat/rename_segment.c's header comment). segread below is a purpose-built
+# src/segname.h's header comment). segread below is a purpose-built
 # reader for exactly that, in the same spirit as change_dylib_test.sh's
 # ordinal_of/fatcheck: nothing here parses otool.
 #
@@ -1713,6 +1713,52 @@ grep -q "^SECT __DATA/" "$T/segs_fat" \
 cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
     && ok "segment: passed the non-Mach-O fat slice through byte for byte" \
     || bad "segment: fat slice 1" "the slice this rewriter cannot read was modified"
+
+# ---- segment does NOT meet the mg_plausible gate ---------------------------
+#
+# mr_apply_file's last gate before writing (src/rewrite.c) asks whether the
+# image's initializers and compact-unwind entries still name functions
+# LC_FUNCTION_STARTS knows about. That is an OFFSET question, and a segment
+# rename moves no offset -- it writes characters into segname/sectname fields.
+# So mr_process_thin skips the gate for a rename-only operation set, and this
+# is the assertion that it really does.
+#
+# The probe is a real binary on THIS host that the gate rejects for an
+# ORDINARY operation -- `macho9 lc -delete uuid`, which cannot be blamed on a
+# rename. mg_plausible's heuristic has false positives on stock 10.9 system
+# dylibs (it rejects libSystem.B.dylib and libc++.1.dylib here and accepts
+# /bin/ls and /bin/cat), which is exactly why the gate must not sit on a path
+# that cannot benefit from it. SKIPped, loudly, where no such binary exists:
+# which files trip the heuristic is a property of what is installed, not of
+# this repo.
+mgp_victim=''
+for f in /usr/lib/*.dylib; do
+    [ -r "$f" ] || continue
+    case $(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' ') in cffaedfe) ;; *) continue ;; esac
+    cp "$f" "$T/mgp" 2>/dev/null || continue
+    chmod u+w "$T/mgp" 2>/dev/null || continue
+    "$MACHO9" lc "$T/mgp" -delete uuid >/dev/null 2>"$T/mgp.err" && continue
+    grep -q 'no known function' "$T/mgp.err" || continue
+    mgp_victim=$f; break
+done
+if [ -n "$mgp_victim" ]; then
+    cp "$mgp_victim" "$T/mgp"; chmod u+w "$T/mgp"
+    mgp_before=$(shasum -a 256 < "$T/mgp" | cut -d' ' -f1)
+    if "$MACHO9" segment "$T/mgp" __DATA __DATA_R9 >/dev/null 2>"$T/mgp2.err"; then
+        [ "$(shasum -a 256 < "$T/mgp" | cut -d' ' -f1)" != "$mgp_before" ] \
+            && ok "segment: renames a binary mg_plausible rejects for other operations" \
+            || bad "segment: mg_plausible scope" "exited 0 but changed nothing"
+    else
+        bad "segment: mg_plausible scope" "refused $mgp_victim: $(cat "$T/mgp2.err")"
+    fi
+    # ...and the gate is still THERE for anything that can move an offset.
+    cp "$mgp_victim" "$T/mgp3"; chmod u+w "$T/mgp3"
+    "$MACHO9" lc "$T/mgp3" -delete uuid >/dev/null 2>&1 \
+        && bad "segment: mg_plausible scope" "lc -delete stopped meeting the gate too" \
+        || ok "segment: an operation that CAN move an offset still meets the gate"
+else
+    skip "segment: the mg_plausible scope" "no /usr/lib dylib on this host trips that heuristic"
+fi
 
 # ============================================================================
 # retag-swift: the is-Swift tag moves from the stable-ABI bit to the legacy one

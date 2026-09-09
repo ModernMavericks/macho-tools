@@ -316,23 +316,23 @@ else
     skip "rename_segment: fat container" "no fat Mach-O found on this host"
 fi
 
-# mg_plausible. `macho9 segment` refuses an image that fails mr_apply_file's
-# last gate; rename_segment had no such gate, and tests/differential.sh found
-# the difference on 14 of the 16 thin binaries in a 120-file /usr/lib corpus.
-# The wrapper reproduces the old behaviour with MACHO_NO_VERIFY=1 -- see
-# compat/rename_segment.sh's divergence 3 for the whole argument. Asserted by
-# finding a real binary on THIS host that `macho9 segment` refuses, and
-# checking the wrapper renames it anyway; SKIPped, loudly, if the host has
-# none, since the heuristic's false positives are a property of the binaries
-# that happen to be installed.
+# mg_plausible, from the caller's side. mr_apply_file's last gate rejects real,
+# untouched 10.9 system dylibs -- a heuristic false positive, not something a
+# rewrite did -- and rename_segment never had such a gate at all. src/rewrite.c
+# now skips it for a rename-only operation set (tests/cli_test.sh asserts that
+# directly, and asserts the gate is still there for everything else); this is
+# the same property seen through the wrapper, which is where a caller sees it.
+#
+# The probe is a binary the gate rejects for an ORDINARY operation, so it
+# cannot be blamed on the rename. SKIPped, loudly, where the host has none.
 victim=''
 for f in /usr/lib/*.dylib; do
     [ -r "$f" ] || continue
     case $(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' ') in cffaedfe) ;; *) continue ;; esac
     cp "$f" "$T/v" 2>/dev/null || continue
     chmod u+w "$T/v" 2>/dev/null || continue
-    ( cd "$T" && "$BIN/macho9" segment v __DATA __DATA_R9 ) >/dev/null 2>&1 && continue
-    ( cd "$T" && "$BIN/macho9" info v ) >/dev/null 2>&1 || continue
+    ( cd "$T" && "$BIN/macho9" lc v -delete uuid ) >/dev/null 2>"$T/verr" && continue
+    grep -q 'no known function' "$T/verr" || continue
     victim=$f; break
 done
 if [ -n "$victim" ]; then
@@ -340,10 +340,10 @@ if [ -n "$victim" ]; then
     before=$(sha "$T/v")
     run rename_segment v __DATA __DATA_R9
     [ "$rc" -eq 0 ] && grep -q '^v: renamed ' "$T/out" && [ "$(sha "$T/v")" != "$before" ] \
-        && ok "rename_segment: renames a binary macho9's mg_plausible gate refuses, as the C tool did" \
+        && ok "rename_segment: renames a binary mg_plausible rejects for other operations" \
         || bad "rename_segment mg_plausible" "exit $rc on $victim: $(cat "$T/err")"
 else
-    skip "rename_segment: the mg_plausible divergence" "no /usr/lib dylib on this host trips that gate"
+    skip "rename_segment: the mg_plausible scope" "no /usr/lib dylib on this host trips that heuristic"
 fi
 
 # The NEW-name length check and the arity check happen before any I/O, in
