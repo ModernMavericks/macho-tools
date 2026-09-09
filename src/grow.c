@@ -465,34 +465,42 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
     return 0;
 }
 
-/* Deliberately left as a hand-rolled walk, not converted to mi_each_lc: this
- * function's signature takes `buf` alone, with no `fsize` -- both of its
- * call sites (mg_find_trie just below, and mg_grow_header's widen-append
- * path) already hold a validated buffer at a known size when they call it,
- * so the omission was never a bounds-safety gap. Converting would mean
- * widening this function's (and mg_find_trie's, its own only caller-facing
- * wrapper) public signature purely to obtain an mi_image via mi_wrap -- a
- * re-validation this two-branch search does not need and neither current
- * caller would otherwise want to pay for. That is a lateral move, not a
- * de-duplication: it grows public API surface (this function is declared in
- * grow.h) without removing any real risk. Left as-is; see the task report. */
-int mg_find_trie_lc(const uint8_t *buf, long *lc_off, uint32_t *cmd) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY ||
-            lc->cmd == LC_DYLD_EXPORTS_TRIE) {
-            *lc_off = sp - buf; *cmd = lc->cmd; return 1;
-        }
-        sp += lc->cmdsize;
+/* Was left as a hand-rolled walk on the grounds that every call site already
+ * held a validated buffer -- a code-review round found that reasoning
+ * incomplete: this symbol is EXPORTED from grow.h, strides lc->cmdsize from
+ * h->ncmds with NO bounds check of its own, and was therefore safe only by
+ * coincidence -- exactly the "safe by coincidence" hazard src/image.h's own
+ * header comment names as this module's reason to exist. Every one of the
+ * five call sites (grow.c's own mg_find_trie below, mg_grow_header's
+ * pre-realloc audit and post-realloc widen-append path, and
+ * tests/grow_test.c's two) already had `fsize`/`final_size` in scope one
+ * line away, so the fix costs one parameter, not a redesign. */
+struct mg_trie_lc_ctx { const uint8_t *buf; long lc_off; uint32_t cmd; int found; };
+static int mg_trie_lc_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_trie_lc_ctx *ctx = (struct mg_trie_lc_ctx *)ctx_;
+    if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY ||
+        lc->cmd == LC_DYLD_EXPORTS_TRIE) {
+        ctx->lc_off = (const uint8_t *)lc - ctx->buf;
+        ctx->cmd = lc->cmd;
+        ctx->found = 1;
+        return 1;
     }
     return 0;
 }
 
-int mg_find_trie(const uint8_t *buf, uint32_t *off, uint32_t *size) {
+int mg_find_trie_lc(const uint8_t *buf, size_t fsize, long *lc_off, uint32_t *cmd) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return 0;
+    struct mg_trie_lc_ctx ctx = { buf, 0, 0, 0 };
+    mi_each_lc(&im, mg_trie_lc_cb, &ctx);
+    if (!ctx.found) return 0;
+    *lc_off = ctx.lc_off; *cmd = ctx.cmd;
+    return 1;
+}
+
+int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size) {
     long lc_off; uint32_t cmd;
-    if (!mg_find_trie_lc(buf, &lc_off, &cmd)) return 0;
+    if (!mg_find_trie_lc(buf, fsize, &lc_off, &cmd)) return 0;
     if (cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) {
         const struct dyld_info_command *d = (const struct dyld_info_command *)(buf + lc_off);
         *off = d->export_off; *size = d->export_size;
@@ -508,7 +516,7 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
                         uint64_t base, uint64_t *out, uint8_t *kinds,
                         uint32_t *n, uint32_t max) {
     uint32_t off, size;
-    if (!mg_find_trie(buf, &off, &size)) return 0;
+    if (!mg_find_trie(buf, fsize, &off, &size)) return 0;
     if (!off || !size) return 0;
     if ((uint64_t)off + size > fsize) return -1;
     uint8_t *seen = (uint8_t *)calloc(size, 1);
@@ -946,7 +954,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
         if (r > 0) {
             uint32_t toff, tsize;
-            if (!mg_find_trie(buf, &toff, &tsize) || !toff || !tsize) {
+            if (!mg_find_trie(buf, fsize, &toff, &tsize) || !toff || !tsize) {
                 fprintf(stderr, "macho_grow: internal error locating the export trie that "
                                 "just reported needing a wider ULEB\n");
                 return -1;
@@ -1083,7 +1091,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
          * unchanged by the memmove above, only position moved) replace the
          * trie outright. */
         uint32_t toff, tsize;
-        if (!mg_find_trie(buf, &toff, &tsize)) {
+        if (!mg_find_trie(buf, final_size, &toff, &tsize)) {
             fprintf(stderr, "macho_grow: internal error -- the export trie load command "
                             "vanished after growing\n");
             free(mg_new_trie);
@@ -1133,7 +1141,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
              * not a second hand-rolled scan that could disagree with it
              * about which load command "the" export trie means. */
             long export_lc_off = -1; uint32_t export_lc_cmd = 0;
-            mg_find_trie_lc(buf, &export_lc_off, &export_lc_cmd);
+            mg_find_trie_lc(buf, final_size, &export_lc_off, &export_lc_cmd);
             if (linkedit_lc_off < 0 || export_lc_off < 0) {
                 fprintf(stderr, "macho_grow: no __LINKEDIT segment (or no export-trie load "
                                 "command) to grow the rebuilt export trie into; refusing\n");

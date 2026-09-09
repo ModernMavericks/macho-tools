@@ -227,14 +227,14 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
  * independently deciding the same thing" is exactly the bug shape this
  * whole toolkit plan exists to eliminate, so it is not left as a coincidence
  * that happens to agree today.) */
-int mg_find_trie_lc(const uint8_t *buf, long *lc_off, uint32_t *cmd);
+int mg_find_trie_lc(const uint8_t *buf, size_t fsize, long *lc_off, uint32_t *cmd);
 
 
 /* Locate the export trie's (off, size), whichever load command carries it --
  * LC_DYLD_INFO[_ONLY]'s export_off/export_size, or LC_DYLD_EXPORTS_TRIE's
  * dataoff/datasize. Returns 1 with *off and *size set, or 0 if this image has
  * no export-trie load command at all (not an error -- just nothing to walk). */
-int mg_find_trie(const uint8_t *buf, uint32_t *off, uint32_t *size);
+int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size);
 
 
 int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,

@@ -678,7 +678,7 @@ static void test_grow_rebases_export_trie(void) {
     if (r != 0) { free(buf); return; }
 
     uint32_t toff = 0, tsize = 0;
-    int found = mg_find_trie(buf, &toff, &tsize);
+    int found = mg_find_trie(buf, fsize, &toff, &tsize);
     CHECK(found && tsize == 17, "trie size UNCHANGED (got %u) -- no __LINKEDIT resize", tsize);
     uint8_t *t = found ? buf + toff : NULL;
     CHECK(t != NULL, "export trie still locatable");
@@ -819,7 +819,7 @@ static void test_grow_rebuilds_widening_export_trie(void) {
      * mg_find_trie -- the same two finders every other converted walk in
      * this toolkit uses, instead of a third hand-rolled copy of this search. */
     uint32_t new_export_off = 0, new_export_size = 0;
-    mg_find_trie(buf, &new_export_off, &new_export_size);
+    mg_find_trie(buf, fsize, &new_export_off, &new_export_size);
     struct segment_command_64 *le2 = NULL;
     {
         mi_image le_im;
