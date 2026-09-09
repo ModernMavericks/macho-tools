@@ -54,7 +54,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -76,10 +76,15 @@ foreach(tool IN LISTS MACHO_TOOLS)
   mavericks_assert_binary_compatible(${tool})
 endforeach()
 
-# change_dylib includes macho_grow.h, which includes src/uleb.h; patch_macho
-# includes src/image.h directly. The other four reach nothing in src/ yet.
+# change_dylib includes macho_grow.h, which includes src/uleb.h, and src/fat.h
+# directly; patch_macho includes src/image.h directly; fix_macho includes
+# src/fat.h directly (Task 5: both fat-aware tools now validate a fat file's
+# arch table through the same code, src/fat.c, instead of each having its own
+# hand-rolled walk that could -- and did -- disagree about validation). The
+# other three reach nothing in src/ yet.
 target_link_libraries(change_dylib PRIVATE macho9core)
 target_link_libraries(patch_macho PRIVATE macho9core)
+target_link_libraries(fix_macho PRIVATE macho9core)
 
 # The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): `verify`/`info`/`grow`
 # delegate in-process to macho9core + macho_grow.h; `dylib`/`rpath`/`lc`

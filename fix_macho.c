@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
+#include "fat.h"
 
 #define LC_BUILD_VERSION_CMD 0x00000032
 
@@ -157,16 +158,27 @@ int main(int argc, char **argv) {
     uint32_t magic = *(uint32_t *)buf;
 
     if (magic == FAT_CIGAM || magic == FAT_MAGIC) {
-        /* Fat binary - process each slice */
-        struct fat_header *fh = (struct fat_header *)buf;
-        uint32_t narch = (magic == FAT_CIGAM) ? OSSwapInt32(fh->nfat_arch) : fh->nfat_arch;
-        struct fat_arch *archs = (struct fat_arch *)(buf + sizeof(struct fat_header));
+        /* Fat binary - process each slice. mfat_parse (src/fat.c) is the ONE
+         * place both this tool and change_dylib validate a fat file's arch
+         * table now -- this used to trust `offset`/`asize` from the file
+         * outright and index buf+offset with them unchecked, an
+         * out-of-bounds READ on a malformed or hostile fat file. A failed
+         * parse now refuses the whole file instead of reading past the end
+         * of `buf`. */
+        uint32_t narch; int swap;
+        if (mfat_parse(buf, fsize, &narch, &swap) != 0) {
+            fprintf(stderr, "Malformed fat file (bad magic, arch table past the end, "
+                            "or a slice overlapping the header)\n");
+            close(fd);
+            free(buf);
+            return 1;
+        }
 
         for (uint32_t i = 0; i < narch; i++) {
-            uint32_t offset = (magic == FAT_CIGAM) ? OSSwapInt32(archs[i].offset) : archs[i].offset;
-            uint32_t asize = (magic == FAT_CIGAM) ? OSSwapInt32(archs[i].size) : archs[i].size;
-            printf("Processing arch %u at offset %u:\n", i, offset);
-            int r = process_macho(buf + offset, asize, changes, nchanges, strip_bv, renames, nrenames);
+            mfat_arch a;
+            mfat_get(buf, swap, i, &a);
+            printf("Processing arch %u at offset %u:\n", i, a.offset);
+            int r = process_macho(buf + a.offset, a.size, changes, nchanges, strip_bv, renames, nrenames);
             if (r > 0) modified = 1;
             else if (r < 0) { fprintf(stderr, "  Skipping arch %u\n", i); }
         }

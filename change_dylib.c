@@ -61,6 +61,7 @@
 #include "image.h"
 #include "macho_grow.h"
 #include "ordinals.h"
+#include "fat.h"
 #include <mach-o/fat.h>
 
 /* Load commands safe to drop: purely informational, or invalidated the moment
@@ -565,21 +566,19 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
 
-    uint32_t magic = *(uint32_t *)buf;
-    int swap = (magic == FAT_CIGAM);
-    if (fsize < sizeof(struct fat_header)) {
-        fprintf(stderr, "ERROR: fat header truncated\n");
+    /* mfat_parse (src/fat.c) is the ONE place both change_dylib and
+     * fix_macho validate a fat file's arch table -- magic, the table fitting
+     * inside the file, and every entry's offset+size in bounds and not
+     * overlapping the header/table region itself. Before this, each tool
+     * had its own hand-rolled walk and they disagreed about validation
+     * (fix_macho trusted an arch's offset/size outright); see fat.h's file
+     * header for the fuller story. */
+    uint32_t narch; int swap;
+    if (mfat_parse(buf, fsize, &narch, &swap) != 0) {
+        fprintf(stderr, "ERROR: malformed fat file (bad magic, arch table past the end, "
+                        "or a slice overlapping the header)\n");
         return 1;
     }
-    const struct fat_header *fh = (const struct fat_header *)buf;
-    uint32_t narch = swap ? cd_swap32(fh->nfat_arch) : fh->nfat_arch;
-    uint64_t arch_region = (uint64_t)sizeof(struct fat_header) +
-                            (uint64_t)narch * sizeof(struct fat_arch);
-    if (arch_region > fsize) {
-        fprintf(stderr, "ERROR: fat_arch table (%u entries) runs past the file\n", narch);
-        return 1;
-    }
-    const struct fat_arch *ar = (const struct fat_arch *)(buf + sizeof(struct fat_header));
 
     /* Per-slice working state, gathered up front so a mid-loop failure can
      * free exactly what has been allocated so far. */
@@ -600,16 +599,12 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
     int aborted = 0;
     uint32_t i;
     for (i = 0; i < narch; i++) {
-        uint32_t o  = swap ? cd_swap32((uint32_t)ar[i].offset) : (uint32_t)ar[i].offset;
-        uint32_t s  = swap ? cd_swap32((uint32_t)ar[i].size)   : (uint32_t)ar[i].size;
-        uint32_t ct = swap ? cd_swap32((uint32_t)ar[i].cputype) : (uint32_t)ar[i].cputype;
-        uint32_t cs = swap ? cd_swap32((uint32_t)ar[i].cpusubtype) : (uint32_t)ar[i].cpusubtype;
-        uint32_t al = swap ? cd_swap32(ar[i].align) : ar[i].align;
-        if ((uint64_t)o + s > fsize) {
-            fprintf(stderr, "ERROR: fat arch %u (offset %u, size %u) runs past the file\n", i, o, s);
-            aborted = 1;
-            break;
-        }
+        /* mfat_parse above already proved offset+size is in bounds and
+         * outside the header/table region for every entry up to narch, so
+         * mfat_get needs no further checking here. */
+        mfat_arch a;
+        mfat_get(buf, swap, i, &a);
+        uint32_t o = a.offset, s = a.size, ct = a.cputype, cs = a.cpusubtype, al = a.align;
         ooff[i] = o; osize[i] = s;
         cputype[i] = ct; cpusubtype[i] = cs; align[i] = al;
 
@@ -656,24 +651,42 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
 
     /* Reassemble: each slice keeps its original offset until some earlier
      * slice's size actually changed; from then on later slices pack
-     * sequentially, honoring each slice's own (preserved) alignment. */
+     * sequentially, honoring each slice's own (preserved) alignment.
+     *
+     * `cursor` tracks where the NEXT slice may start, which only means
+     * "the end of the file" when the arch table happens to be in ascending
+     * offset order -- nothing in the fat format requires that (lipo merely
+     * happens to emit it that way). A fat file with, say, arch[0] at a
+     * HIGHER offset than arch[1] is legal and both entries can independently
+     * pass the offset+size-in-bounds check in mfat_parse. Sizing the output
+     * buffer from `cursor` (the LAST slice processed) instead of the
+     * MAXIMUM end across every slice undersizes the allocation whenever the
+     * table isn't ascending, and the memcpy below then writes past it --
+     * heap corruption in the best case, and an exit-0 write of a truncated,
+     * silently-corrupted file in the worst, since main() would then write
+     * exactly `newbuf`'s (too-small) size back over the real input. Track
+     * the true maximum explicitly so the allocation is never smaller than
+     * every slice it has to hold, regardless of table order. */
     uint64_t *noff = calloc(narch, sizeof(uint64_t));
     int shift = 0;
     uint64_t cursor = 0;
+    uint64_t max_end = 0;
     for (uint32_t j = 0; j < narch; j++) {
         uint64_t want;
         if (!shift) {
             want = ooff[j];
         } else {
-            uint64_t a = (uint64_t)1 << align[j];
+            uint32_t shift_amt = align[j] > 31 ? 31 : align[j];  /* hostile input guard */
+            uint64_t a = (uint64_t)1 << shift_amt;
             want = (cursor + a - 1) & ~(a - 1);
         }
         noff[j] = want;
         cursor = want + ssize[j];
+        if (cursor > max_end) max_end = cursor;
         if (ssize[j] != osize[j]) shift = 1;
     }
 
-    uint8_t *newbuf = calloc(1, (size_t)cursor);
+    uint8_t *newbuf = calloc(1, (size_t)max_end);
     if (!newbuf) {
         fprintf(stderr, "ERROR: out of memory reassembling the fat file\n");
         for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
@@ -703,7 +716,48 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
 
     free(buf);
     *pbuf = newbuf;
-    *pfsize = (size_t)cursor;
+    *pfsize = (size_t)max_end;   /* NOT cursor -- see the comment above the alloc */
+    return 0;
+}
+
+/* Write `size` bytes of `buf` to a NEW file next to `path` (same directory,
+ * so the rename below is on one filesystem and therefore atomic), matching
+ * `mode`'s permission bits, then rename() it over `path`. Either the OLD
+ * content is still there or the NEW content is, in full -- never a
+ * half-written or truncated `path`. This replaces what used to be
+ * ftruncate(fd, size) followed by write(fd, buf, size) directly on `path`:
+ * if that write failed partway (disk full, killed mid-write, ...), `path`
+ * was left truncated to the new size with only part of the new content in
+ * it -- the user's original file gone and nothing usable in its place. On
+ * any failure here `path` is guaranteed untouched and the temp file has
+ * been removed; the caller only needs to report failure, not clean up. */
+static int write_atomic(const char *path, mode_t mode, const uint8_t *buf, size_t size) {
+    size_t tlen = strlen(path) + 8;
+    char *tmpl = (char *)malloc(tlen);
+    if (!tmpl) { fprintf(stderr, "out of memory\n"); return 1; }
+    snprintf(tmpl, tlen, "%s.XXXXXX", path);
+
+    int tfd = mkstemp(tmpl);
+    if (tfd < 0) { perror("mkstemp"); free(tmpl); return 1; }
+    fchmod(tfd, mode);   /* best-effort: match the original file's permissions */
+
+    size_t off = 0;
+    int failed = 0;
+    while (off < size) {
+        ssize_t n = write(tfd, buf + off, size - off);
+        if (n < 0) { perror("write"); failed = 1; break; }
+        off += (size_t)n;
+    }
+    if (!failed && fsync(tfd) != 0) { perror("fsync"); failed = 1; }
+    close(tfd);
+
+    if (failed || rename(tmpl, path) != 0) {
+        if (!failed) perror("rename");
+        unlink(tmpl);
+        free(tmpl);
+        return 1;
+    }
+    free(tmpl);
     return 0;
 }
 
@@ -796,10 +850,12 @@ int main(int argc, char **argv) {
         } else { fprintf(stderr, "bad arg: %s\n", argv[i]); return 1; }
     }
 
-    /* The O_RDWR fd is opened up front, as before, and held for the write-back
-     * at the end. That ordering is load-bearing: it is what makes an unwritable
-     * file fail immediately instead of after all the analysis has run and
-     * printed. */
+    /* The O_RDWR fd is opened up front, as before -- that ordering is
+     * load-bearing: it is what makes an unwritable file fail immediately
+     * instead of after all the analysis has run and printed. It is no
+     * longer HELD for the write-back, though: write_atomic() below replaces
+     * `path` via a temp file + rename rather than writing through this fd
+     * directly, so it is closed as soon as the input has been read. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
 
@@ -816,6 +872,8 @@ int main(int argc, char **argv) {
     if (read(fd, buf, fsize) != (ssize_t)fsize) {
         perror("read"); close(fd); free(buf); return 1;
     }
+    mode_t orig_mode = st.st_mode;
+    close(fd);
 
     /* Read the raw bytes ourselves (rather than mi_open) because a fat file's
      * magic isn't MH_MAGIC_64 -- mi_open would refuse it outright, and this
@@ -843,15 +901,14 @@ int main(int argc, char **argv) {
     }
 
     if (rc == 0 && modified) {
-        if (ftruncate(fd, fsize) != 0) { perror("ftruncate"); rc = 1; }
-        else {
-            lseek(fd, 0, SEEK_SET);
-            if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); rc = 1; }
-            else printf("Updated %s (%zu bytes)\n", path, fsize);
+        if (write_atomic(path, orig_mode, buf, fsize) != 0) {
+            fprintf(stderr, "ERROR: %s left unmodified (atomic replace failed)\n", path);
+            rc = 1;
+        } else {
+            printf("Updated %s (%zu bytes)\n", path, fsize);
         }
     }
 
-    close(fd);
     free(buf);
     return rc;
 }
