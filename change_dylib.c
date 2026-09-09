@@ -65,28 +65,15 @@
 #include "macho_grow.h"
 #include "ordinals.h"
 #include "fat.h"
+#include "lc_kinds.h"
 #include <mach-o/fat.h>
 
-/* Load commands safe to drop: purely informational, or invalidated the moment
- * the binary is rewritten. Deliberately excludes LC_FUNCTION_STARTS (avxemu
- * reads it for patch-safety bounds) and LC_DATA_IN_CODE. None of them carries
- * a library ordinal, so stripping never disturbs the renumbering below. */
-#ifndef LC_SOURCE_VERSION
-#define LC_SOURCE_VERSION 0x2A
-#endif
-#ifndef LC_BUILD_VERSION
-#define LC_BUILD_VERSION 0x32
-#endif
-#ifndef LC_DYLIB_CODE_SIGN_DRS
-#define LC_DYLIB_CODE_SIGN_DRS 0x2B
-#endif
-static const struct { const char *name; uint32_t cmd; } strippable[] = {
-    { "uuid",           LC_UUID                },
-    { "codesig",        LC_CODE_SIGNATURE      },
-    { "source-version", LC_SOURCE_VERSION      },
-    { "build-version",  LC_BUILD_VERSION       },
-    { "code-sign-drs",  LC_DYLIB_CODE_SIGN_DRS },
-};
+/* The -strip-lc KIND vocabulary lives in src/lc_kinds.c now, shared with
+ * cli/macho9.c's `lc -delete` and its --capabilities output -- see that
+ * file's comment for why. `strippable` was this table's name here before;
+ * kept as a local alias so the rest of this file (and its usage text) don't
+ * all need renaming for a table that hasn't changed shape. */
+#define strippable LC_STRIP_KINDS
 
 #ifndef LC_LOAD_UPWARD_DYLIB
 #define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
@@ -915,7 +902,7 @@ int main(int argc, char **argv) {
                         "[-strip-lc name] [-change-rpath old new] "
                         "[-delete-rpath path] [-add-rpath path] ...\n", argv[0]);
         fprintf(stderr, "  -strip-lc kinds:");
-        for (size_t k = 0; k < sizeof(strippable)/sizeof(strippable[0]); k++)
+        for (size_t k = 0; k < LC_STRIP_KINDS_COUNT; k++)
             fprintf(stderr, " %s", strippable[k].name);
         fprintf(stderr, "\n");
         return 1;
@@ -940,7 +927,7 @@ int main(int argc, char **argv) {
             allow_grow = 1;
             i += 1;
         } else if (strcmp(argv[i], "-strip-lc") == 0 && i + 1 < argc) {
-            size_t k, nk = sizeof(strippable)/sizeof(strippable[0]);
+            size_t k, nk = LC_STRIP_KINDS_COUNT;
             for (k = 0; k < nk; k++)
                 if (strcmp(argv[i+1], strippable[k].name) == 0) break;
             if (k == nk) { fprintf(stderr, "unknown -strip-lc kind: %s\n", argv[i+1]); return 1; }

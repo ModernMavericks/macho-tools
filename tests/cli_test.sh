@@ -228,6 +228,84 @@ else
     ok "capabilities: rpath insert correctly absent"
 fi
 
+# ----------------------------------------------------------------------------
+# capabilities vocabulary must match what the parsers actually accept.
+#
+# --capabilities' "kinds=" and "ops=" lists and the cmd_lc/cmd_dylib_or_rpath
+# parsers that decide what a real invocation accepts are now both built from
+# ONE table each (LC_STRIP_KINDS, DYLIB_OPS in cli/macho9.c) precisely so
+# they cannot say different things -- before this they were three
+# hand-copied lists (change_dylib's strippable[], macho9's own LC_KINDS[],
+# and a hardcoded "kinds=..." string) that a review found had already drifted
+# apart in spirit even where the values still matched by luck. This does not
+# re-derive the table (it can't see the C source); it drives macho9 itself
+# with every name --capabilities claims and confirms none of them is refused
+# as unrecognized -- which is exactly what would happen if a name were ever
+# added to (or dropped from) one list and not the other.
+build_main "$T/vocab_fixture"
+kinds=$(echo "$caps" | sed -n 's/^verb lc .*kinds=\([^ ]*\).*/\1/p')
+[ -n "$kinds" ] || bad "capabilities vocab" "no kinds= on the lc line"
+oldifs="$IFS"; IFS=','
+vocab_kind_fail=0
+for kind in $kinds; do
+    "$MACHO9" lc "$T/vocab_fixture" -delete "$kind" >"$T/vocab_kind.out" 2>&1 || true
+    if grep -qi "unknown KIND" "$T/vocab_kind.out"; then
+        bad "capabilities vocab: kind '$kind'" "advertised but lc -delete refused it as unknown: $(cat "$T/vocab_kind.out")"
+        vocab_kind_fail=1
+    fi
+done
+IFS="$oldifs"
+[ "$vocab_kind_fail" -eq 0 ] && ok "capabilities vocab: every advertised lc kind is accepted by lc -delete"
+# And the inverse: a KIND that is plainly not real must still be refused --
+# otherwise this check could trivially "pass" by lc accepting everything.
+"$MACHO9" lc "$T/vocab_fixture" -delete not-a-real-kind >"$T/vocab_bogus.out" 2>&1 \
+    && bad "capabilities vocab: bogus kind" "lc -delete accepted a KIND that isn't in any table" \
+    || { grep -qi "unknown KIND" "$T/vocab_bogus.out" \
+         && ok "capabilities vocab: an unadvertised kind is refused as unknown" \
+         || bad "capabilities vocab: bogus kind" "refused, but not with 'unknown KIND': $(cat "$T/vocab_bogus.out")"; }
+
+# Same idea for dylib/rpath ops=: every op --capabilities advertises for a
+# verb must be recognized by that verb's own parser (never "unknown or
+# incomplete operation"), and dylib/rpath must each still refuse an op that
+# belongs to the OTHER's vocabulary but not its own (rpath has no -insert or
+# -reexport in change_dylib -- see DYLIB_OPS in cli/macho9.c).
+vocab_ops_fail=0
+check_ops_accepted() {
+    # $1=verb (dylib|rpath)  $2=ops csv from capabilities
+    verb="$1"; oldifs2="$IFS"; IFS=','
+    for op in $2; do
+        IFS="$oldifs2"   # restore default (whitespace) splitting for the command below
+        case "$op" in
+            replace) "$MACHO9" "$verb" "$T/vocab_fixture" "-$op" /no/such/old /no/such/new \
+                         >"$T/vocab_op.out" 2>&1 || true ;;
+            *)       "$MACHO9" "$verb" "$T/vocab_fixture" "-$op" /no/such/path \
+                         >"$T/vocab_op.out" 2>&1 || true ;;
+        esac
+        if grep -q "unknown or incomplete operation" "$T/vocab_op.out"; then
+            bad "capabilities vocab: $verb -$op" "advertised but the parser called it unknown/incomplete: $(cat "$T/vocab_op.out")"
+            vocab_ops_fail=1
+        fi
+        IFS=','
+    done
+    IFS="$oldifs2"
+}
+dylib_ops=$(echo "$caps" | sed -n 's/^verb dylib .*ops=\([^ ]*\).*/\1/p')
+rpath_ops=$(echo "$caps" | sed -n 's/^verb rpath .*ops=\([^ ]*\).*/\1/p')
+[ -n "$dylib_ops" ] && [ -n "$rpath_ops" ] || bad "capabilities vocab" "missing ops= on dylib or rpath line"
+check_ops_accepted dylib "$dylib_ops"
+check_ops_accepted rpath "$rpath_ops"
+[ "$vocab_ops_fail" -eq 0 ] && ok "capabilities vocab: every advertised dylib/rpath op is accepted by its own parser"
+# rpath's ops= must not include insert/reexport (change_dylib has neither
+# for rpath) -- if it ever did, the parser would refuse it (case above would
+# catch that), but this also confirms capabilities didn't just stop
+# advertising them for an unrelated reason.
+case ",$rpath_ops," in
+    *,insert,*|*,reexport,*)
+        bad "capabilities vocab: rpath ops=" "unexpectedly advertises insert/reexport: $rpath_ops" ;;
+    *)
+        ok "capabilities vocab: rpath ops= correctly omits insert/reexport" ;;
+esac
+
 # declassify itself must error, not silently do nothing or crash.
 if "$MACHO9" declassify "$T/main" "$T/out" >/dev/null 2>"$T/declassify.err"; then
     bad "declassify: exit code" "should be nonzero (not implemented)"

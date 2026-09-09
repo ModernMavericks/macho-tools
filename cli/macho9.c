@@ -57,34 +57,64 @@
 #include "image.h"
 #include "ordinals.h"
 #include "macho_grow.h"
+#include "lc_kinds.h"
 
 /* Not declared in every SDK's mach-o/loader.h (10.9's predates them). Same
  * fallback values change_dylib.c and patch_macho.c already carry -- data, not
  * logic, so duplicating it here is the same call this codebase already made. */
-#ifndef LC_SOURCE_VERSION
-#define LC_SOURCE_VERSION 0x2A
-#endif
-#ifndef LC_BUILD_VERSION
-#define LC_BUILD_VERSION 0x32
-#endif
-#ifndef LC_DYLIB_CODE_SIGN_DRS
-#define LC_DYLIB_CODE_SIGN_DRS 0x2B
-#endif
 #ifndef LC_LOAD_UPWARD_DYLIB
 #define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
 #endif
 
-/* The KIND vocabulary `lc -delete` accepts -- verbatim from the brief's
- * grammar, and exactly what change_dylib's -strip-lc already understands, so
- * lc's translation to it is a rename, not a new decision. */
-static const struct { const char *kind; uint32_t cmd; } LC_KINDS[] = {
-    { "uuid",           LC_UUID                },
-    { "codesig",        LC_CODE_SIGNATURE      },
-    { "source-version", LC_SOURCE_VERSION      },
-    { "build-version",  LC_BUILD_VERSION       },
-    { "code-sign-drs",  LC_DYLIB_CODE_SIGN_DRS },
+/* The KIND vocabulary `lc -delete` accepts is LC_STRIP_KINDS (src/lc_kinds.h),
+ * shared with change_dylib's -strip-lc -- so lc's translation to it is a
+ * rename, not a new decision, and there is exactly one table to edit if the
+ * vocabulary ever changes. print_capabilities() below reads the same table
+ * to build its "kinds=" list, rather than keeping a separate string that can
+ * silently drift from what this function (and change_dylib) actually
+ * accept -- that drift is exactly what a whole-branch review found here. */
+
+/* Operations `dylib`/`rpath` accept, and their change_dylib translation --
+ * ONE table drives both cmd_dylib_or_rpath's parser (below) and
+ * print_capabilities' "ops=" list, for the same reason LC_STRIP_KINDS is
+ * shared: two hand-maintained lists (the parser's if/else chain and a
+ * hardcoded ops= string) had already diverged from each other by the time of
+ * review. A NULL child flag for a mode means "not supported in that mode" --
+ * rpath has no -insert or -reexport equivalent in change_dylib, so both are
+ * simply absent from rpath's derived ops= list and refused by the parser. */
+struct dylib_op {
+    const char *flag;         /* this grammar's -OP spelling, e.g. "-replace" */
+    const char *cap_name;     /* same op's spelling in ops=, e.g. "replace" */
+    int nargs;                /* args consumed after the flag: 1 or 2 */
+    const char *dylib_child;  /* change_dylib flag when is_rpath==0, or NULL */
+    const char *rpath_child;  /* change_dylib flag when is_rpath==1, or NULL */
 };
-#define N_LC_KINDS (sizeof(LC_KINDS) / sizeof(LC_KINDS[0]))
+static const struct dylib_op DYLIB_OPS[] = {
+    { "-replace",  "replace",  2, "-change",   "-change-rpath" },
+    { "-delete",   "delete",   1, "-delete",   "-delete-rpath" },
+    { "-append",   "append",   1, "-add",      "-add-rpath"    },
+    { "-insert",   "insert",   1, "-insert",   NULL            },
+    { "-reexport", "reexport", 1, "-reexport", NULL            },
+};
+#define N_DYLIB_OPS (sizeof(DYLIB_OPS) / sizeof(DYLIB_OPS[0]))
+
+/* Print LC_STRIP_KINDS as a comma-separated list, no trailing comma -- the
+ * "kinds=" value in --capabilities and cmd_lc's own error message. */
+static void print_kinds_csv(void) {
+    for (size_t k = 0; k < LC_STRIP_KINDS_COUNT; k++)
+        printf("%s%s", k ? "," : "", LC_STRIP_KINDS[k].name);
+}
+
+/* Print DYLIB_OPS' cap_name for every op this mode (rpath or dylib) actually
+ * supports, comma-separated -- the "ops=" value in --capabilities. */
+static void print_ops_csv(int is_rpath) {
+    int first = 1;
+    for (size_t i = 0; i < N_DYLIB_OPS; i++) {
+        if (is_rpath ? !DYLIB_OPS[i].rpath_child : !DYLIB_OPS[i].dylib_child) continue;
+        printf("%s%s", first ? "" : ",", DYLIB_OPS[i].cap_name);
+        first = 0;
+    }
+}
 
 /* ---- capabilities -------------------------------------------------------
  *
@@ -137,9 +167,15 @@ static int print_capabilities(void) {
     if (have_add_version_min)
         printf("verb minos versions=10.9\n");
     if (have_change_dylib) {
-        printf("verb lc ops=delete kinds=uuid,codesig,source-version,build-version,code-sign-drs\n");
-        printf("verb dylib ops=replace,delete,append,insert,reexport flags=allow-grow\n");
-        printf("verb rpath ops=replace,delete,append flags=allow-grow\n");
+        printf("verb lc ops=delete kinds=");
+        print_kinds_csv();
+        printf("\n");
+        printf("verb dylib ops=");
+        print_ops_csv(0);
+        printf(" flags=allow-grow\n");
+        printf("verb rpath ops=");
+        print_ops_csv(1);
+        printf(" flags=allow-grow\n");
     }
     return 0;
 }
@@ -398,9 +434,10 @@ static int cmd_minos(const char *path, const char *version) {
 
 /* ---- lc -delete: delegates to change_dylib -strip-lc --------------------
  *
- * The KIND vocabulary is validated here (against the very table -- LC_KINDS
- * -- that also drives --capabilities) before anything runs, so a bad KIND
- * fails with this verb's own message rather than change_dylib's. */
+ * The KIND vocabulary is validated here (against the very table --
+ * LC_STRIP_KINDS, shared with change_dylib itself -- that also drives
+ * --capabilities) before anything runs, so a bad KIND fails with this
+ * verb's own message rather than change_dylib's. */
 static int cmd_lc(int argc, char **argv) {
     /* argv[0]=macho9 argv[1]="lc" argv[2]=FILE argv[3..]=ops */
     const char *path = argv[2];
@@ -414,11 +451,11 @@ static int cmd_lc(int argc, char **argv) {
         if (strcmp(argv[i], "-delete") == 0 && i + 1 < argc) {
             const char *kind = argv[i + 1];
             size_t kk;
-            for (kk = 0; kk < N_LC_KINDS; kk++)
-                if (strcmp(kind, LC_KINDS[kk].kind) == 0) break;
-            if (kk == N_LC_KINDS) {
+            for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++)
+                if (strcmp(kind, LC_STRIP_KINDS[kk].name) == 0) break;
+            if (kk == LC_STRIP_KINDS_COUNT) {
                 fprintf(stderr, "macho9 lc: unknown KIND '%s' (expected one of:", kind);
-                for (kk = 0; kk < N_LC_KINDS; kk++) fprintf(stderr, " %s", LC_KINDS[kk].kind);
+                for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++) fprintf(stderr, " %s", LC_STRIP_KINDS[kk].name);
                 fprintf(stderr, ")\n");
                 free(child);
                 return 1;
@@ -481,46 +518,41 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         if (strcmp(tok, "--allow-grow") == 0) {
             child[k++] = "-grow";
             i += 1;
-        } else if (strcmp(tok, "-replace") == 0 && i + 2 < argc) {
-            child[k++] = is_rpath ? "-change-rpath" : "-change";
-            child[k++] = argv[i + 1];
-            child[k++] = argv[i + 2];
-            nops++;
-            i += 3;
-        } else if (strcmp(tok, "-delete") == 0 && i + 1 < argc) {
-            child[k++] = is_rpath ? "-delete-rpath" : "-delete";
-            child[k++] = argv[i + 1];
-            nops++;
-            i += 2;
-        } else if (strcmp(tok, "-append") == 0 && i + 1 < argc) {
-            child[k++] = is_rpath ? "-add-rpath" : "-add";
-            child[k++] = argv[i + 1];
-            nops++;
-            i += 2;
-        } else if (strcmp(tok, "-insert") == 0 && i + 1 < argc) {
-            if (is_rpath) {
-                fprintf(stderr, "macho9 rpath: -insert is not implemented in this build "
-                                "(change_dylib has no rpath-insert to delegate to; a "
-                                "workaround is deleting and re-adding every other -rpath "
-                                "to reshuffle them, per docs/PROPOSAL.md)\n");
-                free(child);
-                return 1;
-            }
-            child[k++] = "-insert";
-            child[k++] = argv[i + 1];
-            nops++;
-            i += 2;
-        } else if (!is_rpath && strcmp(tok, "-reexport") == 0 && i + 1 < argc) {
-            child[k++] = "-reexport";
-            child[k++] = argv[i + 1];
-            nops++;
-            i += 2;
-        } else {
+            continue;
+        }
+
+        /* Match against the shared op table (declared near the top of this
+         * file) instead of a bespoke if/else chain, so this loop and
+         * print_capabilities' "ops=" list are structurally unable to name
+         * different operations. */
+        size_t oi;
+        for (oi = 0; oi < N_DYLIB_OPS; oi++)
+            if (strcmp(tok, DYLIB_OPS[oi].flag) == 0) break;
+        if (oi == N_DYLIB_OPS || i + DYLIB_OPS[oi].nargs >= argc) {
             fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
                     is_rpath ? "rpath" : "dylib", tok);
             free(child);
             return 1;
         }
+        const struct dylib_op *op = &DYLIB_OPS[oi];
+        const char *cflag = is_rpath ? op->rpath_child : op->dylib_child;
+        if (!cflag) {
+            if (is_rpath && strcmp(op->flag, "-insert") == 0) {
+                fprintf(stderr, "macho9 rpath: -insert is not implemented in this build "
+                                "(change_dylib has no rpath-insert to delegate to; a "
+                                "workaround is deleting and re-adding every other -rpath "
+                                "to reshuffle them, per docs/PROPOSAL.md)\n");
+            } else {
+                fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
+                        is_rpath ? "rpath" : "dylib", tok);
+            }
+            free(child);
+            return 1;
+        }
+        child[k++] = (char *)cflag;
+        for (int a = 1; a <= op->nargs; a++) child[k++] = argv[i + a];
+        nops++;
+        i += 1 + op->nargs;
     }
     if (nops == 0) {
         fprintf(stderr, "macho9 %s: need at least one operation\n", is_rpath ? "rpath" : "dylib");

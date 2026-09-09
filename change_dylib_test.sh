@@ -33,9 +33,10 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # That means it must track what change_dylib includes: macho_grow.h now pulls in
 # src/uleb.h and src/trie.h (the export-trie rebuild, for a widening ULEB),
 # change_dylib.c itself now includes src/ordinals.h and src/fat.h (the shared
-# fat_header/fat_arch validator both it and fix_macho use), so the toolkit
-# sources it needs are listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c
+# fat_header/fat_arch validator both it and fix_macho use) and src/lc_kinds.h
+# (the -strip-lc KIND table, shared with macho9's `lc -delete`), so the
+# toolkit sources it needs are listed here too.
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
