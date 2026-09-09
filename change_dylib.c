@@ -135,16 +135,34 @@ static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
  * mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are unspecified on
  * failure; the caller must not use them.
  *
- * Left as a hand-rolled walk, not mi_each_lc: this loop threads FOUR mutable
- * locals through every iteration (new_off, ncmds, mods, placed_inserts),
- * branches on strip/insert/rename/rpath/delete in ways that change which of
- * them get touched and in what order, and writes a whole new command table
- * as it goes -- not a single accumulator like change_growth_bytes just
- * above. Moving this into a callback plus a context struct would relocate
- * the same complexity behind an extra indirection rather than remove any of
- * it -- the "several locals, lateral move" case the toolkit plan says to
- * leave alone, the same judgement already made for patch_macho's own main
- * collecting loop.
+ * Left as a hand-rolled walk, not mi_each_lc -- and not merely because it
+ * threads several mutable locals through every iteration (new_off, ncmds,
+ * mods, placed_inserts): a context struct would absorb those trivially.
+ * The actual blocker is control flow mi_each_lc cannot express:
+ *
+ *   1. This loop has two hard early exits (a malformed dylib or LC_RPATH
+ *      name offset, "ERROR: ... refusing" -> return -1, just below and at
+ *      the LC_RPATH case). mi_lc_fn returns void, with no way for a
+ *      callback to signal "stop -- and do not trust anything written so
+ *      far." A converted version would keep calling the callback for every
+ *      later load command after the refusal fires, each one still writing
+ *      into new_lcs -- corrupting/overrunning a buffer the caller (and the
+ *      caller's caller) believes was never touched, instead of leaving the
+ *      input provably unmodified the way a refusal here must.
+ *   2. build_lcs runs TWICE in the -grow path (process_one calls it once to
+ *      size the table, grows the header via mg_grow_header if needed, then
+ *      calls it again against the POST-realloc buffer to rebuild against
+ *      the relocated header). The second call has no live mi_image to walk
+ *      -- mg_grow_header reallocs the raw buffer, not through image.h, so
+ *      there is nothing here to hand mi_each_lc even if the above were
+ *      fixed.
+ *
+ * Task 2 (docs/superpowers/plans/2026-09-08-macho9-toolkit.md) is where a
+ * stop-capable mi_each_lc variant belongs, if this walk is revisited; doing
+ * that here was explicitly out of scope for Task 1. Until then, resist
+ * "fixing" this into a callback -- it would either drop the abort behavior
+ * silently or need re-deriving an mi_image from a buffer image.h no longer
+ * owns.
  */
 static int build_lcs(const uint8_t *buf, const struct change *changes, int nchanges,
                       const char *const *adds, int nadds,
@@ -1047,7 +1065,25 @@ int main(int argc, char **argv) {
         close(fd);
         mi_image im;
         if (mi_open(path, &im) != 0) {
-            fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
+            /* mi_open reports pass/fail only -- on failure "*out is
+             * untouched and nothing is allocated" (its own contract), so
+             * there is no buffer here to inspect for WHY. Reconstruct the
+             * three-way too-short/bad-magic/malformed diagnostic this tool
+             * has always given from what's already in hand instead: st.st_size
+             * (the real file size, from the fstat above) and magic (the
+             * 4-byte peek above -- valid here since the fat-magic branch
+             * above already ruled out both fat magics). */
+            if ((size_t)st.st_size < sizeof(struct mach_header_64)) {
+                fprintf(stderr, "%s: too short to be a 64-bit Mach-O (%lld bytes, need at "
+                                "least %zu)\n", path, (long long)st.st_size,
+                                sizeof(struct mach_header_64));
+            } else if (magic != MH_MAGIC_64) {
+                fprintf(stderr, "%s: not a 64-bit Mach-O (magic 0x%x)\n", path, magic);
+            } else {
+                fprintf(stderr, "%s: malformed 64-bit Mach-O (load commands fail "
+                                "validation -- truncated, misaligned, or out of bounds; "
+                                "see any earlier message)\n", path);
+            }
             return 1;
         }
         fsize = im.size;
@@ -1057,23 +1093,13 @@ int main(int argc, char **argv) {
                               inserts, ninserts, strip, nstrip, rchanges, nrchanges,
                               radds, nradds, allow_grow, &modified);
         if (po == PO_SKIP) {
-            /* mi_open above already validated this exact buffer, so
-             * process_one's own mi_wrap cannot disagree -- PO_SKIP is
-             * unreachable here in practice. Kept for defense (process_one
-             * also serves process_fat's per-slice buffers, which are NOT
-             * pre-validated this way) and to preserve this tool's long-
-             * standing three-way diagnostic. */
-            if (fsize < sizeof(struct mach_header_64)) {
-                fprintf(stderr, "%s: too short to be a 64-bit Mach-O (%zu bytes, need at "
-                                "least %zu)\n", path, fsize, sizeof(struct mach_header_64));
-            } else if (((struct mach_header_64 *)buf)->magic != MH_MAGIC_64) {
-                fprintf(stderr, "%s: not a 64-bit Mach-O (magic 0x%x)\n", path,
-                        ((struct mach_header_64 *)buf)->magic);
-            } else {
-                fprintf(stderr, "%s: malformed 64-bit Mach-O (load commands fail "
-                                "validation -- truncated, misaligned, or out of bounds; "
-                                "see any earlier message)\n", path);
-            }
+            /* Unreachable in practice: mi_open above already validated this
+             * exact buffer with the identical algorithm process_one's own
+             * mi_wrap runs on it, so mi_wrap cannot disagree. Kept as a
+             * defensive fallback only -- the detailed diagnostic this branch
+             * used to give now lives at the mi_open failure site above,
+             * where it is actually reachable. */
+            fprintf(stderr, "%s: not a 64-bit Mach-O (rejected during processing)\n", path);
             rc = 1;
         } else {
             rc = (po == PO_ERROR) ? 1 : 0;

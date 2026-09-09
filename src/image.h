@@ -63,8 +63,23 @@ void mi_close(mi_image *im);
  * dangling pointer waiting for mi_close. The caller must free() the result. */
 uint8_t *mi_release(mi_image *im);
 
-/* Visit each load command in order. The callback must not modify the command
- * chain -- this is iteration, not editing. */
+/* Visit each load command in order. The callback receives `lc` as const, but
+ * that is only a hint, not enforcement -- the underlying memory is whatever
+ * the caller's buffer is (mutable, for an owned or wrapped image opened
+ * O_RDWR). A callback MAY write through a cast-away-const `lc` to edit a
+ * command's own fixed-size fields (rename_segment.c's rs_rename_lc and
+ * retag_swift_classes.c's retag() both do, safely, since neither one is a
+ * load command in the sense below). What a callback must NEVER do is change
+ * `lc->cmd`, `lc->cmdsize`, or `im->hdr->ncmds` -- mi_each_lc's own loop
+ * reads `lc->cmdsize` via this same `lc` right after the callback returns
+ * to compute the next command's address, and it uses `im->hdr->ncmds` (read
+ * once, before the loop starts) to know when to stop. Changing either
+ * desyncs that stride from the buffer's real shape -- reading a stale
+ * cmdsize as the next command's header, walking past the real end, or
+ * stopping short -- silently, since there is no bounds check inside the
+ * loop verifying the walk still lines up with what mi_validate proved at
+ * open time. Anything else in the command (a segment's name, a class
+ * record's tag bits three hops away through the buffer) is fair game. */
 typedef void (*mi_lc_fn)(const struct load_command *lc, void *ctx);
 void mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx);
 

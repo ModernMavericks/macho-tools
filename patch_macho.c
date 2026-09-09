@@ -110,6 +110,20 @@ int main(int argc, char **argv) {
         struct load_command *lc = (struct load_command *)lcp;
         if (lc->cmd == LC_SEGMENT_64) {
             struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+            /* Refuse rather than guess (the global rule -grow's own comment
+             * states): silently dropping a 33rd segment here would leave
+             * si (this segment's index into segs[]) referring to the WRONG
+             * segment for every chained-fixups entry from here on, an
+             * unnoticed reordering of which fixups apply to which segment.
+             * No 10.9-era binary plausibly has this many segments; refusing
+             * costs nothing real. */
+            if (nsegs >= 32) {
+                fprintf(stderr, "ERROR: more than 32 LC_SEGMENT_64 commands; refusing "
+                                "rather than silently dropping one from the "
+                                "chained-fixups translation\n");
+                free(buf);
+                return 1;
+            }
             segs[nsegs++] = seg;
         } else if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
             uint32_t *d = (uint32_t *)lc;

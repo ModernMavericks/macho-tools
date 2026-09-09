@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <mach-o/loader.h>
 
 #include "image.h"
@@ -41,6 +42,8 @@ int main(int argc, char **argv) {
      * split as change_dylib and patch_macho use. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
+    struct stat st0;
+    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return 1; }
 
     mi_image im;
     if (mi_open(path, &im) != 0) {
@@ -48,6 +51,28 @@ int main(int argc, char **argv) {
         close(fd);
         return 1;
     }
+
+    /* mi_open reads `path` through its OWN, separate O_RDONLY descriptor --
+     * necessarily, since mi_open only ever opens by path -- so the bytes
+     * just validated and the fd this tool writes back through (opened
+     * above) are, between them, two different opens of whatever `path`
+     * named at each moment. If something replaces `path` in between (a
+     * concurrent install, a symlink retarget), this tool would read the NEW
+     * file's bytes but write them into the OLD file's inode via the
+     * already-open fd -- silently, since both opens report success. This
+     * narrows that window: refuse rather than proceed if `path` no longer
+     * names the same inode the O_RDWR fd above opened. It does not close
+     * the window entirely (path could still change between this check and
+     * the write below), only the gap mi_open's own re-open introduced. */
+    struct stat st1;
+    if (stat(path, &st1) != 0 ||
+        st1.st_dev != st0.st_dev || st1.st_ino != st0.st_ino) {
+        fprintf(stderr, "%s: changed underneath us between open and validation; refusing\n", path);
+        mi_close(&im);
+        close(fd);
+        return 1;
+    }
+
     size_t fsize = im.size;
     struct mach_header_64 *hdr = im.hdr;
 
@@ -66,7 +91,21 @@ int main(int argc, char **argv) {
     }
 
     uint32_t lc_end = sizeof(*hdr) + hdr->sizeofcmds;
-    if (lc_end + sizeof(struct version_min_command) > scan.first_sect_off) {
+    /* Three ways "no room" can be true, all of which must refuse before the
+     * write below: no section anywhere had a nonzero file offset at all
+     * (scan.first_sect_off is still its UINT32_MAX sentinel -- the write
+     * would then have gone straight off whatever end the buffer actually
+     * has); the room check against first_sect_off says there isn't room;
+     * or -- since mi_open validates load commands, not section file ranges,
+     * so first_sect_off is an untrusted value read straight from the file --
+     * the write would run past fsize regardless of what first_sect_off
+     * claims. Fixed after a real heap overflow: a 104-byte file (header +
+     * one LC_SEGMENT_64, nsects=0) hit exactly the first case and wrote 16
+     * bytes past a buffer whose allocation was exactly file-sized; see
+     * tests/leaf-tool-crashes.sh. */
+    if (scan.first_sect_off == UINT32_MAX ||
+        lc_end + sizeof(struct version_min_command) > scan.first_sect_off ||
+        lc_end + sizeof(struct version_min_command) > fsize) {
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
         free(buf);
         close(fd);

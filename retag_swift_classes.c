@@ -35,6 +35,7 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <mach-o/loader.h>
 
 #include "image.h"
@@ -107,10 +108,23 @@ static int64_t file_off(struct seg *segs, int nsegs, uint64_t va) {
     return -1;
 }
 
-/* Retag one class record in place; returns 1 if it changed. */
-static int retag(uint8_t *buf, struct seg *segs, int nsegs, uint64_t class_va) {
+/* True if [off, off+len) fits entirely inside a buffer of size `fsize`,
+ * without the addition itself overflowing. mi_open validates load commands
+ * -- cmdsize bounds/alignment, LC_SEGMENT_64/nsects agreement -- but nothing
+ * about a SECTION's file range, or an address (a class record's file offset,
+ * here) derived from one; every such offset this tool computes needs its
+ * own bound before it's dereferenced, since mi_open never proved one. */
+static int in_bounds(uint64_t fsize, uint64_t off, uint64_t len) {
+    return off <= fsize && len <= fsize - off;
+}
+
+/* Retag one class record in place; returns 1 if it changed. co is a file
+ * offset translated from a class virtual address via segment vmaddr/fileoff
+ * -- neither mi_open-validated -- so it still needs its own bound before the
+ * 8-byte data word at co+CLASS_DATA_OFFSET is read. */
+static int retag(uint8_t *buf, size_t fsize, struct seg *segs, int nsegs, uint64_t class_va) {
     int64_t co = file_off(segs, nsegs, class_va);
-    if (co < 0) return 0;
+    if (co < 0 || !in_bounds(fsize, (uint64_t)co + CLASS_DATA_OFFSET, sizeof(uint64_t))) return 0;
     uint64_t *data = (uint64_t *)(buf + co + CLASS_DATA_OFFSET);
     if ((*data & 3) != IS_SWIFT_STABLE) return 0;
     *data = (*data & ~(uint64_t)3) | IS_SWIFT_LEGACY;
@@ -123,6 +137,8 @@ static int process(const char *path) {
      * change_dylib and patch_macho use. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror(path); return -1; }
+    struct stat st0;
+    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return -1; }
 
     mi_image im;
     if (mi_open(path, &im) != 0) {
@@ -134,6 +150,23 @@ static int process(const char *path) {
         close(fd);
         return 0;
     }
+
+    /* mi_open reads `path` through its own, separate O_RDONLY descriptor, so
+     * the bytes just validated and the fd this tool writes back through
+     * (opened above) are two different opens of whatever `path` named at
+     * each moment -- see add_version_min.c's identical check for the full
+     * reasoning. Skip (like any other validation failure this loop treats
+     * as "not usable", not a hard error) rather than write the newly-
+     * validated bytes into a possibly different inode than the one opened. */
+    struct stat st1;
+    if (stat(path, &st1) != 0 ||
+        st1.st_dev != st0.st_dev || st1.st_ino != st0.st_ino) {
+        fprintf(stderr, "%s: changed underneath us between open and validation; skipping\n", path);
+        mi_close(&im);
+        close(fd);
+        return 0;
+    }
+
     size_t fsize = im.size;
 
     struct seg segs[64];
@@ -148,16 +181,22 @@ static int process(const char *path) {
         if (!find_section(&im, "__DATA", lists[li], &listoff, &listsize, segs, &nsegs) &&
             !find_section(&im, "__DATA_CONST", lists[li], &listoff, &listsize, segs, &nsegs))
             continue;
+        /* The section's own offset/size are file data mi_open never
+         * validated -- a section can legitimately claim a range past the
+         * file (or one that overflows the addition), and this tool used to
+         * index straight into it. Skip this list rather than crash; see
+         * tests/leaf-tool-crashes.sh's oobsection fixture. */
+        if (!in_bounds(fsize, listoff, listsize)) continue;
 
         for (uint64_t i = 0; i + 8 <= listsize; i += 8) {
             uint64_t cls_va = *(uint64_t *)(im.buf + listoff + i);
             if (!cls_va) continue;
-            changed += retag(im.buf, segs, nsegs, cls_va);
+            changed += retag(im.buf, fsize, segs, nsegs, cls_va);
             /* The metaclass carries the same tag and is reached via isa. */
             int64_t co = file_off(segs, nsegs, cls_va);
-            if (co >= 0) {
+            if (co >= 0 && in_bounds(fsize, (uint64_t)co + CLASS_ISA_OFFSET, sizeof(uint64_t))) {
                 uint64_t meta_va = *(uint64_t *)(im.buf + co + CLASS_ISA_OFFSET);
-                if (meta_va) changed += retag(im.buf, segs, nsegs, meta_va);
+                if (meta_va) changed += retag(im.buf, fsize, segs, nsegs, meta_va);
             }
         }
     }

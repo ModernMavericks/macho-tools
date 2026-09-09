@@ -32,6 +32,7 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <mach-o/loader.h>
 
 #include "image.h"
@@ -86,6 +87,8 @@ int main(int argc, char **argv) {
      * split as change_dylib and patch_macho use. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
+    struct stat st0;
+    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return 1; }
 
     mi_image im;
     if (mi_open(path, &im) != 0) {
@@ -93,6 +96,22 @@ int main(int argc, char **argv) {
         close(fd);
         return 1;
     }
+
+    /* mi_open reads `path` through its own, separate O_RDONLY descriptor, so
+     * the bytes just validated and the fd this tool writes back through
+     * (opened above) are two different opens of whatever `path` named at
+     * each moment -- see add_version_min.c's identical check for the full
+     * reasoning. Refuse rather than write the newly-validated bytes into a
+     * possibly different (or vanished) inode than the one that was opened. */
+    struct stat st1;
+    if (stat(path, &st1) != 0 ||
+        st1.st_dev != st0.st_dev || st1.st_ino != st0.st_ino) {
+        fprintf(stderr, "%s: changed underneath us between open and validation; refusing\n", path);
+        mi_close(&im);
+        close(fd);
+        return 1;
+    }
+
     size_t fsize = im.size;
 
     struct rs_ctx ctx = { oldname, newname, 0 };

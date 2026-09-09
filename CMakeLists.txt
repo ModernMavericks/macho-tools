@@ -166,3 +166,12 @@ add_test(NAME characterize
 # same way chained_fixups passes patch_macho's.
 add_test(NAME cli_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:macho9>")
+
+# Regression coverage for two heap-overflow crashes a code review found in
+# add_version_min and retag_swift_classes after Task 1 converted them onto
+# src/image.h -- mi_open validates load commands, not section file ranges or
+# addresses derived from them, so a fixture can pass mi_open cleanly and
+# still contain an out-of-bounds reference. See the script's own header for
+# what each fixture is shaped to trigger.
+add_test(NAME leaf_tool_crashes
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:add_version_min>")
