@@ -182,7 +182,24 @@ fi
 # ============================================================================
 # minos
 # ============================================================================
-build_main "$T/minos_fixture"
+# build_main's FIXTURE_FLAGS (-mmacosx-version-min=10.9) makes the linker
+# emit LC_VERSION_MIN_MACOSX itself -- so a fixture built that way already
+# HAS the load command macho9 minos is supposed to add, and the "happy
+# path" below would pass even with cmd_minos's body replaced by `return 0`.
+# -Wl,-no_version_load_command suppresses that (verified: no
+# LC_VERSION_MIN_MACOSX and no LC_BUILD_VERSION either, so it isn't sneaking
+# back in under the newer spelling), so this fixture genuinely lacks the
+# load command before the tool runs, and the "present after" assertion
+# actually proves add_version_min's delegation did something.
+"$CC" -O2 $FIXTURE_FLAGS -Wl,-no_version_load_command \
+    "$T/main.c" "$T/liba.dylib" -o "$T/minos_fixture"
+before_minos=$("$MACHO9" info "$T/minos_fixture")
+if echo "$before_minos" | grep -qE "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION"; then
+    bad "minos: precondition" "fixture already carries a platform/version-min load command"
+else
+    ok "minos: fixture genuinely has no LC_VERSION_MIN_MACOSX before"
+fi
+
 "$MACHO9" minos "$T/minos_fixture" 10.9 >"$T/minos.out" || bad "minos: exit" "$(cat "$T/minos.out")"
 minos_info=$("$MACHO9" info "$T/minos_fixture")
 echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos: LC_VERSION_MIN_MACOSX present after" \
@@ -292,6 +309,77 @@ echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: --allow-grow result
     || bad "dylib: --allow-grow result" "long path not found"
 
 # ============================================================================
+# dylib -append / -insert / -delete / -reexport
+#
+# -replace and --allow-grow (above) exercise only two of change_dylib's
+# translation targets. The mapping itself -- macho9's flag to change_dylib's
+# -- is the only new logic dylib/rpath add, so every op needs its own
+# observable check, not just an exit code: a swapped mapping (say -append
+# landing on change_dylib's -insert) would ship silently and INVERT dylib
+# initialization order, which is the whole reason -insert exists (see
+# docs/PROPOSAL.md "Why these names"). None of these dylibs need to exist on
+# disk -- only the load-command rewrite is being checked here, via `macho9
+# info`, never by running the binary.
+# ============================================================================
+spare="@loader_path/libspare.dylib"
+
+# -append places the new dependency LAST -- after every existing one,
+# INCLUDING the implicit libSystem.B.dylib the linker adds on its own, which
+# is why this checks "highest ordinal in the file" rather than a hardcoded
+# number (build_main's plain main.c still needs libSystem for _start/crt,
+# so liba=1, libSystem=2, and spare correctly lands at 3, not 2).
+build_main "$T/dylib_append_fixture"
+before_append_info=$("$MACHO9" info "$T/dylib_append_fixture")
+last_ordinal_before=$(echo "$before_append_info" | grep -o "ordinal=[0-9]*" | sed 's/ordinal=//' | sort -n | tail -1)
+"$MACHO9" dylib "$T/dylib_append_fixture" -append "$spare" \
+    >"$T/dylib_append.out" || bad "dylib: -append exit" "$(cat "$T/dylib_append.out")"
+append_info=$("$MACHO9" info "$T/dylib_append_fixture")
+expect_ordinal=$((last_ordinal_before + 1))
+echo "$append_info" | grep -qF "ordinal=$expect_ordinal path=$spare" \
+    && ok "dylib: -append put the new dep last (ordinal $expect_ordinal)" \
+    || bad "dylib: -append" "expected ordinal=$expect_ordinal path=$spare in: $append_info"
+echo "$append_info" | grep -qF "ordinal=1 path=@loader_path/liba.dylib" && ok "dylib: -append left liba at ordinal 1" \
+    || bad "dylib: -append (liba)" "expected liba still at ordinal 1 in: $append_info"
+
+# -insert places the new dependency FIRST (ordinal 1), pushing liba to 2 --
+# the mapping that specifically must not become -append, since load order is
+# dyld INITIALIZATION order (docs/PROPOSAL.md).
+build_main "$T/dylib_insert_fixture"
+"$MACHO9" dylib "$T/dylib_insert_fixture" -insert "$spare" \
+    >"$T/dylib_insert.out" || bad "dylib: -insert exit" "$(cat "$T/dylib_insert.out")"
+insert_info=$("$MACHO9" info "$T/dylib_insert_fixture")
+echo "$insert_info" | grep -qF "ordinal=1 path=$spare" && ok "dylib: -insert put the new dep at ordinal 1 (first)" \
+    || bad "dylib: -insert" "expected ordinal=1 path=$spare in: $insert_info"
+echo "$insert_info" | grep -qF "ordinal=2 path=@loader_path/liba.dylib" && ok "dylib: -insert renumbered liba to ordinal 2" \
+    || bad "dylib: -insert (liba)" "expected liba renumbered to ordinal 2 in: $insert_info"
+
+# -delete removes the dependency and renumbers survivors; reuses the
+# -append fixture above (liba=1, spare=2) so deleting the UNUSED spare
+# (never called, so nothing binds to it -- change_dylib refuses a -delete
+# that would orphan a bound symbol) proves removal without disturbing liba.
+"$MACHO9" dylib "$T/dylib_append_fixture" -delete "$spare" \
+    >"$T/dylib_delete.out" || bad "dylib: -delete exit" "$(cat "$T/dylib_delete.out")"
+delete_info=$("$MACHO9" info "$T/dylib_append_fixture")
+if echo "$delete_info" | grep -qF "path=$spare"; then
+    bad "dylib: -delete" "spare still present in: $delete_info"
+else
+    ok "dylib: -delete removed the spare dependency"
+fi
+echo "$delete_info" | grep -qF "ordinal=1 path=@loader_path/liba.dylib" && ok "dylib: -delete left liba at ordinal 1" \
+    || bad "dylib: -delete (liba)" "expected liba still at ordinal 1 in: $delete_info"
+
+# -reexport promotes LC_LOAD_DYLIB -> LC_REEXPORT_DYLIB for an EXISTING
+# dependency; check the load-command KIND changed, not just that the path
+# is still there (it would be, for -replace too).
+build_main "$T/dylib_reexport_fixture"
+"$MACHO9" dylib "$T/dylib_reexport_fixture" -reexport "@loader_path/liba.dylib" \
+    >"$T/dylib_reexport.out" || bad "dylib: -reexport exit" "$(cat "$T/dylib_reexport.out")"
+reexport_info=$("$MACHO9" info "$T/dylib_reexport_fixture")
+echo "$reexport_info" | grep -A1 "LC_REEXPORT_DYLIB" | grep -qF "path=@loader_path/liba.dylib" \
+    && ok "dylib: -reexport promoted liba to LC_REEXPORT_DYLIB" \
+    || bad "dylib: -reexport" "no LC_REEXPORT_DYLIB naming liba in: $reexport_info"
+
+# ============================================================================
 # rpath -append
 # ============================================================================
 build_main "$T/rpath_fixture" "/tmp/cli_test_original_rpath"
@@ -305,6 +393,32 @@ echo "$after_rp" | grep -q "rpath=/tmp/cli_test_original_rpath" && \
 echo "$after_rp" | grep -q "rpath=/tmp/cli_test_appended_rpath" && \
     ok "rpath: -append kept the original and added the new one" || \
     bad "rpath: -append" "expected both rpaths in: $after_rp"
+
+# -replace rewrites a search path in place; -delete removes one outright --
+# neither was exercised above (only -append was), and each maps to a
+# distinct change_dylib flag (-change-rpath / -delete-rpath) that a swapped
+# mapping could silently confuse with the dylib family's -change/-delete.
+build_main "$T/rpath_replace_fixture" "/tmp/cli_test_replace_before"
+"$MACHO9" rpath "$T/rpath_replace_fixture" -replace "/tmp/cli_test_replace_before" "/tmp/cli_test_replace_after" \
+    >"$T/rpath_replace.out" || bad "rpath: -replace exit" "$(cat "$T/rpath_replace.out")"
+replace_info=$("$MACHO9" info "$T/rpath_replace_fixture")
+if echo "$replace_info" | grep -q "rpath=/tmp/cli_test_replace_before"; then
+    bad "rpath: -replace" "old rpath still present in: $replace_info"
+else
+    ok "rpath: -replace removed the old search path"
+fi
+echo "$replace_info" | grep -q "rpath=/tmp/cli_test_replace_after" && ok "rpath: -replace added the new search path" \
+    || bad "rpath: -replace (new)" "new rpath not found in: $replace_info"
+
+build_main "$T/rpath_delete_fixture" "/tmp/cli_test_delete_me"
+"$MACHO9" rpath "$T/rpath_delete_fixture" -delete "/tmp/cli_test_delete_me" \
+    >"$T/rpath_delete.out" || bad "rpath: -delete exit" "$(cat "$T/rpath_delete.out")"
+delete_rp_info=$("$MACHO9" info "$T/rpath_delete_fixture")
+if echo "$delete_rp_info" | grep -q "^  rpath="; then
+    bad "rpath: -delete" "an rpath is still present in: $delete_rp_info"
+else
+    ok "rpath: -delete removed the search path"
+fi
 
 # rpath -insert is a documented gap in this build, not a silent downgrade.
 if "$MACHO9" rpath "$T/rpath_fixture" -insert "/tmp/cli_test_inserted_rpath" \

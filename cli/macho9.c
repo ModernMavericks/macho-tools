@@ -106,16 +106,41 @@ static const struct { const char *kind; uint32_t cmd; } LC_KINDS[] = {
  * `dylib` lists all five brief ops; `rpath` deliberately omits `insert` --
  * change_dylib has no rpath-insert to delegate to (docs/PROPOSAL.md calls
  * rpath -insert "a new capability" change_dylib never had), so this build
- * does not claim it. */
+ * does not claim it.
+ *
+ * dylib/rpath/lc/minos all depend on a sibling binary being reachable next
+ * to macho9 (see sibling_path() below) -- if it isn't, every one of them
+ * fails at runtime no matter what this build's own code can do. Advertising
+ * them unconditionally would violate this function's own contract ("never
+ * advertise one that errors out") the moment macho9 is packaged or copied
+ * apart from change_dylib/add_version_min: a wrapper that trusts the probe
+ * would see `verb dylib`, use it, and watch every rewrite fail -- exactly
+ * the lockstep failure --capabilities exists to prevent. So each of those
+ * four is gated on the sibling it needs actually being there and
+ * executable, checked fresh on every call (cheap: one stat). */
+static int sibling_path(const char *name, char *out, size_t outsz);
+
+static int sibling_exists(const char *name) {
+    char path[PATH_MAX];
+    if (sibling_path(name, path, sizeof(path)) != 0) return 0;
+    return access(path, X_OK) == 0;
+}
+
 static int print_capabilities(void) {
+    int have_change_dylib = sibling_exists("change_dylib");
+    int have_add_version_min = sibling_exists("add_version_min");
+
     printf("format 1\n");
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
-    printf("verb minos versions=10.9\n");
-    printf("verb lc ops=delete kinds=uuid,codesig,source-version,build-version,code-sign-drs\n");
-    printf("verb dylib ops=replace,delete,append,insert,reexport flags=allow-grow\n");
-    printf("verb rpath ops=replace,delete,append flags=allow-grow\n");
+    if (have_add_version_min)
+        printf("verb minos versions=10.9\n");
+    if (have_change_dylib) {
+        printf("verb lc ops=delete kinds=uuid,codesig,source-version,build-version,code-sign-drs\n");
+        printf("verb dylib ops=replace,delete,append,insert,reexport flags=allow-grow\n");
+        printf("verb rpath ops=replace,delete,append flags=allow-grow\n");
+    }
     return 0;
 }
 
@@ -443,6 +468,13 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     int k = 0;
     child[k++] = NULL;             /* argv[0]: filled in by run_sibling */
     child[k++] = (char *)path;
+    /* Counts actual -replace/-delete/-append/-insert/-reexport ops only --
+     * NOT --allow-grow. `k` alone can't distinguish "no ops" from "only
+     * --allow-grow" (both leave k > 2), which previously let
+     * `dylib FILE --allow-grow` with nothing else fall through to
+     * change_dylib and print ITS usage -- leaking the exact -change/-add/
+     * -strip-lc spellings this grammar deliberately doesn't offer. */
+    int nops = 0;
 
     for (int i = 3; i < argc; ) {
         const char *tok = argv[i];
@@ -453,14 +485,17 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
             child[k++] = is_rpath ? "-change-rpath" : "-change";
             child[k++] = argv[i + 1];
             child[k++] = argv[i + 2];
+            nops++;
             i += 3;
         } else if (strcmp(tok, "-delete") == 0 && i + 1 < argc) {
             child[k++] = is_rpath ? "-delete-rpath" : "-delete";
             child[k++] = argv[i + 1];
+            nops++;
             i += 2;
         } else if (strcmp(tok, "-append") == 0 && i + 1 < argc) {
             child[k++] = is_rpath ? "-add-rpath" : "-add";
             child[k++] = argv[i + 1];
+            nops++;
             i += 2;
         } else if (strcmp(tok, "-insert") == 0 && i + 1 < argc) {
             if (is_rpath) {
@@ -473,10 +508,12 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
             }
             child[k++] = "-insert";
             child[k++] = argv[i + 1];
+            nops++;
             i += 2;
         } else if (!is_rpath && strcmp(tok, "-reexport") == 0 && i + 1 < argc) {
             child[k++] = "-reexport";
             child[k++] = argv[i + 1];
+            nops++;
             i += 2;
         } else {
             fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
@@ -485,7 +522,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
             return 1;
         }
     }
-    if (k == 2) {
+    if (nops == 0) {
         fprintf(stderr, "macho9 %s: need at least one operation\n", is_rpath ? "rpath" : "dylib");
         free(child);
         return 1;
