@@ -688,6 +688,51 @@ static void test_grow_refuses_unknown_section_type(void) {
     check_refused_unchanged("an unclassified section type", MG_T_ODDSECT);
 }
 
+/* ---- 32-bit stays refused, on purpose ----
+ * mg_grow_header's image-base trick and every helper it calls (mg_first_sect_off,
+ * mg_collect/mg_verify, mg_classify, mg_unwind_walk, mg_init_offsets_pass, and
+ * the segment-patching loop inside mg_grow_header itself) walk LC_SEGMENT_64 and
+ * struct section_64 -- roughly seven places that would each need a parallel
+ * LC_SEGMENT/struct section path, in a file whose correctness already rests on
+ * ULEB-precise, snapshot-verified arithmetic (see mg_verify/mg_plausible above).
+ * That is a lot of new surface, in the riskiest possible place, for a format
+ * this toolkit's own image.h already drew the same line against ("32-bit and
+ * fat are known gaps, filed as Task 5") -- and every one of the seven rewriters
+ * in this repo (fix_macho, patch_macho, ...) already refuses non-64-bit input
+ * the same way, at the very first header check. So this stays a refusal: the
+ * check at the top of mg_grow_header already catches it (magic != MH_MAGIC_64)
+ * before anything is touched, this test just makes that refusal a pinned,
+ * regression-tested fact rather than an accidental side effect of the 64-bit-
+ * only design. See docs/prior-art.md for the write-up.
+ *
+ * Deliberately does NOT reuse build_image/check_refused_unchanged: those build
+ * a mach_header_64-shaped image, and the whole point here is a buffer whose
+ * FIRST four bytes are the 32-bit MH_MAGIC, not MH_MAGIC_64. */
+static void test_grow_refuses_32bit_mach_header(void) {
+    const size_t fsize = 4096;
+    uint8_t *buf = (uint8_t *)calloc(1, fsize);
+    struct mach_header *h = (struct mach_header *)buf;
+    h->magic = MH_MAGIC;
+    h->cputype = CPU_TYPE_I386;
+    h->cpusubtype = CPU_SUBTYPE_I386_ALL;
+    h->filetype = MH_EXECUTE;
+    h->ncmds = 0;
+    h->sizeofcmds = 0;
+    h->flags = MH_PIE;
+
+    uint8_t *before = (uint8_t *)malloc(fsize);
+    memcpy(before, buf, fsize);
+
+    size_t got_fsize = fsize;
+    int r = mg_grow_header(&buf, &got_fsize, 0x1000);
+    CHECK(r == -1, "mg_grow_header refuses a 32-bit Mach-O (got %d)", r);
+    CHECK(got_fsize == fsize, "size unchanged on refusal (got %zu want %zu)", got_fsize, fsize);
+    if (got_fsize == fsize)
+        CHECK(memcmp(before, buf, fsize) == 0, "buffer byte-identical on refusal");
+    free(before);
+    free(buf);
+}
+
 /* ---- plausibility: verification without a "before" ----
  * The invariant check is strictly stronger, but it needs a snapshot taken before
  * the transform -- which the wrapper cannot have, because it verifies the end
@@ -745,6 +790,7 @@ int main(void) {
     test_grow_refuses_unknown_load_command();
     test_grow_refuses_linker_optimization_hint();
     test_grow_refuses_unknown_section_type();
+    test_grow_refuses_32bit_mach_header();
     test_plausible_accepts_a_well_formed_image();
     test_plausible_rejects_an_offset_that_names_no_function();
     test_plausible_rejects_an_unrebased_initializer();

@@ -821,9 +821,27 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * lowering the base (every address shifts by the same amount) is a no-op at
      * load time. A non-PIE image, or a dylib/bundle (no __PAGEZERO), would
      * require fixing up absolute pointers — which this tool deliberately does
-     * not do. Refuse loudly rather than silently corrupt. */
+     * not do. Refuse loudly rather than silently corrupt.
+     *
+     * 32-bit stays refused here too, on purpose (toolkit plan Task 5, gap 2):
+     * this function and everything it calls -- mg_first_sect_off, mg_collect
+     * (which mg_snapshot_take/mg_verify use), mg_classify, mg_unwind_walk,
+     * mg_init_offsets_pass, and the LC_SEGMENT_64/section_64 patching loop
+     * below -- walk the 64-bit segment/section structs. Supporting 32-bit
+     * would mean adding a parallel LC_SEGMENT/struct section path to each of
+     * those roughly seven places, in the one file whose correctness already
+     * depends on ULEB-exact, snapshot-verified arithmetic (mg_verify,
+     * mg_plausible). That is a lot of new surface in the highest-risk part of
+     * this toolkit, for a format none of the other six rewriters here support
+     * either (src/image.h draws the identical line, deliberately, for the
+     * same reason) and that Apple stopped shipping newly linked 10.9-era
+     * binaries in years before this toolkit existed. See
+     * macho_grow_test.c's test_grow_refuses_32bit_mach_header for the pinned
+     * regression test and docs/prior-art.md for the fuller write-up. */
     if (hdr->magic != MH_MAGIC_64) {
-        fprintf(stderr, "macho_grow: not a 64-bit Mach-O (magic=0x%x)\n", hdr->magic);
+        fprintf(stderr, "macho_grow: not a 64-bit Mach-O (magic=0x%x); 32-bit is a "
+                        "deliberately unsupported format, not a bug -- see the comment "
+                        "above this check\n", hdr->magic);
         return -1;
     }
     if (hdr->filetype != MH_EXECUTE) {
