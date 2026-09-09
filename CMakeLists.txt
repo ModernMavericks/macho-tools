@@ -68,10 +68,14 @@ set(MACHO_TOOLS
 
 foreach(tool IN LISTS MACHO_TOOLS)
   # compat/: these six predate macho9 and are kept, under their original
-  # names, only because mavericksforever.com/claude/install.sh builds
-  # patch_macho, change_dylib and add_version_min BY THOSE NAMES -- a real
-  # external consumer of this repo. See compat/README.md. Only the source
-  # path moved (Task 5, "empty the root"); the installed binary name did not.
+  # names, because mavericksforever.com/claude/install.sh builds patch_macho,
+  # change_dylib and add_version_min BY THOSE NAMES. TODAY it builds them
+  # from Wowfunhappy/Mavericks-Porting-Resources, not from this repo
+  # (PROVENANCE.md), so renaming them here breaks nothing live right now --
+  # matching names is about not breaking the adoption path (this repo's own
+  # PRs upstream, or mavericksforever.com switching install.sh to build from
+  # here) once it happens. See compat/README.md. Only the source path moved
+  # (Task 5, "empty the root"); the installed binary name did not.
   add_executable(${tool} compat/${tool}.c)
   target_compile_options(${tool} PRIVATE -O2 -Wall)
   # The compat guard is the in-CI equivalence proof: no 10.9 runner validates
@@ -148,7 +152,7 @@ add_test(NAME image_test COMMAND image_test
 
 # Hermetic tests for src/trie.c's export-trie rebuild (Task 5 gap 1): decode,
 # shift, re-serialize, all against hand-built and hand-computed trie byte
-# buffers -- no fixture file needed, same reasoning as macho_grow_test.
+# buffers -- no fixture file needed, same reasoning as grow_test.
 add_executable(trie_test tests/trie_test.c)
 target_compile_options(trie_test PRIVATE -O2 -Wall)
 target_link_libraries(trie_test PRIVATE macho9core)

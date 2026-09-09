@@ -24,6 +24,9 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
     int nold = 0, nnew = base;
     const uint8_t *p = buf + sizeof(struct mach_header_64);
 
+    /* Walks buf/ncmds directly, not via mi_each_lc: buf is the raw pre-rewrite
+     * buffer change_dylib.c owns and passes straight through, not an
+     * mi_image, so there is nothing here for mi_each_lc to iterate. */
     for (uint32_t i = 0; i < ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)p;
         /* LC_LAZY_LOAD_DYLIB (0x20, the legacy -lazy_library form) carries a
@@ -78,6 +81,10 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
 int mo_count_ordinal_lcs(const uint8_t *lcs, uint32_t ncmds) {
     const uint8_t *p = lcs;
     int count = 0;
+    /* Walks lcs/ncmds directly, not via mi_each_lc: lcs is a freshly-emitted,
+     * headerless load-command table (e.g. build_lcs's own scratch output,
+     * see ordinals.h), not preceded by a mach_header_64 -- so there is no
+     * mi_image to wrap it in. */
     for (uint32_t i = 0; i < ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)p;
         if (mo_is_ordinal_lc(lc->cmd)) count++;
@@ -252,6 +259,12 @@ int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose) {
     struct dyld_info_command *di = NULL;
     int chained = 0;
 
+    /* Walks hdr->ncmds directly, not via mi_each_lc: a preliminary scan to
+     * locate LC_SYMTAB/LC_DYLD_INFO, over the same raw buf/size the caller
+     * owns rather than an mi_image (same reason as mo_map_build above) --
+     * and unlike that one, this walk's own buffer IS mutated, just not by
+     * this loop: the nsyms/bind-stream loops further down in this same
+     * function overwrite n_desc/ordinal bytes in buf once st/di are found. */
     for (uint32_t i = 0; i < hdr->ncmds; i++) {
         struct load_command *lc = (struct load_command *)lcp;
         if (lc->cmd == LC_SYMTAB) st = (struct symtab_command *)lcp;

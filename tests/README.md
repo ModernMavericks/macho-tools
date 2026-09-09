@@ -1,16 +1,19 @@
 # tests
 
-Seven suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
+Ten suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 
 | test | what it proves |
 |---|---|
-| `macho_grow_test` | hermetic: the grow, every base-relative re-baser, `mg_verify`, `mg_plausible`, against synthetic images |
+| `grow_test` | hermetic: the grow, every base-relative re-baser, `mg_verify`, `mg_plausible`, against synthetic images |
 | `image_test` | walks `tests/fixture.macho`, a real 10.9-built executable, against `src/image.c`'s reader — exercised against a binary a linker actually emitted, not one this test invented |
-| `trie_test` | hermetic: `src/trie.c`'s export-trie rebuild (decode, shift, re-serialize) against hand-built and hand-computed trie byte buffers — no fixture file needed, same reasoning as `macho_grow_test` |
+| `trie_test` | hermetic: `src/trie.c`'s export-trie rebuild (decode, shift, re-serialize) against hand-built and hand-computed trie byte buffers — no fixture file needed, same reasoning as `grow_test` |
+| `linkedit_test` | hermetic: `src/linkedit.c`'s `ml_bump_all` (the `__LINKEDIT` offset-bump table) against a synthetic image built by hand via `mi_wrap` — no fixture file needed, same reasoning as `trie_test` |
 | `change_dylib_test` | builds real dylibs, rewrites a real executable, and **runs it** — a wrong library ordinal shows up as a dyld failure, not a silent mis-binding. Also covers `src/fat.c`'s fat-arch validation (both read-side, via `fix_macho`, and write-side) and `write_atomic`'s symlink/hard-link/ordinary-file handling |
 | `chained_fixups` | `patch_macho`'s chained-fixups conversion, against a fixture only a modern linker can produce. `SKIP`s (exit 77) on a host that can't emit chained fixups — 10.9 included — so it's real coverage on a modern host and an honest no-op on the target |
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
 | `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements |
+| `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally |
+| `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
 ## `macho9`'s exit codes
 
@@ -159,8 +162,11 @@ reproducing the failure in new shapes:
 - **A mutation test proves nothing if the rebuild silently didn't happen.**
   Mutation testing (deliberately break the code, confirm the test you're
   trusting actually fails, then revert) is this project's primary technique
-  for proving a test discriminates — used throughout `macho_grow_test.c`,
-  `trie_test.c`, and `linkedit_test.c`'s own commit history. It depends
+  for proving a test discriminates — used throughout `tests/grow_test.c`
+  (formerly `macho_grow_test.c`, before Task 3 of the toolkit convergence
+  plan moved `macho_grow.h` to `src/grow.c`/`src/grow.h` and this test with
+  it), `tests/trie_test.c`, and `tests/linkedit_test.c`'s own commit
+  history. It depends
   entirely on the binary under test actually reflecting the source edit.
   On at least one host, `cmake --build` after a one-line source edit
   produced IDENTICAL results for two different mutations — because the

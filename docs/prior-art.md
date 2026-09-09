@@ -49,7 +49,7 @@ All three are resolved:
   arithmetic. `src/image.h` already draws the identical 64-bit-only line, and
   every one of this toolkit's seven rewriters already refuses 32-bit input at
   its very first header check — this is that same boundary, made an explicit,
-  regression-tested fact (`macho_grow_test.c`'s
+  regression-tested fact (`tests/grow_test.c`'s
   `test_grow_refuses_32bit_mach_header`, `tests/image_test.c`'s
   `test_wrap_refuses_32bit_mach_header`) instead of an incidental side effect.
 - **Export trie rebuild**: closed. When an address's ULEB would widen under an
@@ -60,7 +60,7 @@ All three are resolved:
   `export_size`, it's patched in place, same as before; if it doesn't,
   `__LINKEDIT` is grown to hold it (appended at its current end, which the
   code first confirms really is the end of the file — refusing rather than
-  guess if it isn't). See `macho_grow_test.c`'s
+  guess if it isn't). See `tests/grow_test.c`'s
   `test_grow_rebuilds_widening_export_trie` (a fixture built specifically to
   widen, per this task's own instruction to construct one rather than hunt for
   one) and `tests/trie_test.c` for the module's own hermetic tests. The
