@@ -54,7 +54,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c)
+add_library(macho9core STATIC src/uleb.c src/image.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -91,6 +91,16 @@ add_executable(macho_grow_test macho_grow_test.c)
 target_compile_options(macho_grow_test PRIVATE -O2 -Wno-unused-function)
 target_link_libraries(macho_grow_test PRIVATE macho9core)
 add_test(NAME macho_grow_test COMMAND macho_grow_test)
+
+# Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
+# exercised against a binary a linker actually emitted rather than one this test
+# invented. WORKING_DIRECTORY is the source dir because the fixture path is
+# relative -- same reason change_dylib_test needs it.
+add_executable(image_test tests/image_test.c)
+target_compile_options(image_test PRIVATE -O2 -Wall)
+target_link_libraries(image_test PRIVATE macho9core)
+add_test(NAME image_test COMMAND image_test
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Needs the
