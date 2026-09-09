@@ -45,16 +45,59 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
     return 0;
 }
 
-int mo_map_validate(const mo_map *map, int max_new) {
+int mo_count_ordinal_lcs(const uint8_t *lcs, uint32_t ncmds) {
+    const uint8_t *p = lcs;
+    int count = 0;
+    for (uint32_t i = 0; i < ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)p;
+        if (mo_is_ordinal_lc(lc->cmd)) count++;
+        p += lc->cmdsize;
+    }
+    return count;
+}
+
+int mo_map_validate(const mo_map *map, int base, int max_new, int nadds,
+                     const uint8_t *new_lcs, uint32_t new_ncmds) {
     if (map->n < 0 || map->n > MO_MAX_DYLIBS) {
         fprintf(stderr, "ERROR: ordinal map: n=%d out of range\n", map->n);
         return -1;
     }
+
+    /* Survivors must be exactly base+1, base+2, ... in the same order their
+     * old ordinals appear -- that is what "renumber by a single left-to-right
+     * pass" means. A gap, a repeat, or a value out of that sequence is proof
+     * the map didn't come from one such pass. */
+    int expect = base + 1, survivors = 0;
     for (int i = 1; i <= map->n; i++) {
         int v = map->old_to_new[i];
-        if (v < 0 || v > max_new) {
-            fprintf(stderr, "ERROR: ordinal map: old_to_new[%d]=%d out of "
-                            "range (max %d)\n", i, v, max_new);
+        if (v == 0) continue;
+        if (v != expect) {
+            fprintf(stderr, "ERROR: ordinal map: old_to_new[%d]=%d is not "
+                            "dense/increasing (expected %d)\n", i, v, expect);
+            return -1;
+        }
+        expect++;
+        survivors++;
+    }
+    if (expect - 1 != max_new) {
+        fprintf(stderr, "ERROR: ordinal map: %d survivors + base %d != "
+                        "max_new %d\n", survivors, base, max_new);
+        return -1;
+    }
+
+    /* Cross-check against what the caller's rewrite actually produced, when
+     * it's given one to check against. This is the check that catches the
+     * map and the emitted load-command table independently disagreeing about
+     * which dylib survived -- the historical bug class. */
+    if (new_lcs) {
+        int actual = mo_count_ordinal_lcs(new_lcs, new_ncmds);
+        int expected_total = max_new + nadds;
+        if (actual != expected_total) {
+            fprintf(stderr, "ERROR: ordinal map disagrees with the rewritten "
+                            "load commands: map implies %d ordinal-bearing "
+                            "dylibs (%d survivors + %d inserted + %d added), "
+                            "but the new table has %d\n",
+                    expected_total, survivors, base, nadds, actual);
             return -1;
         }
     }

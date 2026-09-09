@@ -161,6 +161,7 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
         uint32_t cmdsize = lc->cmdsize;
         uint32_t write_size = cmdsize;
         int matched = -1;
+        int deleted = 0;
 
         /* Dropping a command reclaims its bytes for the rest of the table.
          * Any __LINKEDIT payload it referenced simply stops being reachable;
@@ -192,15 +193,31 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
             placed_inserts = 1;
         }
 
-        if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB ||
-            lc->cmd == LC_ID_DYLIB || lc->cmd == LC_REEXPORT_DYLIB) {
+        /* mo_is_ordinal_lc() here (rather than a locally re-listed set) is
+         * what keeps this "which dylib LCs can be matched/renamed/deleted"
+         * set in sync with mo_map_build's "which dylib LCs carry an ordinal"
+         * set -- they used to disagree about LC_LOAD_UPWARD_DYLIB. LC_ID_DYLIB
+         * is added back in because it names the image itself: it has to be
+         * recognized as dylib-shaped so `dc`/`name` below are valid, but it's
+         * excluded from matching just below, same as before. */
+        if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
             const struct dylib_command *dc = (const struct dylib_command *)lcp;
             const char *name = (const char *)lcp + dc->dylib.name.offset;
             if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
                 for (int c = 0; c < nchanges; c++)
                     if (strcmp(name, changes[c].old_path) == 0) { matched = c; break; }
+                /* Deletion is decided by ord_is_deleted -- the SAME predicate
+                 * passed to mo_map_build below -- not by whichever `changes`
+                 * entry happens to match first. Without this, a path named
+                 * in both a -change and a -delete could be kept here while
+                 * mo_map_build's map (which scans every -delete, not just the
+                 * first match) marks it gone: exactly the "renumberer and
+                 * emitter disagree" bug this module exists to rule out. A
+                 * -delete anywhere in the arguments now always wins, no
+                 * matter where it falls relative to a conflicting -change. */
+                deleted = ord_is_deleted(name, &(struct ord_delete_ctx){ changes, nchanges });
             }
-            if (matched >= 0 && changes[matched].new_path != NULL) {
+            if (!deleted && matched >= 0 && changes[matched].new_path != NULL) {
                 size_t base = dc->dylib.name.offset;
                 size_t new_len = strlen(changes[matched].new_path) + 1;
                 uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
@@ -244,7 +261,7 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
                 new_off += write_size;
             }
             mods++;
-        } else if (matched >= 0 && changes[matched].new_path == NULL) {
+        } else if (deleted) {
             if (verbose) printf("  Delete [%u bytes]: %s\n", cmdsize, changes[matched].old_path);
             ncmds--;
             mods++;
@@ -462,10 +479,6 @@ int main(int argc, char **argv) {
     /* A survivor count below nold means at least one dylib was deleted; that
      * and any -insert are the only reasons a rewrite needs to renumber. */
     int needs_renumber = (ninserts > 0) || (nnew - ninserts < nold);
-    if (mo_map_validate(&omap, nnew) != 0) {
-        fprintf(stderr, "ERROR: internal: ordinal map failed validation\n");
-        return 1;
-    }
     if (nnew + nadds > MO_MAX_DYLIBS) {
         fprintf(stderr, "ERROR: result would exceed %d dylibs\n", MO_MAX_DYLIBS);
         return 1;
@@ -514,6 +527,17 @@ int main(int argc, char **argv) {
         build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
                   rchanges, nrchanges, radds, nradds,
                   new_lcs, &new_off, &new_ncmds, &modifications, 0);
+    }
+
+    /* Check the map against what build_lcs actually emitted -- not just
+     * against its own arithmetic -- before committing anything. This is the
+     * cross-check that catches the map and the load-command rewrite having
+     * independently disagreed about which dylib survived, which the map's
+     * own internal consistency (checked inside mo_map_build) cannot: that
+     * only proves the map is self-consistent, not that it matches reality. */
+    if (mo_map_validate(&omap, ninserts, nnew, nadds, new_lcs, new_ncmds) != 0) {
+        fprintf(stderr, "ERROR: %s left unmodified\n", path);
+        return 1;
     }
 
     /* Commit: zero the whole LC area, write the new table, fix up the header. */

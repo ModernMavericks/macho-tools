@@ -152,7 +152,111 @@ else
     bad "-delete silent rebind" "got '$out' — bound to the wrong dylib"
 fi
 
-# --- 6. more operations than the option arrays hold must be refused ----------
+# --- 7. a path both -change'd and -delete'd in one invocation ----------------
+# Regression test for a Task 3 review finding: build_lcs used to decide
+# deletion by "the FIRST `changes[]` entry matching this path has new_path ==
+# NULL", while the ordinal map (mo_map_build, via ord_is_deleted) decided by
+# "ANY entry matching this path has new_path == NULL". Naming libspare in both
+# a -change and a -delete made the two disagree -- the load command survived
+# (renamed) while the map marked it gone -- and every ordinal after it in the
+# binary silently shifted by one. The tool exited 0 and wrote a binary dyld
+# refused to load ("Symbol not found: dyld_stub_binder").
+#
+# Chosen behaviour: -delete wins, unconditionally, regardless of where it
+# falls relative to a conflicting -change or -reexport. Refusing outright
+# would also close the disagreement, but "delete wins" is what falls out of
+# unifying on ord_is_deleted's ANY-match semantics (the fix build_lcs and
+# mo_map_build now share), needs no new argument-parsing validation, and
+# matches this tool's existing stance that -delete is the more definitive of
+# the two operations. The point of the test is not which policy was chosen --
+# it's that build_lcs and the ordinal map now agree, so the result is a
+# binary that actually runs.
+# ordinals as linked: 1=libspare, 2=liba, 3=libb (same shape as case 2, so
+# the delete side of this also renumbers real survivors, not just no-ops).
+"$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libspare.dylib" "$T/liba.dylib" "$T/libb.dylib" \
+    -o "$T/main_conflict"
+cp "$T/libspare.dylib" "$T/libspare_renamed.dylib"
+"$T/change_dylib" "$T/main_conflict" \
+    -change "@loader_path/libspare.dylib" "@loader_path/libspare_renamed.dylib" \
+    -delete "@loader_path/libspare.dylib" >/dev/null 2>&1
+rc=$?
+deps=$(otool -L "$T/main_conflict")
+if [ $rc -eq 0 ] && ! echo "$deps" | grep -q libspare; then
+    if out=$(cd "$T" && ./main_conflict 2>&1) && [ "$out" = "33" ]; then
+        ok "-change and -delete of the same path: delete wins, still runs (33)"
+    else
+        bad "-change+-delete conflict" "tool accepted it but the binary is broken: '$out'"
+    fi
+elif [ $rc -eq 0 ]; then
+    bad "-change+-delete conflict" "tool exited 0 but kept libspare: $deps"
+else
+    bad "-change+-delete conflict" "tool refused (exit $rc); chosen policy is delete-wins, not refuse"
+fi
+
+# --- 8. -delete of the dylib ITSELF named by an LC_LOAD_UPWARD_DYLIB --------
+# Regression test for the companion review finding: mo_is_ordinal_lc (which
+# the ordinal map is built from) counts LC_LOAD_UPWARD_DYLIB, but build_lcs's
+# dylib-matching block used to omit it from the set it can match/delete/rename.
+# So -delete naming an upward dylib used to map it to 0 in the map while its
+# load command survived untouched in the table -- same class of disagreement
+# as case 7 (map says gone, table says present), reached through a different
+# load-command kind. Confirmed against the pre-fix binary: it printed only one
+# "Delete" line (for libupd_spare; the upward one never matched), left
+# LC_LOAD_UPWARD_DYLIB in the table, and silently rebound dyld_stub_binder to
+# the survived-by-accident dylib instead of libSystem -- an in-range ordinal
+# naming the WRONG library, worse than a load-time refusal.
+#
+# LC_LOAD_UPWARD_DYLIB only appears on a dylib-to-dylib edge -- ld64 silently
+# drops the flag for an executable (confirmed separately) -- and only once the
+# referenced dylib already exists on disk for ld to open. This builds that for
+# real (libupd_a upward-depends on libupd_b, a plain sibling dylib), a genuine
+# linker-produced load command, not a fabricated one. Nothing in libupd_a
+# actually calls into libupd_b -- the upward edge is structural only here, so
+# deleting it cannot orphan a bound symbol and this case stays about ordinals,
+# not about the separate orphan-refusal behaviour case 3 already covers.
+cat > "$T/upd_a.c" <<'EOF'
+int upd_a_sym(void) { return 10; }
+EOF
+cat > "$T/upd_b.c" <<'EOF'
+int upd_b_sym(void) { return 42; }
+EOF
+"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/libupd_b.dylib" \
+    "$T/upd_b.c" -o "$T/libupd_b.dylib"
+"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/libupd_a.dylib" \
+    "$T/upd_a.c" "$T/libspare.dylib" -Xlinker -upward_library -Xlinker "$T/libupd_b.dylib" \
+    -o "$T/libupd_a.dylib"
+if ! otool -l "$T/libupd_a.dylib" | grep -q LC_LOAD_UPWARD_DYLIB; then
+    bad "upward fixture" "linker did not produce LC_LOAD_UPWARD_DYLIB; skipping case 8"
+else
+    # ordinals as linked: 1=libspare, 2=libupd_b (upward), 3=libSystem.
+    # Deleting both 1 and 2 must leave only libSystem, now ordinal 1, with
+    # dyld_stub_binder's nlist entry renumbered to match -- not left pointing
+    # at whatever ordinal 1 happens to be in the (possibly wrong) new table.
+    #
+    # This fixture's plain __TEXT layout doesn't satisfy mg_plausible's
+    # LC_FUNCTION_STARTS heuristic (macho_grow.h) on this host regardless of
+    # any rewrite -- confirmed by running mg_plausible on a copy of this file
+    # untouched by change_dylib, so it's not something the ordinal fix
+    # introduces. MACHO_NO_VERIFY=1 opts out of that unrelated gate so this
+    # case tests ordinal renumbering, not mg_plausible.
+    MACHO_NO_VERIFY=1 "$T/change_dylib" "$T/libupd_a.dylib" \
+        -delete "@loader_path/libspare.dylib" \
+        -delete "@loader_path/libupd_b.dylib" >/dev/null \
+        || bad "tool run" "change_dylib failed on the upward-dylib fixture"
+    deps=$(otool -L "$T/libupd_a.dylib")
+    if echo "$deps" | grep -Eq 'libspare|libupd_b'; then
+        bad "-delete upward" "libspare or libupd_b still present: $deps"
+    else
+        ok "-delete: an LC_LOAD_UPWARD_DYLIB is matched/deleted like any other dylib LC"
+    fi
+    binder=$(nm -m "$T/libupd_a.dylib" | grep dyld_stub_binder || true)
+    case "$binder" in
+        *libSystem*) ok "-delete: dyld_stub_binder's ordinal renumbered to libSystem" ;;
+        *) bad "-delete upward renumber" "dyld_stub_binder ordinal wrong: $binder" ;;
+    esac
+fi
+
+# --- 9. more operations than the option arrays hold must be refused ----------
 # Each option accumulates into a fixed-size array. Without a bounds check the
 # writes run off the end into whatever follows -- silently, because nothing
 # reads back a length. Only -strip-lc checked, so the rest could overflow.

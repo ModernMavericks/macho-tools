@@ -15,12 +15,22 @@
  * -delete once produced binaries dyld refused to load ("library ordinal (4)
  * too big") because the load-command rewrite and the ordinal renumbering
  * disagreed about which dylib had been removed. Building one mo_map and
- * having every ordinal-writing step apply exactly that map is meant to make
- * that class of bug unrepresentable, not merely to fix the one instance of
- * it: there is no second place left to independently get it wrong. (There
- * remains exactly one thing a caller must still get right: the `is_deleted`
- * predicate passed to mo_map_build must be the SAME test the caller uses to
- * decide which load commands to drop, so the two stay in lockstep.)
+ * having every ordinal-writing step apply exactly that map narrows that
+ * disagreement to exactly one place it can still happen, no longer two: this
+ * header does not decide, on its own, which dylib survives. mo_map_build
+ * takes an `is_deleted` callback instead of owning that decision, because the
+ * caller's own load-command rewrite has to make the identical call about
+ * which commands survive -- mo_map_build cannot make that call FOR the
+ * caller without duplicating the caller's own logic, which is the mistake
+ * being fixed. A caller keeps the two in lockstep by implementing
+ * `is_deleted` as one function and calling that SAME function -- not
+ * reimplementing its logic -- everywhere it decides "does this dylib
+ * survive?" (change_dylib.c's ord_is_deleted is called from both its own
+ * load-command rewrite and from mo_map_build; see change_dylib.c). As a
+ * runtime backstop for when a caller gets that wrong anyway, mo_map_validate
+ * can compare the map against the load-command table a caller actually
+ * emitted and refuse if they disagree -- see its own comment below for what
+ * it does and does not catch.
  */
 
 #ifndef MACHO9_ORDINALS_H
@@ -66,14 +76,36 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
                   int (*is_deleted)(const char *name, void *ctx), void *ctx,
                   mo_map *map, int *out_nnew);
 
-/* Check that `map` is internally consistent before trusting it: n within
- * [0, MO_MAX_DYLIBS], and every old_to_new[1..n] is either 0 (deleted) or a
- * positive ordinal no greater than `max_new` (the ordinal ceiling
- * mo_map_build reported). Returns 0 if so, -1 (with a message on stderr)
- * otherwise. Exists so a caller can verify a map before applying it, as a
- * belt-and-suspenders check independent of mo_map_apply's own per-opcode
- * range checks. */
-int mo_map_validate(const mo_map *map, int max_new);
+/* Count how many of the `ncmds` load commands packed starting at `lcs`
+ * satisfy mo_is_ordinal_lc. Unlike mo_map_build's walk, `lcs` is NOT preceded
+ * by a mach_header_64 -- it counts a freshly-emitted, headerless table (e.g.
+ * build_lcs's own scratch output), which is what lets mo_map_validate check
+ * a map against what a caller's rewrite actually produced. */
+int mo_count_ordinal_lcs(const uint8_t *lcs, uint32_t ncmds);
+
+/* Check `map` against both its own arithmetic and, if `new_lcs` is given,
+ * reality:
+ *   - n within [0, MO_MAX_DYLIBS];
+ *   - old_to_new[1..n] is 0 (deleted) or DENSE and STRICTLY INCREASING as old
+ *     ordinals increase -- survivors must be exactly base+1, base+2, ... in
+ *     order, with no gaps, repeats, or reordering. Anything else could not
+ *     have come from a single left-to-right renumbering pass, so it can only
+ *     mean map and caller disagree about what got deleted, or about order.
+ *   - IF new_lcs/new_ncmds are non-NULL: mo_count_ordinal_lcs(new_lcs,
+ *     new_ncmds) -- the number of ordinal-bearing load commands the caller
+ *     ACTUALLY emitted -- equals (survivors + base + nadds), the number the
+ *     map implies. This is the check that catches a map and an emitted
+ *     table that independently disagree about which dylib survived: the
+ *     historical class of bug, reproduced by a path passed to both -change
+ *     and -delete before mo_is_ordinal_lc unification in change_dylib.c. It
+ *     does NOT catch every possible disagreement -- e.g. it cannot tell that
+ *     the WRONG dylib was kept if the count still comes out right -- so it
+ *     is a backstop for a caller whose is_deleted and load-command rewrite
+ *     drift apart, not a substitute for keeping them the same function.
+ * Returns 0 if all checks that apply hold, -1 (with a message on stderr)
+ * otherwise. */
+int mo_map_validate(const mo_map *map, int base, int max_new, int nadds,
+                     const uint8_t *new_lcs, uint32_t new_ncmds);
 
 /* Apply `map` to every place `buf` records a library ordinal: the symtab's
  * undefined/prebound symbols, and the LC_DYLD_INFO bind/weak-bind/lazy-bind
