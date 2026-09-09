@@ -58,8 +58,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -539,6 +542,101 @@ static void test_each_lc_195_positive_control(void) {
     munmap(region, (size_t)pagesz * 2);
 }
 
+/* THE CORRECT positive control, per re-review: test_each_lc_195_positive_control
+ * above cannot prove elision doesn't happen, because it can never GET INTO the
+ * position elision is possible from -- evaluating `rc == 1` requires `want`
+ * (hence `sg->nsects`) regardless, so it always forces the load; it just proves
+ * the load produces the right ANSWER, not that a load-eliding build couldn't
+ * also produce that same right answer some other way. The prior investigation's
+ * dead end (recorded in this wave's report) was aiming the detector at the wrong
+ * case: elision is possible ONLY where `cmdsize < 72` lets the compiler prove
+ * `cmdsize < 72 <= want` without ever computing `want` -- exactly the
+ * test_each_lc_195_read_is_bounded case, not this one.
+ *
+ * This test targets that case directly, but makes the LOAD ITSELF the
+ * observable instead of inferring it from a return value: `cmdsize == 72`
+ * (`sizeof(segment_command_64)`, so 195 does NOT refuse -- 72 is not < 72),
+ * and the command is placed straddling a page boundary so `nsects` (offset 64)
+ * is the FIRST BYTE of a `PROT_NONE` page. 205 has no shortcut here (cmdsize
+ * is not below 72), so it MUST read `sg->nsects` to decide -- and that read
+ * faults. A fault is not inferred from an arithmetic result a sound
+ * optimization could reproduce some other way; it is a direct consequence of
+ * a load instruction actually executing at an unmapped address. No `volatile`
+ * needed anywhere -- unlike the equality case, there is no legal way for a
+ * compiler to determine this branch's outcome without performing this exact
+ * load, so nothing needs defending against being folded away.
+ *
+ * 195 is INTACT here (no mutation) -- this runs unconditionally, every time,
+ * proving THIS build's mlive_each_lc genuinely performs the nsects load on the
+ * path that needs it. If a future toolchain, SDK, or source change ever starts
+ * eliding it (impossible for a *sound* optimizer given this exact fixture, but
+ * exactly what would indicate an unsound one, or a source regression that
+ * skips the read some other way), this test goes red immediately instead of
+ * test_each_lc_195_read_is_bounded quietly staying green. Together the two
+ * say what neither says alone: this one proves the load happens on the path
+ * that needs it; that one proves 195 prevents it on the path that would
+ * fault. Runs the walk in a forked child so a genuine crash here -- the
+ * expected outcome -- can't take the rest of this test binary down with it;
+ * confirmed to reproduce SIGBUS (not SIGSEGV) at both -O0 and -O2, and under
+ * libgmalloc (whose allocator changes heap page layout but does not touch
+ * this test's own raw mmap/mprotect region) -- see this wave's report. */
+static void test_each_lc_195_load_actually_happens(void) {
+    long pagesz = sysconf(_SC_PAGESIZE);
+    CHECK(pagesz > 0, "sysconf(_SC_PAGESIZE) succeeds");
+    if (pagesz <= 0) return;
+
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork() succeeds");
+    if (pid < 0) return;
+
+    if (pid == 0) {
+        /* Child: build the straddling fixture and call mlive_each_lc. The
+         * expected outcome is a fault (the parent below asserts on that);
+         * if we somehow return instead, exit with a distinct code (42) so
+         * the parent can tell "ran to completion without faulting" (the
+         * failure this test exists to catch) from any other child death. */
+        uint8_t *region = (uint8_t *)mmap(NULL, (size_t)pagesz * 2, PROT_READ | PROT_WRITE,
+                                           MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (region == MAP_FAILED) _exit(3);
+        if (mprotect(region + pagesz, (size_t)pagesz, PROT_NONE) != 0) _exit(3);
+
+        /* sizeof(mach_header_64) + 64: the header, then exactly the first
+         * 64 bytes of a segment_command_64 (cmd through initprot) -- all in
+         * the readable page. `sg` (== buf + sizeof(hdr)) ends up placed so
+         * sg+64 (nsects' offset) lands EXACTLY at the guard page boundary. */
+        uint8_t *buf = region + pagesz - sizeof(struct mach_header_64) - 64;
+        memset(buf, 0, sizeof(struct mach_header_64) + 64);
+        struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+        hdr->magic = MH_MAGIC_64;
+        hdr->ncmds = 1;
+        hdr->sizeofcmds = 72;
+        struct segment_command_64 *sg =
+            (struct segment_command_64 *)(void *)(buf + sizeof(*hdr));
+        sg->cmd = LC_SEGMENT_64;
+        sg->cmdsize = 72;   /* == sizeof(segment_command_64): 195 does NOT
+                               * refuse (72 is not < 72), so 205 must run */
+
+        count_ctx ctx = { 0 };
+        int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                                count_segments_cb, &ctx);
+        fprintf(stderr, "child: mlive_each_lc returned %d without faulting "
+                        "(want a fault reading nsects)\n", rc);
+        _exit(42);
+    }
+
+    /* Parent. */
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid, "waitpid reaps the child");
+    CHECK(WIFSIGNALED(status),
+          "child died on a signal, not exited/stopped (raw status %#x)", status);
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        CHECK(sig == SIGBUS,
+              "child died on SIGBUS reading sg->nsects past the guard page "
+              "(got signal %d instead)", sig);
+    }
+}
+
 static void test_each_lc_refuses_nsects_disagreeing_with_cmdsize(void) {
     /* Pins live.h:205, `lc->cmdsize != want` -- the check a bare
      * cmdsize/sizeofcmds bound misses: cmdsize covers the base struct but
@@ -713,6 +811,7 @@ int main(void) {
     test_each_lc_refuses_segment_shorter_than_struct();
     test_each_lc_195_read_is_bounded();
     test_each_lc_195_positive_control();
+    test_each_lc_195_load_actually_happens();
     test_each_lc_refuses_nsects_disagreeing_with_cmdsize();
     test_missing_segment_or_section_returns_null();
     test_probe_object_is_allocation_free();
