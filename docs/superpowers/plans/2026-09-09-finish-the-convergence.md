@@ -247,7 +247,39 @@ add_executable(change_dylib compat/change_dylib.c)
 The binary is still `change_dylib`. `install.sh` builds it by name and must keep
 working. Only the source path changes.
 
-- [ ] **Step 2: Move `change_dylib_test.sh` into `tests/` and fix its paths**
+- [ ] **Step 2: Move `change_dylib_test.sh` into `tests/`, and stop it rebuilding the tool by hand**
+
+It `cd`s to its own directory and compiles `change_dylib.c` ITSELF to stay
+standalone-runnable. Both need updating — but fix the deeper problem while you
+are there.
+
+Line 43 today reads:
+
+```sh
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c \
+  src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c \
+  src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c
+```
+
+That source list is **a second place deciding what the library contains**, and
+it must agree with `CMakeLists.txt` or ctest stays green while the standalone
+path breaks. It has needed hand-updating five times already (uleb, image,
+ordinals, fat, trie, lc_kinds, atomic_write, linkedit, grow) — which is this
+repo's signature bug class living in a test script.
+
+**Four of the six suites already do this correctly**: `chained-fixups.sh`,
+`characterize.sh`, `cli_test.sh` and `leaf-tool-crashes.sh` all receive
+`$<TARGET_FILE_DIR:...>` from CMake and use the binary CMake built. Make this
+one match: take the built binary when a build directory is passed, and compile
+from source ONLY as the standalone fallback. If the fallback keeps a source
+list, derive it (a glob of `src/*.c`) rather than enumerating, so it cannot
+drift.
+
+The 12 helper programs the suites compile at runtime (`ordinal_of`, `makefat`,
+`fatcheck`, `has_lc`, `has_bytes`, `mkfixture`, …) are a smaller instance of the
+same thing. Converting them to CMake targets is optional here — say what you
+did and why. Note none of this is a speed fix: the whole `ctest` run is ~3s.
+It is a correctness fix, and the repo owner asked for it on those terms.
 
 It `cd`s to its own directory and compiles `change_dylib.c` itself to stay
 standalone-runnable. Both need updating.
