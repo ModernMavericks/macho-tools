@@ -363,34 +363,53 @@ int mg_unwind_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
     return 0;
 }
 
+struct mg_dice_ctx {
+    uint8_t *buf;
+    uint32_t grow;
+    int patch;
+    uint64_t base;
+    uint64_t *out;
+    uint8_t *kinds;
+    uint32_t *n;
+    uint32_t max;
+    size_t fsize;
+    int error;
+};
+
+/* mg_dice_walk's mi_each_lc callback: LC_DATA_IN_CODE is a find-first search
+ * (there is at most one), so the callback does the ENTIRE original body --
+ * validate, then either collect (out != NULL) or bump (patch) every entry --
+ * and always returns 1 to stop once it has visited that command, success or
+ * failure alike; ctx->error carries which. */
+static int mg_dice_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_dice_ctx *ctx = (struct mg_dice_ctx *)ctx_;
+    if (lc->cmd != LC_DATA_IN_CODE) return 0;
+    const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+    if (!d->datasize) return 1;
+    if ((uint64_t)d->dataoff + d->datasize > ctx->fsize) { ctx->error = 1; return 1; }
+    if (d->datasize % 8) { ctx->error = 1; return 1; }          /* not a whole number of entries */
+    uint8_t *e = ctx->buf + d->dataoff;
+    for (uint32_t k = 0; k < d->datasize; k += 8) {
+        if (ctx->out) {
+            if (*ctx->n >= ctx->max) { ctx->error = 1; return 1; }
+            uint32_t v; memcpy(&v, e + k, sizeof v);
+            if (ctx->kinds) ctx->kinds[*ctx->n] = MG_K_ANY;   /* jump tables sit mid-function */
+            ctx->out[(*ctx->n)++] = ctx->base + v;
+        } else if (mg_uw_bump(e + k, ctx->grow, ctx->patch) != 0) {
+            ctx->error = 1; return 1;
+        }
+    }
+    return 1;
+}
+
 int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
                         uint64_t base, uint64_t *out, uint8_t *kinds,
                         uint32_t *n, uint32_t max) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_DATA_IN_CODE) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            if (!d->datasize) return 0;
-            if ((uint64_t)d->dataoff + d->datasize > fsize) return -1;
-            if (d->datasize % 8) return -1;          /* not a whole number of entries */
-            uint8_t *e = buf + d->dataoff;
-            for (uint32_t k = 0; k < d->datasize; k += 8) {
-                if (out) {
-                    if (*n >= max) return -1;
-                    uint32_t v; memcpy(&v, e + k, sizeof v);
-                    if (kinds) kinds[*n] = MG_K_ANY;   /* jump tables sit mid-function */
-                    out[(*n)++] = base + v;
-                } else if (mg_uw_bump(e + k, grow, patch) != 0) {
-                    return -1;
-                }
-            }
-            return 0;
-        }
-        sp += lc->cmdsize;
-    }
-    return 0;
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return -1;
+    struct mg_dice_ctx ctx = { buf, grow, patch, base, out, kinds, n, max, fsize, 0 };
+    mi_each_lc(&im, mg_dice_cb, &ctx);
+    return ctx.error ? -1 : 0;
 }
 
 int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
