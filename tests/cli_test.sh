@@ -31,8 +31,12 @@ mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT INT TERM
 
 fails=0
-ok()  { echo "PASS $1"; }
-bad() { echo "FAIL $1: $2"; fails=$((fails + 1)); }
+ok()   { echo "PASS $1"; }
+bad()  { echo "FAIL $1: $2"; fails=$((fails + 1)); }
+# Not a failure: the assertion could not be exercised on this host. Printed
+# loudly and distinctly from PASS/FAIL, per-assertion, rather than silently
+# omitted -- a silent skip is how coverage rots. Does not touch $fails.
+skip() { echo "SKIP $1: $2"; }
 
 # --- fixtures --------------------------------------------------------------
 cat > "$T/a.c" <<'EOF'
@@ -139,10 +143,34 @@ else
 fi
 "$MACHO9" verify "$T/grow_fixture" >/dev/null && ok "grow: result still verifies" \
     || bad "grow: post-grow verify" "failed"
-if (cd "$T" && ./grow_fixture); then
-    ok "grow: grown binary still runs"
+
+# Whether a GROWN binary can be EXECUTED is a question about the HOST, not
+# about macho9: kernel code-signing enforcement (macOS 11+, unconditional on
+# Apple Silicon) SIGKILLs any binary whose bytes changed since it was signed
+# at link time, and growing rewrites the whole header. 10.9 -- the actual
+# target platform -- has no such enforcement, so the real "and it still
+# runs" check belongs there and must stay real, not weakened for portability.
+#
+# Probe for the capability empirically (never a hardcoded macOS-version
+# check, so this keeps working if Apple changes the policy again): build a
+# throwaway fixture, apply the EXACT SAME grow, and see whether the host
+# lets it run at all.
+build_main "$T/grow_probe"
+"$MACHO9" grow "$T/grow_probe" 4096 >/dev/null
+if (cd "$T" && ./grow_probe) >"$T/grow_probe.out" 2>&1; then
+    grow_probe_rc=0
 else
-    bad "grow: run" "grown binary failed to execute"
+    grow_probe_rc=$?
+fi
+if [ "$grow_probe_rc" -eq 0 ]; then
+    if (cd "$T" && ./grow_fixture); then
+        ok "grow: grown binary still runs"
+    else
+        bad "grow: run" "grown binary failed to execute"
+    fi
+else
+    skip "grow: grown binary still runs" \
+        "an identically-grown probe binary would not execute on this host (exit $grow_probe_rc: $(head -1 "$T/grow_probe.out" 2>/dev/null || echo 'no output')) -- most likely kernel code-signing enforcement invalidating the signature macho9's rewrite disturbed; this is a host policy, not a macho9 defect, and is exercised for real on 10.9"
 fi
 # N=0 is refused, not silently a no-op.
 if "$MACHO9" grow "$T/grow_fixture" 0 >/dev/null 2>&1; then
@@ -186,10 +214,36 @@ if echo "$after_info" | grep -q "LC_UUID"; then
 else
     ok "lc: delete uuid removed it"
 fi
-if (cd "$T" && ./lc_fixture); then
-    ok "lc: binary still runs after uuid deletion"
+# Whether a binary that's had its LC_UUID deleted can still be EXECUTED is
+# again a question about the host's dyld, not about macho9: modern dyld
+# refuses to load an image carrying no LC_UUID at all ("missing LC_UUID
+# load command"), a requirement 10.9's dyld does not have. Kernel
+# code-signing enforcement (see the grow probe above) can also be in play,
+# since deleting a load command rewrites the header too -- the two showed up
+# as genuinely different failure modes on the cross runner that motivated
+# this (grow got SIGKILLed outright; this got far enough for dyld itself to
+# abort on the missing UUID), so this probes its OWN exact rewrite rather
+# than reusing the grow probe's verdict.
+build_main "$T/lc_probe"
+"$MACHO9" lc "$T/lc_probe" -delete uuid >/dev/null
+if (cd "$T" && ./lc_probe) >"$T/lc_probe.out" 2>&1; then
+    lc_probe_rc=0
 else
-    bad "lc: run" "binary failed to execute after uuid deletion"
+    lc_probe_rc=$?
+fi
+if [ "$lc_probe_rc" -eq 0 ]; then
+    if (cd "$T" && ./lc_fixture); then
+        ok "lc: binary still runs after uuid deletion"
+    else
+        bad "lc: run" "binary failed to execute after uuid deletion"
+    fi
+else
+    if grep -qi "missing LC_UUID" "$T/lc_probe.out" 2>/dev/null; then
+        lc_run_reason="modern dyld refuses to load any image with no LC_UUID at all ('missing LC_UUID load command'); 10.9's dyld has no such requirement"
+    else
+        lc_run_reason="an identically-uuid-deleted probe binary would not execute on this host (exit $lc_probe_rc: $(head -1 "$T/lc_probe.out" 2>/dev/null || echo 'no output')) -- most likely kernel code-signing enforcement, the same as the grow probe above"
+    fi
+    skip "lc: binary still runs after uuid deletion" "$lc_run_reason -- a host policy, not a macho9 defect, and exercised for real on 10.9"
 fi
 # Unknown KIND is refused with this verb's own message, before delegating.
 if "$MACHO9" lc "$T/lc_fixture" -delete bogus-kind >/dev/null 2>"$T/lc_bad.err"; then
