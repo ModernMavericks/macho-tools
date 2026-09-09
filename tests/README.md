@@ -1,6 +1,6 @@
 # tests
 
-Ten suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
+Eleven suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 
 | test | what it proves |
 |---|---|
@@ -13,7 +13,31 @@ Ten suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
 | `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements. `rpath -insert`, `segment` and `retag-swift` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `-insert` is only correct if the new search path lands FIRST (an `-append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment` has to rename each section's own copy of the segment name (`macho9 info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `retag-swift` has to move the tag bit without disturbing the rest of the word |
 | `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally |
+| `translate_test` | `compat/translate.sh`, the old-grammar-to-`macho9` translator Task 2's wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every verb/op/KIND the translator can emit against `macho9 --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
+
+## Not run by `ctest`: the two by-hand sweeps
+
+Two scripts here need more than a build tree and are run deliberately, on real
+hardware, with their results committed:
+
+- **`differential.sh`** runs TWO builds of these tools over hundreds of real
+  Mach-Os and proves they behave identically. It exists for the "the work
+  moved, the behaviour must not" shape of change.
+- **`compat-sweep.sh`** runs every enumerated argument combination of the six
+  historical tools BOTH ways -- the old binary, and `compat/translate.sh`'s
+  `macho9` command line(s) -- on the same input, and records what each did in
+  `compat-matrix.tsv`. Singles, ordered pairs and ordered triples of every flag
+  (1110 combinations for `change_dylib`, 39 for `fix_macho`), plus every arity
+  the four flagless tools distinguish, plus hand-picked cases the fixed
+  vocabulary cannot reach (the capacity caps, `install.sh`'s production line,
+  the chained `-rename_seg`).
+
+`compat-matrix.tsv` is a **committed artifact, not a report**: the plan's Task 2
+replaces the six C sources with shell wrappers, after which those binaries exist
+only in git history. The matrix and the SHA-256s in it are what outlive them.
+Regenerate it only from a real 10.9 build of both families, and say in the
+commit why a row changed.
 
 ## `macho9`'s exit codes
 

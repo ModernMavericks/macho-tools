@@ -211,6 +211,17 @@ add_test(NAME characterize
 add_test(NAME cli_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:macho9>")
 
+# compat/translate.sh: one assertion per translation from an old tool's grammar
+# to macho9's, pinning the EXACT emitted command line. Text only -- it never
+# runs macho9 on a file; whether the emitted commands produce the same BYTES is
+# tests/compat-sweep.sh's job, and that one is run by hand (it needs both
+# families of binaries and takes minutes), with its result committed as
+# tests/compat-matrix.tsv. The bindir is here for one thing: the last block
+# checks every verb/op/KIND the translator can emit against
+# `macho9 --capabilities`, rather than assuming they agree.
+add_test(NAME translate_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/translate_test.sh" "$<TARGET_FILE_DIR:macho9>")
+
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after Task 1 converted them onto
 # src/image.h -- mi_open validates load commands, not section file ranges or
