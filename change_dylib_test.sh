@@ -569,10 +569,15 @@ cat > "$T/mkslice32.c" <<'EOF'
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 #include <mach-o/loader.h>
 int main(int argc, char **argv) {
     uint8_t buf[4096];
-    memset(buf, 0x5A, sizeof buf);   /* distinctive, so a corrupting bug shows up */
+    /* fill byte defaults to 0x5A; an optional argv[2] picks a DIFFERENT one
+     * so two calls can produce distinguishable blobs -- needed by case 13
+     * to tell "arch 0 kept its own bytes" from "arch 0 got arch 2's". */
+    int fill = argc > 2 ? (int)strtol(argv[2], NULL, 0) : 0x5A;
+    memset(buf, fill, sizeof buf);   /* distinctive, so a corrupting bug shows up */
     struct mach_header *h = (struct mach_header *)buf;
     h->magic = MH_MAGIC;
     h->cputype = CPU_TYPE_I386;
@@ -589,6 +594,7 @@ int main(int argc, char **argv) {
 EOF
 "$CC" -O2 -o "$T/mkslice32" "$T/mkslice32.c"
 "$T/mkslice32" "$T/slice32.bin"
+"$T/mkslice32" "$T/slice32b.bin" 0x7B
 
 # --- 10. a plain -change on a fat input: both slices land correctly ---------
 "$T/makefat" "$T/main_fat" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
@@ -776,6 +782,113 @@ if cmp -s "$T/slice32.bin" "$T/descfat_lo_after.bin"; then
 else
     bad "fat descending-offset lo slice" "the low-offset slice's bytes changed or are missing"
 fi
+
+# --- 13. CRITICAL regression: two REWRITTEN slices landing at the SAME -----
+#         output offset must refuse, not silently collide.
+# Round 2 review: case 12 closed the memory-safety half of "the arch table
+# isn't ascending" (the reassembly buffer could overflow) but left the
+# correctness half open. An unshifted slice (e.g. arch[0], first in table
+# order) keeps its ORIGINAL offset unconditionally; once some OTHER, earlier-
+# in-table-order slice grows, every slice after it packs sequentially from a
+# cursor that has no idea where that still-fixed slice sits. On a
+# non-ascending table the sequential cursor can walk straight into the fixed
+# slice's territory. Reproduced by hand against the pre-fix binary with this
+# exact 3-slice fixture: arch 0 and arch 2 both landed at offset 20480,
+# arch 2's memcpy silently overwrote arch 0's bytes, and the tool exited 0
+# with the fat file "successfully" updated -- one architecture's code gone,
+# no error, right file size, right narch.
+#
+# Engineered precisely rather than hunted for: slice1 is $T/main at offset
+# 0x1000, forced (by the same 32-add idiom as cases 11/12) to grow by
+# exactly one page, from 8600 to 12696 bytes -- confirmed exactly this size
+# in case 11 above. That makes the post-growth cursor for whatever comes
+# after it (0x1000 + 12696 = 16792, rounded up to its 4096-byte alignment)
+# land at EXACTLY 0x5000 (20480) -- so slice0 is placed there, fixed, from
+# the start, guaranteeing the collision rather than hoping for one.
+cat > "$T/mk3fat.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/fat.h>
+static uint8_t *readfile(const char *path, size_t *outsz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror(path); exit(2); }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
+    close(fd);
+    *outsz = (size_t)st.st_size;
+    return buf;
+}
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+int main(int argc, char **argv) {
+    if (argc != 5) { fprintf(stderr, "usage: %s out slice0 slice1 slice2\n", argv[0]); return 2; }
+    size_t sz0, sz1, sz2;
+    uint8_t *b0 = readfile(argv[2], &sz0);
+    uint8_t *b1 = readfile(argv[3], &sz1);
+    uint8_t *b2 = readfile(argv[4], &sz2);
+    /* slice1 must end (0x1000+sz1) at or before slice2's start, and slice2
+     * must end at or before slice0's start -- non-overlapping ORIGINAL
+     * layout, required by mfat_parse's own (new) input-side overlap check. */
+    uint32_t off0 = 0x5000, off1 = 0x1000, off2 = 0x4000;
+    uint32_t total = off0 + (uint32_t)sz0;
+    if (off1 + sz1 > total) total = (uint32_t)(off1 + sz1);
+    if (off2 + sz2 > total) total = (uint32_t)(off2 + sz2);
+    uint8_t *out = calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)out;
+    fh->magic = sw32(FAT_MAGIC);
+    fh->nfat_arch = sw32(3);
+    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
+    ar[0].cputype = sw32(7); ar[0].cpusubtype = sw32(3);          /* opaque, fixed-high */
+    ar[0].offset = sw32(off0); ar[0].size = sw32((uint32_t)sz0); ar[0].align = sw32(12);
+    ar[1].cputype = sw32(0x1000007); ar[1].cpusubtype = sw32(3);  /* real x86_64, grows */
+    ar[1].offset = sw32(off1); ar[1].size = sw32((uint32_t)sz1); ar[1].align = sw32(12);
+    ar[2].cputype = sw32(7); ar[2].cpusubtype = sw32(4);          /* opaque, relocates */
+    ar[2].offset = sw32(off2); ar[2].size = sw32((uint32_t)sz2); ar[2].align = sw32(12);
+    memcpy(out + off0, b0, sz0);
+    memcpy(out + off1, b1, sz1);
+    memcpy(out + off2, b2, sz2);
+    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) { perror("open out"); return 2; }
+    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
+    close(ofd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mk3fat" "$T/mk3fat.c"
+"$T/mk3fat" "$T/main_fat3" "$T/slice32.bin" "$T/main" "$T/slice32b.bin"
+before_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{print $1}')
+
+set -- ; i=0
+while [ $i -lt 32 ]; do
+    set -- "$@" -add "@loader_path/libpad_a_pretty_long_synthetic_name_used_only_to_force_real_header_growth_$i.dylib"
+    i=$((i+1))
+done
+rc=0
+"$T/change_dylib" "$T/main_fat3" -grow "$@" >/dev/null 2>"$T/fat3.err" || rc=$?
+
+if [ $rc -eq 0 ]; then
+    # The algorithm never repacks smarter than "sequential from a cursor" --
+    # per the fix, this exact layout can only ever be refused, never placed
+    # correctly, so a SUCCESSFUL exit here means the collision guard did not
+    # run at all, not that a cleverer layout was found.
+    bad "fat collision" "tool exited 0 on a layout engineered to collide -- the overlap guard did not fire"
+elif grep -qi 'overlapping offsets' "$T/fat3.err"; then
+    ok "fat collision: refused with a clear overlap message (exit $rc)"
+else
+    bad "fat collision" "refused (exit $rc) but without an overlap diagnostic: $(head -1 "$T/fat3.err")"
+fi
+
+after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{print $1}')
+[ "$before_md5" = "$after_md5" ] \
+    && ok "fat collision: input left completely untouched on refusal" \
+    || bad "fat collision" "input was modified despite the refusal"
 
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
