@@ -37,8 +37,15 @@ int mi_open(const char *path, mi_image *out);
  * growth is bounded and known -- this exists for the case where it is not. */
 int mi_open_slack(const char *path, size_t slack, mi_image *out);
 
-/* Free the buffer and zero the struct. Safe on an all-zero mi_image. */
+/* Free the buffer and zero the struct. Safe on an all-zero mi_image, and safe
+ * after mi_release. */
 void mi_close(mi_image *im);
+
+/* Hand the buffer to the caller and empty the image. Use this when the caller
+ * will realloc the buffer itself -- change_dylib's mg_grow_header(&buf, &fsize,
+ * n) does, and an image still pointing at the old allocation would be a
+ * dangling pointer waiting for mi_close. The caller must free() the result. */
+uint8_t *mi_release(mi_image *im);
 
 /* Visit each load command in order. The callback must not modify the command
  * chain -- this is iteration, not editing. */

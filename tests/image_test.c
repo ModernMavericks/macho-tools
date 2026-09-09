@@ -18,6 +18,7 @@
 #include "image.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -70,6 +71,25 @@ static void test_open_slack_allocates_real_headroom(void) {
     im.buf[im.cap - 1] = 0xA5;
     CHECK(im.buf[im.cap - 1] == 0xA5, "  the last slack byte is writable");
     mi_close(&im);
+}
+
+static void test_release_hands_the_buffer_to_the_caller(void) {
+    /* change_dylib grows the header via mg_grow_header(&buf, &fsize, n), which
+     * REALLOCS. An mi_image that still pointed at the old allocation would be a
+     * dangling pointer waiting for mi_close. mi_release makes the hand-off
+     * explicit: the caller owns the buffer, and the image is emptied so a later
+     * mi_close is a no-op rather than a double free. */
+    mi_image im;
+    if (mi_open(FIXTURE, &im) != 0) { CHECK(0, "release: fixture would not open"); return; }
+    uint8_t *owned = mi_release(&im);
+    CHECK(owned != NULL,   "mi_release returns the buffer");
+    CHECK(im.buf == NULL,  "  and the image no longer points at it");
+    CHECK(im.size == 0,    "  size is cleared");
+    CHECK(im.hdr == NULL,  "  hdr is cleared");
+    CHECK(((struct mach_header_64 *)owned)->magic == MH_MAGIC_64,
+          "  the handed-over buffer is still the image");
+    mi_close(&im);   /* must be a safe no-op now */
+    free(owned);
 }
 
 static void test_open_refuses_a_missing_file(void) {
@@ -150,6 +170,7 @@ int main(void) {
     test_open_accepts_a_real_macho();
     test_open_reports_its_capacity();
     test_open_slack_allocates_real_headroom();
+    test_release_hands_the_buffer_to_the_caller();
     test_open_refuses_a_missing_file();
     test_open_refuses_a_non_macho();
     test_each_lc_visits_every_command();

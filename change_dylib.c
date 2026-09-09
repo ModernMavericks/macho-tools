@@ -58,6 +58,7 @@
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 
+#include "image.h"
 #include "macho_grow.h"
 
 /* Load commands safe to drop: purely informational, or invalidated the moment
@@ -577,15 +578,25 @@ int main(int argc, char **argv) {
         } else { fprintf(stderr, "bad arg: %s\n", argv[i]); return 1; }
     }
 
+    /* The O_RDWR fd is opened up front, as before, and held for the write-back
+     * at the end. That ordering is load-bearing: it is what makes an unwritable
+     * file fail immediately instead of after all the analysis has run and
+     * printed. mi_open reads and validates separately. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
-    struct stat st; fstat(fd, &st);
-    size_t fsize = st.st_size;
-    uint8_t *buf = malloc(fsize);
-    if (read(fd, buf, fsize) != (ssize_t)fsize) { perror("read"); return 1; }
 
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not 64-bit Mach-O\n"); return 1; }
+    /* mi_release, not the image, owns the buffer from here: mg_grow_header
+     * below reallocs it, which would leave an mi_image dangling. The hand-off
+     * is explicit so the ownership is readable rather than implied. */
+    mi_image im;
+    if (mi_open(path, &im) != 0) {
+        fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
+        close(fd);
+        return 1;
+    }
+    size_t fsize = im.size;
+    struct mach_header_64 *hdr = im.hdr;
+    uint8_t *buf = mi_release(&im);
 
     uint32_t first_sect_off = mg_first_sect_off(buf);
     uint32_t cur_lc_end = sizeof(struct mach_header_64) + hdr->sizeofcmds;

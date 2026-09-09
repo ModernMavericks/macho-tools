@@ -32,7 +32,7 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # script keeps working standalone (`./change_dylib_test.sh`, clang + otool only).
 # That means it must track what change_dylib includes: macho_grow.h now pulls in
 # src/uleb.h, so the toolkit sources it needs are listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }

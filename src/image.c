@@ -70,6 +70,12 @@ void mi_close(mi_image *im) {
     im->buf = NULL; im->size = 0; im->cap = 0; im->hdr = NULL;
 }
 
+uint8_t *mi_release(mi_image *im) {
+    uint8_t *buf = im->buf;
+    im->buf = NULL; im->size = 0; im->cap = 0; im->hdr = NULL;
+    return buf;
+}
+
 void mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx) {
     /* mi_open has already proved this walk stays in bounds. */
     const uint8_t *p = im->buf + sizeof(struct mach_header_64);
