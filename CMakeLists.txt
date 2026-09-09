@@ -54,7 +54,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -120,6 +120,14 @@ target_compile_options(image_test PRIVATE -O2 -Wall)
 target_link_libraries(image_test PRIVATE macho9core)
 add_test(NAME image_test COMMAND image_test
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Hermetic tests for src/trie.c's export-trie rebuild (Task 5 gap 1): decode,
+# shift, re-serialize, all against hand-built and hand-computed trie byte
+# buffers -- no fixture file needed, same reasoning as macho_grow_test.
+add_executable(trie_test tests/trie_test.c)
+target_compile_options(trie_test PRIVATE -O2 -Wall)
+target_link_libraries(trie_test PRIVATE macho9core)
+add_test(NAME trie_test COMMAND trie_test)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Needs the
