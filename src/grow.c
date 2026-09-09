@@ -11,6 +11,21 @@
 
 #include "grow.h"
 
+/* mg_first_sect_off's mi_each_lc callback: track the lowest LC_SEGMENT_64
+ * section file offset seen so far in ctx->first. Always returns 0 (never
+ * stops early) -- every command must be visited, there is no refusal here. */
+static int mg_first_sect_cb(const struct load_command *lc, void *ctx_) {
+    uint32_t *first = (uint32_t *)ctx_;
+    if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *sect =
+            (const struct section_64 *)((const uint8_t *)lc + sizeof(*seg));
+        for (uint32_t j = 0; j < seg->nsects; j++)
+            if (sect[j].offset && sect[j].offset < *first) *first = sect[j].offset;
+    }
+    return 0;
+}
+
 uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     mi_image im;
     /* mi_wrap's own signature is necessarily non-const: mi_image.buf is
@@ -27,17 +42,7 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     }
 
     uint32_t first = UINT32_MAX;
-    const uint8_t *lcp = im.buf + sizeof(*im.hdr);
-    for (uint32_t i = 0; i < im.hdr->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)lcp;
-            const struct section_64 *sect = (const struct section_64 *)(lcp + sizeof(*seg));
-            for (uint32_t j = 0; j < seg->nsects; j++)
-                if (sect[j].offset && sect[j].offset < first) first = sect[j].offset;
-        }
-        lcp += lc->cmdsize;
-    }
+    mi_each_lc(&im, mg_first_sect_cb, &first);
     return first == UINT32_MAX ? 4096 : first;
 }
 
