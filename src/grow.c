@@ -68,29 +68,43 @@ int mg_funcstarts_decode(const uint8_t *blob, uint32_t size,
     return n;
 }
 
-int mg_init_offsets_pass(uint8_t *buf, size_t fsize, uint32_t grow, int patch) {
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof(*hdr);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
-                if (sect[j].size % 4) return -1;
-                if ((uint64_t)sect[j].offset + sect[j].size > (uint64_t)fsize) return -1;
-                uint32_t n = (uint32_t)(sect[j].size / 4);
-                uint32_t *e = (uint32_t *)(buf + sect[j].offset);
-                for (uint32_t k = 0; k < n; k++) {
-                    if (!patch) { if (e[k] > UINT32_MAX - grow) return -1; }
-                    else e[k] += grow;
-                }
-            }
+struct mg_init_offsets_ctx {
+    uint8_t *buf;
+    size_t fsize;
+    uint32_t grow;
+    int patch;
+};
+
+/* mg_init_offsets_pass's mi_each_lc callback: edits S_INIT_FUNC_OFFSETS
+ * section CONTENT in place (patch=1) or just audits it (patch=0) -- never
+ * lc->cmd/cmdsize/hdr->ncmds, so it stays inside mi_each_lc's mutation
+ * contract. Returns non-zero to stop the walk on the first malformed/unsafe
+ * section, exactly the refusal mg_init_offsets_pass itself used to return
+ * early for. */
+static int mg_init_offsets_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_init_offsets_ctx *ctx = (struct mg_init_offsets_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+    struct section_64 *sect = (struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
+        if (sect[j].size % 4) return -1;
+        if ((uint64_t)sect[j].offset + sect[j].size > (uint64_t)ctx->fsize) return -1;
+        uint32_t n = (uint32_t)(sect[j].size / 4);
+        uint32_t *e = (uint32_t *)(ctx->buf + sect[j].offset);
+        for (uint32_t k = 0; k < n; k++) {
+            if (!ctx->patch) { if (e[k] > UINT32_MAX - ctx->grow) return -1; }
+            else e[k] += ctx->grow;
         }
-        lcp += lc->cmdsize;
     }
     return 0;
+}
+
+int mg_init_offsets_pass(uint8_t *buf, size_t fsize, uint32_t grow, int patch) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return -1;
+    struct mg_init_offsets_ctx ctx = { buf, fsize, grow, patch };
+    return mi_each_lc(&im, mg_init_offsets_cb, &ctx) ? 0 : -1;
 }
 
 int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth) {
