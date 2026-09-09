@@ -577,6 +577,192 @@ static void test_grow_rebases_unwind_info(void) {
     free(buf);
 }
 
+/* ---- mg_unwind_find_cb's three untested branches (2026-09-09 review) ----
+ * A code review round confirmed by mutation, forced rebuild, that all three
+ * were unexercised by any suite in this repo -- real-binary and hermetic
+ * alike -- and identical since before Task 3's move (not a regression this
+ * task introduced, but a gap it left standing). These three close it. */
+
+/* A __unwind_info section with size 0 is legal (if unusual): mg_unwind_walk
+ * treats it as "nothing to do" and returns 0, not a refusal -- confirmed by
+ * mutating that exact `if (!sect[j].size) return 0` away, which no fixture
+ * here used to catch. */
+static void test_grow_handles_zero_size_unwind_info(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_UNWIND);
+    mi_image im;
+    CHECK(mi_wrap(buf, fsize, &im) == 0, "setup: fixture wraps");
+    struct section_64 *uw = mi_find_section(&im, "__TEXT", "__unwind_info");
+    CHECK(uw != NULL, "setup: __unwind_info section present");
+    if (!uw) { free(buf); return; }
+    uw->size = 0;
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "grow succeeds on a zero-size __unwind_info section (got %d)", r);
+    free(buf);
+}
+
+/* A __unwind_info section whose offset+size runs past fsize must refuse --
+ * confirmed by mutating that overflow guard away, which no fixture here used
+ * to catch (the well-formed MG_T_UNWIND fixture never approaches fsize).
+ *
+ * Rather than moving the real section near the buffer's physical edge (a
+ * genuine OOB-read risk in a test that doesn't run under libgmalloc), this
+ * lies about the buffer's SIZE instead: claim fsize=5200, which
+ * __init_offsets (ends at 4104) still fits inside but __unwind_info (offset
+ * 5120 + size 128 = 5248, both real, well-formed values from MG_T_UNWIND)
+ * does not. The physical allocation build_image made is still the full 8192
+ * bytes, so nothing is ever actually read out of bounds -- only the overflow
+ * ARITHMETIC (offset + size > fsize) sees a boundary, which is exactly what
+ * this guard checks. */
+static void test_grow_refuses_overflowing_unwind_info(void) {
+    size_t fsize_real; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize_real, &sect_off, MG_T_UNWIND);
+    (void)fsize_real;
+    size_t fsize = 5200;
+
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == -1, "grow refuses an __unwind_info section whose offset+size "
+                   "overflows fsize (got %d)", r);
+    CHECK(fsize == fsize0, "size unchanged on refusal (got %zu want %zu)", fsize, fsize0);
+    if (fsize == fsize0)
+        CHECK(memcmp(before, buf, fsize0) == 0, "buffer byte-identical on refusal");
+    free(before);
+    free(buf);
+}
+
+/* Distinguishes "stop at the FIRST section named __unwind_info" from "keep
+ * going, LAST one wins" -- a mutation that flips mg_unwind_find_cb's
+ * `return 1` to `return 0` passes every other test in this suite, because no
+ * other fixture carries two __unwind_info-named sections. __TEXT's is the
+ * real, well-formed one from MG_T_UNWIND; a second, deliberately malformed
+ * one (13 bytes -- under the 28-byte minimum mg_unwind_walk's body enforces)
+ * sits in a later __DATA segment. If the FIRST is used, grow succeeds; if
+ * the search kept going past it, grow refuses on the malformed second one. */
+static void test_grow_uses_first_unwind_info_not_last(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_UNWIND);
+
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct segment_command_64 *tx =
+        (struct segment_command_64 *)(buf + sizeof *h + sizeof(struct segment_command_64));
+    uint8_t *lcend = (uint8_t *)tx + tx->cmdsize;
+
+    struct segment_command_64 *da = (struct segment_command_64 *)lcend;
+    da->cmd = LC_SEGMENT_64;
+    da->cmdsize = sizeof *da + sizeof(struct section_64);
+    strcpy(da->segname, "__DATA");
+    da->vmaddr = 0x100004000ull;
+    da->vmsize = 0x1000;
+    da->fileoff = 6400;
+    da->filesize = 13;
+    da->nsects = 1;
+    struct section_64 *bad_uw = (struct section_64 *)((uint8_t *)da + sizeof *da);
+    strncpy(bad_uw->sectname, "__unwind_info", sizeof bad_uw->sectname);
+    strncpy(bad_uw->segname, "__DATA", sizeof bad_uw->segname);
+    bad_uw->addr = 0x100004000ull;
+    bad_uw->size = 13;      /* < 28: mg_unwind_walk's own `usz < 28` refusal */
+    bad_uw->offset = 6400;
+    bad_uw->flags = S_REGULAR;
+    h->ncmds++;
+    h->sizeofcmds += da->cmdsize;
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "grow succeeds using the FIRST __unwind_info (__TEXT's), not "
+                  "the malformed second one in __DATA (got %d)", r);
+    free(buf);
+}
+
+/* ---- mg_grow_header's own preconditions: __PAGEZERO and __TEXT ----
+ * The image-base-lowering trick needs a __PAGEZERO to donate space from and
+ * a segment that actually maps the header (fileoff 0, real content) to
+ * lower. Every OTHER fixture in this file builds both, correctly sized --
+ * so these three refusals had never been exercised by anything, hermetic or
+ * real-binary, until a code review round found the gap by mutation. */
+static uint8_t *build_minimal_pie(size_t *fsize_out, int with_pagezero,
+                                  uint64_t pagezero_vmsize, uint64_t text_fileoff) {
+    const size_t fsize = 8192;
+    uint8_t *buf = (uint8_t *)calloc(1, fsize);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+
+    uint8_t *lcp = buf + sizeof *h;
+    uint32_t sizeofcmds = 0;
+
+    if (with_pagezero) {
+        struct segment_command_64 *pz = (struct segment_command_64 *)lcp;
+        pz->cmd = LC_SEGMENT_64;
+        pz->cmdsize = sizeof *pz;
+        strcpy(pz->segname, "__PAGEZERO");
+        pz->vmaddr = 0;
+        pz->vmsize = pagezero_vmsize;
+        pz->fileoff = 0;
+        pz->filesize = 0;   /* filesize 0 keeps it out of the __TEXT probe */
+        lcp += pz->cmdsize; sizeofcmds += pz->cmdsize; h->ncmds++;
+    }
+
+    struct segment_command_64 *tx = (struct segment_command_64 *)lcp;
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx;
+    strcpy(tx->segname, "__TEXT");
+    tx->vmaddr = 0x100000000ull;
+    tx->vmsize = fsize;
+    tx->fileoff = text_fileoff;
+    tx->filesize = (text_fileoff == 0) ? fsize : 0;
+    tx->nsects = 0;
+    sizeofcmds += tx->cmdsize; h->ncmds++;
+
+    h->sizeofcmds = sizeofcmds;
+    *fsize_out = fsize;
+    return buf;
+}
+
+static void check_grow_precondition_refused(const char *what, int with_pagezero,
+                                             uint64_t pagezero_vmsize, uint64_t text_fileoff) {
+    size_t fsize;
+    uint8_t *buf = build_minimal_pie(&fsize, with_pagezero, pagezero_vmsize, text_fileoff);
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == -1, "%s: mg_grow_header refuses (got %d)", what, r);
+    CHECK(fsize == fsize0, "%s: size unchanged on refusal (got %zu want %zu)",
+          what, fsize, fsize0);
+    if (fsize == fsize0)
+        CHECK(memcmp(before, buf, fsize0) == 0, "%s: buffer byte-identical on refusal", what);
+    free(before);
+    free(buf);
+}
+
+static void test_grow_refuses_missing_pagezero(void) {
+    check_grow_precondition_refused("no __PAGEZERO at all", 0, 0, 0);
+}
+
+static void test_grow_refuses_undersized_pagezero(void) {
+    check_grow_precondition_refused("__PAGEZERO smaller than grow", 1, 0x800, 0);
+}
+
+/* Unlike the two __PAGEZERO cases above, mutating away mg_grow_header's own
+ * `!mi_text_base(&find_im)` check does NOT make this test go blind: mg_collect
+ * (called from mg_snapshot_take, further down the same function) makes its
+ * OWN independent mi_text_base call and refuses on the identical condition
+ * ("could not snapshot the base-relative structures"), confirmed by mutation.
+ * So this refusal is doubly guarded -- genuinely redundant, not a gap -- and
+ * this test proves the observable BEHAVIOUR (refuses, unchanged) rather than
+ * pinning which of the two guards fired, per this suite's own rule (see
+ * tests/README.md: assert the behaviour, not which guard fired). */
+static void test_grow_refuses_no_text_segment(void) {
+    check_grow_precondition_refused("no segment maps the header (fileoff 0)",
+                                     1, 0x100000000ull, 0x1000);
+}
+
 /* ---- mg_verify: the grow must move nothing ----
  * The invariant is not "the entries changed by grow", it is "the RESOLVED
  * addresses did not change". Stating it that way is what makes the check catch
@@ -1111,6 +1297,12 @@ int main(void) {
     test_plausible_rejects_an_offset_that_names_no_function();
     test_plausible_rejects_an_unrebased_initializer();
     test_grow_rebases_unwind_info();
+    test_grow_handles_zero_size_unwind_info();
+    test_grow_refuses_overflowing_unwind_info();
+    test_grow_uses_first_unwind_info_not_last();
+    test_grow_refuses_missing_pagezero();
+    test_grow_refuses_undersized_pagezero();
+    test_grow_refuses_no_text_segment();
     test_verify_watches_unwind_info();
     test_verify_accepts_a_correct_grow();
     test_verify_rejects_double_apply();
