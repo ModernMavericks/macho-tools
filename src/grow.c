@@ -261,26 +261,45 @@ int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {
     return 0;
 }
 
+struct mg_unwind_find_ctx {
+    uint8_t *buf;
+    size_t fsize;
+    uint8_t *u;         /* result: section content, or NULL if not found */
+    uint32_t usz;
+    int zero_size;      /* matched a __unwind_info section, but its size is 0 */
+    int overflow;       /* matched, but offset+size runs past fsize */
+};
+
+/* mg_unwind_walk's mi_each_lc callback: find the FIRST LC_SEGMENT_64 section
+ * named "__unwind_info" and stop -- this is a find-first search, not an
+ * iterate-everything walk, so it always returns 1 once it has visited a
+ * segment with a matching-named section (whatever the outcome: found, zero
+ * size, or overflow), matching the original loop's `&& !u` early exit. */
+static int mg_unwind_find_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_unwind_find_ctx *ctx = (struct mg_unwind_find_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *sect = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if (strncmp(sect[j].sectname, "__unwind_info", sizeof sect[j].sectname)) continue;
+        if (!sect[j].size) { ctx->zero_size = 1; return 1; }
+        if ((uint64_t)sect[j].offset + sect[j].size > ctx->fsize) { ctx->overflow = 1; return 1; }
+        ctx->u = ctx->buf + sect[j].offset; ctx->usz = (uint32_t)sect[j].size;
+        return 1;
+    }
+    return 0;
+}
+
 int mg_unwind_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
                           uint64_t base, uint64_t *out, uint8_t *kinds,
                           uint32_t *n, uint32_t max) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    uint8_t *u = NULL; uint32_t usz = 0;
-    for (uint32_t i = 0; i < h->ncmds && !u; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            const struct section_64 *sect = (const struct section_64 *)(sp + sizeof *seg);
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                if (strncmp(sect[j].sectname, "__unwind_info", sizeof sect[j].sectname)) continue;
-                if (!sect[j].size) return 0;
-                if ((uint64_t)sect[j].offset + sect[j].size > fsize) return -1;
-                u = buf + sect[j].offset; usz = (uint32_t)sect[j].size; break;
-            }
-        }
-        sp += lc->cmdsize;
-    }
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return -1;
+    struct mg_unwind_find_ctx fctx = { buf, fsize, NULL, 0, 0, 0 };
+    mi_each_lc(&im, mg_unwind_find_cb, &fctx);
+    if (fctx.zero_size) return 0;
+    if (fctx.overflow) return -1;
+    uint8_t *u = fctx.u; uint32_t usz = fctx.usz;
     if (!u) return 0;                       /* no compact unwind: nothing to do */
 
 #define UW_RD(off) ({ uint32_t _v; memcpy(&_v, u + (off), sizeof _v); _v; })
