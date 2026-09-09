@@ -81,10 +81,17 @@
  *     LC_DYLD_CHAINED_FIXUPS share ml_bump_lc's identical dataoff case
  *     with this list's members, but grow.c REFUSES all three anyway: their
  *     PAYLOAD also needs content-level re-basing this toolkit does not
- *     implement. Folding them into this list would silently WIDEN grow.c's
- *     acceptance to cover them -- exactly the mistake "refuse rather than
- *     guess" exists to prevent -- so this macro must never grow to include
- *     them without also implementing that content re-base.
+ *     implement. Folding one of them into this list would NOT silently
+ *     widen grow.c's acceptance to cover it -- mg_classify_cb already has
+ *     an explicit `case` for it in its own refusal bucket (src/grow.c),
+ *     and this macro's expansion adds a SECOND `case` for the same cmd
+ *     value in the accept bucket, which is a hard COMPILE ERROR
+ *     (`duplicate case value`), not a quiet behavior change. Confirmed
+ *     directly: adding X(LC_SEGMENT_SPLIT_INFO) here fails the build with
+ *     exactly that diagnostic. So this macro is safer than "must never
+ *     grow to include them" alone would suggest -- doing so is not merely
+ *     discouraged, it does not compile until the existing refusal case is
+ *     deleted first, which is itself a visible, reviewable diff.
  *   - This mechanism covers ONLY the case where "ml_bump_lc supports it"
  *     and "safe for grow.c to accept" are truly the same question. It
  *     cannot and does not cover a load command whose file offset

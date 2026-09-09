@@ -420,7 +420,20 @@ static void test_each_lc_refuses_segment_shorter_than_struct(void) {
  * read. Mutation-proven at both -O0 and -O2 with THIS fixture: 195
  * intact refuses cleanly (rc == -1, exit 0) at both; 195 deleted faults
  * (SIGBUS, exit 138) at both -- see this wave's report for the full
- * trace, including the literal-vs-volatile A/B comparison. */
+ * trace, including the literal-vs-volatile A/B comparison.
+ *
+ * THE `volatile` ABOVE IS LOAD-BEARING. Without it, on a future compiler,
+ * a different -O level, or a different SDK, this test can go BACK to
+ * passing vacuously: "no fault occurred" is satisfied just as well by
+ * "195 caught it" as by "the whole read was elided and never happened",
+ * and the assertion below cannot tell those apart by itself -- exactly
+ * the failure mode this comment's own A/B trace hit once already. If a
+ * future reader is tempted to delete a stray-looking `volatile` here,
+ * don't: test_each_lc_195_positive_control immediately below is the
+ * thing that would actually catch that regression -- it fails (not this
+ * test) the moment the `sg->nsects` load stops happening in this build,
+ * because unlike this test it requires the read to succeed and match,
+ * not merely requires nothing to crash. Run both together, always. */
 static void test_each_lc_195_read_is_bounded(void) {
     long pagesz = sysconf(_SC_PAGESIZE);
     CHECK(pagesz > 0, "sysconf(_SC_PAGESIZE) succeeds");
@@ -452,6 +465,76 @@ static void test_each_lc_195_read_is_bounded(void) {
     CHECK(rc == -1,
           "mlive_each_lc(LC_SEGMENT_64 cmdsize < sizeof(segment_command_64)) refuses "
           "without ever reading past cmdsize (got %d)", rc);
+
+    munmap(region, (size_t)pagesz * 2);
+}
+
+/* THE POSITIVE CONTROL test_each_lc_195_read_is_bounded cannot be, by
+ * itself: that test's only assertion is "no fault occurred", which a
+ * genuine refusal and a silently-elided read both satisfy equally well --
+ * it can pass VACUOUSLY on a build where the `sg->nsects` load never
+ * happens at all, and nothing about "the process didn't crash" would say
+ * so. This fixture is the other half: no guard page (both pages stay
+ * PROT_READ|PROT_WRITE), a WELL-FORMED LC_SEGMENT_64 whose cmdsize is set
+ * to EXACTLY `72 + nsects*sizeof(section_64)` -- the value that makes
+ * live.h:205's own `cmdsize != want` check false, so the walk fully
+ * succeeds (rc == 1) ONLY IF the internal `want` computation actually read
+ * `sg->nsects` from memory and it matched what this test wrote there. Both
+ * `nsects` and `cmdsize` are routed through `volatile` locals for the same
+ * reason test_each_lc_195_read_is_bounded's own does: a plain-literal
+ * `sg->nsects = 1;` lets the compiler forward that value into
+ * mlive_each_lc's `want` computation and fold `cmdsize != want` to a
+ * compile-time-constant comparison, satisfying rc == 1 by ARITHMETIC alone
+ * with no runtime load of `sg->nsects` ever emitted -- which would make
+ * this control just as fake a proof as the guard-page test's own first,
+ * elided attempt. With both volatile, the compiler cannot resolve either
+ * side symbolically, so a real load of `sg->nsects` is the only way this
+ * assertion can be satisfied.
+ *
+ * Confirmed this actually discriminates, per this wave's report: rebuilding
+ * this fixture with both `volatile` locals replaced by plain literals
+ * reproduces, at -O2, exactly the silent-pass failure mode this control
+ * exists to catch elsewhere -- and in that rebuild, THIS test (not
+ * test_each_lc_195_read_is_bounded) is the one that goes red, which is the
+ * point: together the two tests say "the read occurs, AND when it would go
+ * out of bounds it faults" -- neither says that alone. */
+static void test_each_lc_195_positive_control(void) {
+    long pagesz = sysconf(_SC_PAGESIZE);
+    CHECK(pagesz > 0, "sysconf(_SC_PAGESIZE) succeeds");
+    if (pagesz <= 0) return;
+
+    uint8_t *region = (uint8_t *)mmap(NULL, (size_t)pagesz * 2, PROT_READ | PROT_WRITE,
+                                       MAP_ANON | MAP_PRIVATE, -1, 0);
+    CHECK(region != MAP_FAILED, "mmap(2 pages) succeeds");
+    if (region == MAP_FAILED) return;
+    /* No mprotect here, deliberately: this fixture is meant to succeed,
+     * not fault -- both pages stay readable/writable. */
+
+    size_t need = sizeof(struct mach_header_64) + 8;
+    uint8_t *buf = region + pagesz - (long)need;
+    memset(buf, 0, need);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_SEGMENT_64;
+    struct segment_command_64 *sg = (struct segment_command_64 *)(void *)lc;
+
+    volatile uint32_t v_nsects = 1;
+    sg->nsects = v_nsects;
+    volatile uint32_t v_want = (uint32_t)(sizeof(struct segment_command_64) +
+                                           (uint64_t)v_nsects * sizeof(struct section_64));
+    hdr->sizeofcmds = v_want;   /* must cover the whole (well-formed) command */
+    lc->cmdsize = v_want;
+
+    count_ctx ctx = { 0 };
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, &ctx);
+    CHECK(rc == 1,
+          "mlive_each_lc(well-formed LC_SEGMENT_64, cmdsize == 72+nsects*sizeof(section_64)) "
+          "fully walks (got %d) -- only reachable if sg->nsects was actually read from memory",
+          rc);
+    CHECK(ctx.nseg == 1, "the callback actually ran (nseg=%u)", ctx.nseg);
 
     munmap(region, (size_t)pagesz * 2);
 }
@@ -629,6 +712,7 @@ int main(void) {
     test_each_lc_refuses_cmdsize_past_sizeofcmds();
     test_each_lc_refuses_segment_shorter_than_struct();
     test_each_lc_195_read_is_bounded();
+    test_each_lc_195_positive_control();
     test_each_lc_refuses_nsects_disagreeing_with_cmdsize();
     test_missing_segment_or_section_returns_null();
     test_probe_object_is_allocation_free();
