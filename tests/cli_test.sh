@@ -60,6 +60,117 @@ build_main() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Host capability: can this host run a Mach-O binary that was modified
+# in-place after being signed at link time, AT ALL?
+#
+# This must be established WITHOUT running macho9 on the probe binary. The
+# grow/lc "still runs" assertions below rewrite a fixture with macho9 and
+# then run it; if this host's kernel kills any modified binary, that proves
+# nothing about macho9 -- but if the probe used to detect that ALSO goes
+# through macho9, a real macho9 regression that corrupts its output looks
+# IDENTICAL to a host that kills modified binaries: same symptom (the child
+# doesn't run), same wrong conclusion ("host policy, not a macho9 defect"),
+# and a genuine defect ships as a green, honest-looking SKIP. That is worse
+# than no check at all.
+#
+# So this probe never calls macho9. It builds a plain fixture, flips ONE
+# byte inside the existing header pad (unused space between the end of the
+# load commands and the first section's file data -- computed here by an
+# independent read, not by calling into macho9/image.h, for the same
+# non-circularity reason strip_version_min.c below is self-contained) via a
+# throwaway C program, and tries to run the result. If the kernel/dyld kills
+# THAT, this host enforces code-signing on any post-link modification,
+# unconditionally of what changed or which tool changed it -- an honest,
+# independently-established fact the grow/lc sections can trust. If it
+# still runs, this host does NOT enforce that, and a failure to run
+# macho9's OWN rewritten fixture later is no longer explainable by host
+# policy -- it must be treated as a real defect (FAIL), not silently
+# skipped.
+cat > "$T/perturb_pad.c" <<'EOF'
+/* Flip one byte inside a Mach-O's header pad (the unused space between the
+ * end of the load commands and the first section's file data) -- content
+ * no code path reads, so this is semantically inert, but it still changes
+ * the file's bytes, which is all a code-signature hash cares about.
+ * Exit 0 = flipped one byte, 4 = no pad available, 2 = error. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+
+int main(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "usage: %s FILE\n", argv[0]); return 2; }
+    int fd = open(argv[1], O_RDWR);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
+    size_t size = (size_t)st.st_size;
+    uint8_t *buf = malloc(size);
+    if (!buf || read(fd, buf, size) != (ssize_t)size) {
+        fprintf(stderr, "read failed\n"); close(fd); return 2;
+    }
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+
+    uint32_t first_sect_off = UINT32_MAX;
+    uint8_t *lcp = buf + sizeof(*hdr);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
+            struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
+            for (uint32_t j = 0; j < seg->nsects; j++)
+                if (sect[j].offset && sect[j].offset < first_sect_off)
+                    first_sect_off = sect[j].offset;
+        }
+        lcp += lc->cmdsize;
+    }
+    uint32_t lc_end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
+    if (first_sect_off == UINT32_MAX || first_sect_off <= lc_end) {
+        fprintf(stderr, "no header pad available to perturb\n");
+        return 4;
+    }
+    buf[lc_end] ^= 0xFF;   /* the first pad byte; never read by any load command */
+
+    lseek(fd, 0, SEEK_SET);
+    if (write(fd, buf, size) != (ssize_t)size) { perror("write"); return 2; }
+    close(fd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/perturb_pad" "$T/perturb_pad.c"
+
+build_main "$T/signing_probe"
+if "$T/perturb_pad" "$T/signing_probe" >"$T/perturb.out" 2>&1; then
+    if (cd "$T" && ./signing_probe) >"$T/signing_probe.out" 2>&1; then
+        signing_probe_rc=0
+    else
+        signing_probe_rc=$?
+    fi
+else
+    signing_probe_rc=$?   # 4 = no pad (fixture too tight -- treat as "can't determine")
+fi
+if [ "$signing_probe_rc" -eq 0 ]; then
+    signing_enforced=0
+    ok "host probe: a trivially-perturbed binary still runs (macho9-independent)"
+elif [ "$signing_probe_rc" -eq 137 ]; then
+    signing_enforced=1
+    ok "host probe: a trivially-perturbed binary is SIGKILLed (137) -- code-signing enforcement, independent of macho9"
+else
+    # Neither a clean run nor the specific signal we know how to explain.
+    # Per the coordinator: do not guess. Anything unrecognized here means the
+    # grow/lc sections below cannot trust EITHER conclusion, so they must not
+    # silently skip -- see their use of signing_probe_unknown.
+    signing_enforced=0
+    signing_probe_unknown=1
+    bad "host probe" "unrecognized outcome (exit $signing_probe_rc: $(head -1 "$T/signing_probe.out" 2>/dev/null || cat "$T/perturb.out" 2>/dev/null || echo 'no output')) -- cannot determine whether this host enforces code-signing on modified binaries; treating grow/lc run-assertions as real rather than risking a masked defect"
+fi
+signing_probe_unknown="${signing_probe_unknown:-0}"
+
 # ============================================================================
 # --capabilities
 # ============================================================================
@@ -151,26 +262,24 @@ fi
 # target platform -- has no such enforcement, so the real "and it still
 # runs" check belongs there and must stay real, not weakened for portability.
 #
-# Probe for the capability empirically (never a hardcoded macOS-version
-# check, so this keeps working if Apple changes the policy again): build a
-# throwaway fixture, apply the EXACT SAME grow, and see whether the host
-# lets it run at all.
-build_main "$T/grow_probe"
-"$MACHO9" grow "$T/grow_probe" 4096 >/dev/null
-if (cd "$T" && ./grow_probe) >"$T/grow_probe.out" 2>&1; then
-    grow_probe_rc=0
+# Uses $signing_enforced, established ABOVE without ever running macho9 --
+# see the "host probe" block after build_main(). Deliberately does NOT probe
+# by growing a throwaway fixture with macho9 itself: that would ask "does
+# THIS host run a macho9-grown binary", which a real macho9 regression that
+# corrupts every grown binary answers identically to "this host kills all
+# modified binaries" -- the exact masking the coordinator flagged. With the
+# host fact established independently, a grow_fixture that fails to run
+# despite signing_enforced=0 is no longer explainable by host policy, so it
+# FAILS here rather than being silently skipped.
+if [ "$signing_enforced" -eq 1 ]; then
+    skip "grow: grown binary still runs" \
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of macho9 by the host probe above); a host policy, not a macho9 defect, and exercised for real on 10.9"
 else
-    grow_probe_rc=$?
-fi
-if [ "$grow_probe_rc" -eq 0 ]; then
     if (cd "$T" && ./grow_fixture); then
         ok "grow: grown binary still runs"
     else
-        bad "grow: run" "grown binary failed to execute"
+        bad "grow: run" "grown binary failed to execute, but this host DOES run a trivially-perturbed binary fine (see host probe above) -- code-signing enforcement is ruled out, so this looks like a real macho9 defect"
     fi
-else
-    skip "grow: grown binary still runs" \
-        "an identically-grown probe binary would not execute on this host (exit $grow_probe_rc: $(head -1 "$T/grow_probe.out" 2>/dev/null || echo 'no output')) -- most likely kernel code-signing enforcement invalidating the signature macho9's rewrite disturbed; this is a host policy, not a macho9 defect, and is exercised for real on 10.9"
 fi
 # N=0 is refused, not silently a no-op.
 if "$MACHO9" grow "$T/grow_fixture" 0 >/dev/null 2>&1; then
@@ -185,17 +294,92 @@ fi
 # build_main's FIXTURE_FLAGS (-mmacosx-version-min=10.9) makes the linker
 # emit LC_VERSION_MIN_MACOSX itself -- so a fixture built that way already
 # HAS the load command macho9 minos is supposed to add, and the "happy
-# path" below would pass even with cmd_minos's body replaced by `return 0`.
-# -Wl,-no_version_load_command suppresses that (verified: no
-# LC_VERSION_MIN_MACOSX and no LC_BUILD_VERSION either, so it isn't sneaking
-# back in under the newer spelling), so this fixture genuinely lacks the
-# load command before the tool runs, and the "present after" assertion
-# actually proves add_version_min's delegation did something.
-"$CC" -O2 $FIXTURE_FLAGS -Wl,-no_version_load_command \
-    "$T/main.c" "$T/liba.dylib" -o "$T/minos_fixture"
+# path" below would pass even with cmd_minos's body replaced by `return 0`
+# (confirmed by doing exactly that -- see the commit message).
+#
+# A first fix tried -Wl,-no_version_load_command to suppress it at link
+# time. That is 10.9-ld-only: it linked here and broke the whole suite on
+# the cross runner ("ld: unknown options: -no_version_load_command"),
+# trading one host dependency for a worse one -- a hard link failure
+# instead of one weak assertion. Fixed properly this time: build the
+# fixture NORMALLY (portable -- every fixture in this file does this) and
+# then remove the load command ourselves, by direct Mach-O structure
+# surgery, with a tiny throwaway C program compiled by plain $CC with no
+# special flags -- the same "read/write the structure directly" idiom
+# change_dylib_test.sh's ordinal_of.c already uses, so nothing here depends
+# on a specific ld/clang version, and nothing here depends on macho9 or
+# change_dylib's own strip machinery either (their -strip-lc/`lc -delete`
+# vocabulary doesn't cover LC_VERSION_MIN_MACOSX today, and reusing the
+# tool under test to build that test's own fixture would be circular
+# regardless). The fixture is therefore test-tool-constructed, not
+# linker-constructed, for this one load command only.
+cat > "$T/strip_version_min.c" <<'EOF'
+/* Remove the FIRST LC_VERSION_MIN_MACOSX load command from a Mach-O file,
+ * in place: memmove the load commands after it down over it, zero the
+ * freed tail bytes (they become header pad), and fix up ncmds/sizeofcmds.
+ * Exit 0 = removed, 3 = none present (nothing to do), 2 = error. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+
+int main(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "usage: %s FILE\n", argv[0]); return 2; }
+    int fd = open(argv[1], O_RDWR);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
+    size_t size = (size_t)st.st_size;
+    uint8_t *buf = malloc(size);
+    if (!buf || read(fd, buf, size) != (ssize_t)size) {
+        fprintf(stderr, "read failed\n"); close(fd); return 2;
+    }
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+
+    uint8_t *lcp = buf + sizeof(*hdr);
+    uint32_t found_off = 0, found_size = 0;
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_VERSION_MIN_MACOSX) {
+            found_off = (uint32_t)(lcp - buf);
+            found_size = lc->cmdsize;
+            break;
+        }
+        lcp += lc->cmdsize;
+    }
+    if (!found_size) { fprintf(stderr, "no LC_VERSION_MIN_MACOSX present\n"); return 3; }
+
+    uint32_t lc_end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
+    uint32_t after = found_off + found_size;
+    memmove(buf + found_off, buf + after, lc_end - after);
+    memset(buf + lc_end - found_size, 0, found_size);
+    hdr->ncmds -= 1;
+    hdr->sizeofcmds -= found_size;
+
+    lseek(fd, 0, SEEK_SET);
+    if (write(fd, buf, size) != (ssize_t)size) { perror("write"); return 2; }
+    close(fd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/strip_version_min" "$T/strip_version_min.c"
+
+build_main "$T/minos_fixture"
+"$T/strip_version_min" "$T/minos_fixture"
+strip_rc=$?
+if [ "$strip_rc" -eq 2 ]; then
+    bad "minos: fixture setup" "strip_version_min failed unexpectedly (exit 2)"
+elif [ "$strip_rc" -ne 0 ] && [ "$strip_rc" -ne 3 ]; then
+    bad "minos: fixture setup" "strip_version_min exited $strip_rc"
+fi
 before_minos=$("$MACHO9" info "$T/minos_fixture")
 if echo "$before_minos" | grep -qE "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION"; then
-    bad "minos: precondition" "fixture already carries a platform/version-min load command"
+    bad "minos: precondition" "fixture still carries a platform/version-min load command"
 else
     ok "minos: fixture genuinely has no LC_VERSION_MIN_MACOSX before"
 fi
@@ -231,36 +415,37 @@ if echo "$after_info" | grep -q "LC_UUID"; then
 else
     ok "lc: delete uuid removed it"
 fi
-# Whether a binary that's had its LC_UUID deleted can still be EXECUTED is
-# again a question about the host's dyld, not about macho9: modern dyld
-# refuses to load an image carrying no LC_UUID at all ("missing LC_UUID
-# load command"), a requirement 10.9's dyld does not have. Kernel
-# code-signing enforcement (see the grow probe above) can also be in play,
-# since deleting a load command rewrites the header too -- the two showed up
-# as genuinely different failure modes on the cross runner that motivated
-# this (grow got SIGKILLed outright; this got far enough for dyld itself to
-# abort on the missing UUID), so this probes its OWN exact rewrite rather
-# than reusing the grow probe's verdict.
-build_main "$T/lc_probe"
-"$MACHO9" lc "$T/lc_probe" -delete uuid >/dev/null
-if (cd "$T" && ./lc_probe) >"$T/lc_probe.out" 2>&1; then
-    lc_probe_rc=0
+# Whether a binary that's had its LC_UUID deleted can still be EXECUTED
+# turns on TWO independent host facts, not on macho9: (a) kernel
+# code-signing enforcement, killing ANY binary modified since it was
+# signed -- see $signing_enforced, established above without ever running
+# macho9; (b) modern dyld separately refusing to load an image with no
+# LC_UUID at all ("missing LC_UUID load command"), which 10.9's dyld does
+# not require. These showed up as genuinely different failure modes on the
+# cross runner that motivated this (grow got SIGKILLed outright; this got
+# far enough for dyld itself to abort on the missing UUID).
+#
+# signing_enforced already answers (a) honestly. For (b), run lc_fixture
+# for real and read its OWN failure, rather than inferring it from a
+# separate macho9-produced probe (the same masking risk as grow's old
+# probe): only a failure whose message literally names the missing-LC_UUID
+# refusal is treated as (b) and skipped; anything else, with signing
+# already ruled out, is a real defect and FAILS.
+if [ "$signing_enforced" -eq 1 ]; then
+    skip "lc: binary still runs after uuid deletion" \
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of macho9 by the host probe above); a host policy, not a macho9 defect, and exercised for real on 10.9"
 else
-    lc_probe_rc=$?
-fi
-if [ "$lc_probe_rc" -eq 0 ]; then
-    if (cd "$T" && ./lc_fixture); then
+    if (cd "$T" && ./lc_fixture) >"$T/lc_fixture_run.out" 2>&1; then
         ok "lc: binary still runs after uuid deletion"
     else
-        bad "lc: run" "binary failed to execute after uuid deletion"
+        lc_run_rc=$?
+        if grep -qi "missing LC_UUID" "$T/lc_fixture_run.out" 2>/dev/null; then
+            skip "lc: binary still runs after uuid deletion" \
+                "modern dyld refuses to load any image with no LC_UUID at all ('missing LC_UUID load command'); 10.9's dyld has no such requirement. Code-signing enforcement was independently ruled out above (a trivially-perturbed binary DID run on this host), so this is dyld's own content-driven refusal, not a masked macho9 defect"
+        else
+            bad "lc: run" "binary failed to execute after uuid deletion (exit $lc_run_rc: $(head -1 "$T/lc_fixture_run.out" 2>/dev/null || echo 'no output')), this host DOES run a trivially-perturbed binary fine (see host probe above), and dyld did not report its missing-LC_UUID message -- code-signing and the known dyld requirement are both ruled out, so this looks like a real macho9 defect"
+        fi
     fi
-else
-    if grep -qi "missing LC_UUID" "$T/lc_probe.out" 2>/dev/null; then
-        lc_run_reason="modern dyld refuses to load any image with no LC_UUID at all ('missing LC_UUID load command'); 10.9's dyld has no such requirement"
-    else
-        lc_run_reason="an identically-uuid-deleted probe binary would not execute on this host (exit $lc_probe_rc: $(head -1 "$T/lc_probe.out" 2>/dev/null || echo 'no output')) -- most likely kernel code-signing enforcement, the same as the grow probe above"
-    fi
-    skip "lc: binary still runs after uuid deletion" "$lc_run_reason -- a host policy, not a macho9 defect, and exercised for real on 10.9"
 fi
 # Unknown KIND is refused with this verb's own message, before delegating.
 if "$MACHO9" lc "$T/lc_fixture" -delete bogus-kind >/dev/null 2>"$T/lc_bad.err"; then
@@ -270,6 +455,31 @@ else
 fi
 grep -q "unknown KIND" "$T/lc_bad.err" && ok "lc: bad kind message" \
     || bad "lc: bad kind message" "missing 'unknown KIND'"
+
+# ============================================================================
+# dylib: --allow-grow alone (no operation) must be refused with MACHO9's
+# OWN usage, not change_dylib's.
+#
+# --allow-grow used to count toward the "need at least one operation" guard
+# (k, which included it), so this exact invocation fell through to
+# change_dylib and printed ITS usage -- leaking the -change/-add/-strip-lc/
+# -add-rpath spellings this grammar deliberately does not offer (see
+# cmd_dylib_or_rpath's `nops` counter in cli/macho9.c). Regression test for
+# that fix: no cli_test.sh assertion existed for it before.
+# ============================================================================
+build_main "$T/dylib_noop_fixture"
+if "$MACHO9" dylib "$T/dylib_noop_fixture" --allow-grow >/dev/null 2>"$T/dylib_noop.err"; then
+    bad "dylib: --allow-grow alone" "should be refused (no operation given)"
+else
+    ok "dylib: --allow-grow alone is refused"
+fi
+grep -q "need at least one operation" "$T/dylib_noop.err" && ok "dylib: --allow-grow alone prints macho9's own usage" \
+    || bad "dylib: --allow-grow alone message" "missing macho9's 'need at least one operation'"
+if grep -qE -- "-strip-lc|-add-rpath" "$T/dylib_noop.err"; then
+    bad "dylib: --allow-grow alone" "leaked change_dylib's usage (-strip-lc/-add-rpath) in: $(cat "$T/dylib_noop.err")"
+else
+    ok "dylib: --allow-grow alone does not leak change_dylib's spellings"
+fi
 
 # ============================================================================
 # dylib -replace  (and --allow-grow forcing a real header growth)
