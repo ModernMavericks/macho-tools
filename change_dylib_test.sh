@@ -1146,9 +1146,13 @@ fi
 # directly, against the tool that actually depends on it.
 #
 # fix_macho is built from source here (like change_dylib above) rather than
-# consumed as a CMake target, for the same standalone-script reason; it
-# needs only fat.c from src/.
-"$CC" -O2 -I src -o "$T/fix_macho" fix_macho.c src/fat.c
+# consumed as a CMake target, for the same standalone-script reason. It now
+# routes process_macho's validation through mi_wrap (src/image.c) and bounds
+# a dylib name offset via mo_lc_str_at (src/ordinals.c, which in turn needs
+# src/uleb.c for its bind-stream ULEB decoding, even though fix_macho itself
+# never calls that path) -- so it needs the same toolkit sources change_dylib
+# above does, not just fat.c.
+"$CC" -O2 -I src -o "$T/fix_macho" fix_macho.c src/fat.c src/image.c src/ordinals.c src/uleb.c
 
 cat > "$T/mk2fat_overlap.c" <<'EOF'
 #include <stdio.h>

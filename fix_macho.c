@@ -16,6 +16,8 @@
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
 #include "fat.h"
+#include "image.h"
+#include "ordinals.h"
 
 /* The 10.9 SDK's <mach-o/fat.h> predates the 64-bit fat container and does
  * not define these -- see change_dylib.c's identical guard for the fuller
@@ -42,11 +44,22 @@ struct rename_seg_entry {
 static int process_macho(uint8_t *buf, size_t size, struct change_entry *changes,
                          int nchanges, int strip_bv,
                          struct rename_seg_entry *renames, int nrenames) {
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    if (hdr->magic != MH_MAGIC_64) {
-        fprintf(stderr, "  Not 64-bit Mach-O (magic=0x%x)\n", hdr->magic);
+    /* `size` used to be accepted and never read: only the magic was checked,
+     * with no bound on sizeofcmds or any individual cmdsize, and
+     * dylib.name.offset was trusted outright. On a malformed or truncated
+     * slice that let the -strip_build_version memmove/memset below (and the
+     * -change path's name write) run past the end of `buf`. mi_wrap runs the
+     * same load-command validation every other tool in this codebase relies
+     * on (magic, sizeofcmds/cmdsize bounds, LC_SEGMENT_64's nsects actually
+     * fitting its cmdsize) against this exact `size` -- so every offset this
+     * function trusts afterward has already been proven to fit. */
+    mi_image im;
+    if (mi_wrap(buf, size, &im) != 0) {
+        fprintf(stderr, "  Not a valid 64-bit Mach-O (bad magic, load commands don't fit "
+                        "the %zu-byte slice, or a malformed LC_SEGMENT_64)\n", size);
         return -1;
     }
+    struct mach_header_64 *hdr = im.hdr;
 
     uint8_t *lcp = buf + sizeof(struct mach_header_64);
     uint8_t *lcend = lcp + hdr->sizeofcmds;
@@ -91,7 +104,12 @@ static int process_macho(uint8_t *buf, size_t size, struct change_entry *changes
         if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB ||
             lc->cmd == LC_ID_DYLIB || lc->cmd == LC_REEXPORT_DYLIB) {
             struct dylib_command *dc = (struct dylib_command *)lcp;
-            char *name = (char *)lcp + dc->dylib.name.offset;
+            char *name = (char *)mo_lc_str_at((const struct load_command *)lcp, dc->dylib.name.offset);
+            if (!name) {
+                fprintf(stderr, "  ERROR: malformed dylib load command (name offset %u "
+                                "exceeds cmdsize %u)\n", dc->dylib.name.offset, dc->cmdsize);
+                return -1;
+            }
 
             for (int c = 0; c < nchanges; c++) {
                 if (strcmp(name, changes[c].old_path) == 0) {
@@ -201,6 +219,21 @@ int main(int argc, char **argv) {
         printf("Processing thin Mach-O:\n");
         int r = process_macho(buf, fsize, changes, nchanges, strip_bv, renames, nrenames);
         if (r > 0) modified = 1;
+        else if (r < 0) {
+            /* Unlike the fat loop above (multiple slices, where one this tool
+             * can't handle is tolerable as long as the others still get
+             * processed), a thin file has exactly one slice: if
+             * process_macho refused it, there is nothing left to do but
+             * report failure. Before this fix the return value was simply
+             * dropped here, so a real refusal (e.g. process_macho's own
+             * "malformed dylib load command" or "new path too long" errors,
+             * already printed to stderr) still exited 0 with "No changes
+             * needed" -- a refusal that looked like success to any caller
+             * checking only the exit code. */
+            close(fd);
+            free(buf);
+            return 1;
+        }
     } else if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
         /* Genuinely a Mach-O (a 64-bit fat container, fat_arch_64 -- wide
          * offsets, used for arm64e/watchOS-style slices); this tool just

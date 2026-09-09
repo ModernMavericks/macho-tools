@@ -41,6 +41,15 @@ static int mi_validate(const uint8_t *buf, size_t size, struct mach_header_64 **
         const struct load_command *lc =
             (const struct load_command *)(buf + sizeof(*hdr) + off);
         if (lc->cmdsize < sizeof(struct load_command)) return 1;
+        /* 64-bit Mach-O requires every load command to be a multiple of 8
+         * bytes (so 64-bit fields inside later commands stay naturally
+         * aligned); an unaligned cmdsize is malformed, not merely unusual.
+         * Without this check one is silently accepted and walked -- every
+         * `p += lc->cmdsize` in this file and every caller that trusts this
+         * validation (mg_first_sect_off and friends in macho_grow.h,
+         * change_dylib.c's build_lcs, ordinals.c's mo_map_build) inherits
+         * whatever misalignment this let through. */
+        if (lc->cmdsize % 8 != 0) return 1;
         if (off + lc->cmdsize > (size_t)hdr->sizeofcmds) return 1;
 
         if (lc->cmd == LC_SEGMENT_64) {

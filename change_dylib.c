@@ -617,7 +617,7 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
 
     /* Ordinals last, against the committed table — and before any write, so a
      * refusal leaves the input untouched rather than half-rewritten. */
-    if (needs_renumber && mo_map_apply(buf, &omap, 1) != 0) {
+    if (needs_renumber && mo_map_apply(buf, fsize, &omap, 1) != 0) {
         fprintf(stderr, "ERROR: %s left unmodified\n", label);
         return PO_ERROR;
     }
