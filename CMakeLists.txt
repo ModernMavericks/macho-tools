@@ -109,22 +109,25 @@ install(TARGETS ${MACHO_TOOLS} macho9 RUNTIME DESTINATION bin)
 enable_testing()
 
 # Hermetic: the grow, every base-relative re-baser, mg_verify and mg_plausible,
-# against synthetic images built in memory. -Wno-unused-function because the
-# header exposes helpers this translation unit does not all use.
-add_executable(macho_grow_test macho_grow_test.c)
+# against synthetic images built in memory. -Wno-unused-function because
+# src/grow.h declares helpers this translation unit does not all call.
+add_executable(grow_test tests/grow_test.c)
 # -Wall deploys lesson nine's detection net (tests/README.md): a
 # -Wfortify-source "will always overflow" diagnostic on a strcpy into a
 # char[16] segname/sectname fires here at COMPILE time, on any host, well
 # before a modern-clang runner would abort at RUNTIME building the same
 # fixture -- and this file holds the fixture builders. It was missing
 # -Wall entirely (silent since c06bdce first added this target); adding it
-# produces exactly one warning, already present without it and unrelated
-# to this file (macho_grow.h:198's mg_trie_scan, pre-existing, not
-# reachable from user input). -Wno-unused-function stays: the header
-# exposes helpers this translation unit does not all use.
-target_compile_options(macho_grow_test PRIVATE -O2 -Wall -Wno-unused-function)
-target_link_libraries(macho_grow_test PRIVATE macho9core)
-add_test(NAME macho_grow_test COMMAND macho_grow_test)
+# used to produce exactly one warning, unrelated to this file: a `static`
+# mg_trie_scan defined inside header-only macho_grow.h, included into
+# multiple translation units, tripped -Wunneeded-internal-declaration. Task
+# 3's move to src/grow.c gave every one of these functions external linkage,
+# which is exactly what that warning was asking for -- it is gone now, not
+# suppressed. -Wno-unused-function stays: src/grow.h declares helpers this
+# translation unit does not all use.
+target_compile_options(grow_test PRIVATE -O2 -Wall -Wno-unused-function)
+target_link_libraries(grow_test PRIVATE macho9core)
+add_test(NAME grow_test COMMAND grow_test)
 
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
 # exercised against a binary a linker actually emitted rather than one this test
