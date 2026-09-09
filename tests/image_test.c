@@ -104,6 +104,75 @@ static void test_open_refuses_a_non_macho(void) {
     CHECK(mi_open("tests/EXPECTED", &im) != 0, "mi_open(text file) refuses");
 }
 
+/* ---- wrap ---- */
+
+static void test_wrap_accepts_a_caller_owned_buffer(void) {
+    /* macho_grow_test.c builds Mach-O images SYNTHETICALLY IN MEMORY and never
+     * from a file, so mi_open can't serve it. mi_wrap is how such a buffer gets
+     * the same validated view, without mi_open's open()/read()/malloc. */
+    mi_image src;
+    if (mi_open(FIXTURE, &src) != 0) { CHECK(0, "wrap: fixture would not open"); return; }
+    size_t size = src.size;
+    uint8_t *owned = mi_release(&src);   /* caller now owns this buffer */
+
+    mi_image im;
+    int rc = mi_wrap(owned, size, &im);
+    CHECK(rc == 0, "mi_wrap(valid buffer) == 0 (got %d)", rc);
+    if (rc == 0) {
+        CHECK(im.buf == owned,              "  buf IS the caller's buffer, not a copy");
+        CHECK(im.size == size,              "  size matches");
+        CHECK(im.cap == size,               "  cap == size (no slack)");
+        CHECK(im.hdr->magic == MH_MAGIC_64, "  hdr is set");
+        CHECK(mi_find_segment(&im, "__TEXT") != NULL, "  and it's iterable, e.g. finds __TEXT");
+    }
+    mi_close(&im);   /* must NOT free `owned` -- the caller still owns it */
+    CHECK(((struct mach_header_64 *)owned)->magic == MH_MAGIC_64,
+          "mi_close on a wrapped image left the caller's buffer intact");
+    free(owned);
+}
+
+static void test_wrap_refuses_bad_magic(void) {
+    uint8_t junk[sizeof(struct mach_header_64)];
+    memset(junk, 0, sizeof junk);
+    mi_image im;
+    CHECK(mi_wrap(junk, sizeof junk, &im) != 0, "mi_wrap(bad magic) refuses");
+}
+
+static void test_wrap_refuses_load_commands_past_the_end(void) {
+    /* Same validation mi_open does: a cmdsize/sizeofcmds that strides past the
+     * buffer must be caught here, not walked off the end of by some later
+     * caller that trusts ncmds. */
+    mi_image src;
+    if (mi_open(FIXTURE, &src) != 0) { CHECK(0, "wrap: fixture would not open"); return; }
+    uint8_t *buf = (uint8_t *)malloc(src.size);
+    memcpy(buf, src.buf, src.size);
+    size_t size = src.size;
+    mi_close(&src);
+
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    hdr->sizeofcmds = 0xFFFFFFFFu;   /* claims far more than the buffer holds */
+
+    mi_image im;
+    CHECK(mi_wrap(buf, size, &im) != 0, "mi_wrap(overclaiming sizeofcmds) refuses");
+    free(buf);
+}
+
+static void test_wrap_does_not_copy(void) {
+    /* The defining property: no malloc, no read -- a view over memory the
+     * caller already has, stack included. */
+    uint8_t stackbuf[8528];
+    mi_image src;
+    if (mi_open(FIXTURE, &src) != 0) { CHECK(0, "wrap: fixture would not open"); return; }
+    memcpy(stackbuf, src.buf, src.size);
+    mi_close(&src);
+
+    mi_image im;
+    int rc = mi_wrap(stackbuf, sizeof stackbuf, &im);
+    CHECK(rc == 0, "mi_wrap(stack buffer) == 0 (got %d)", rc);
+    CHECK(im.buf == stackbuf, "  and it points AT the stack buffer, not a copy");
+    mi_close(&im);   /* must not free/touch a stack address */
+}
+
 /* ---- iterate ---- */
 
 struct lc_count { uint32_t seen; uint32_t segments; };
@@ -173,6 +242,10 @@ int main(void) {
     test_release_hands_the_buffer_to_the_caller();
     test_open_refuses_a_missing_file();
     test_open_refuses_a_non_macho();
+    test_wrap_accepts_a_caller_owned_buffer();
+    test_wrap_refuses_bad_magic();
+    test_wrap_refuses_load_commands_past_the_end();
+    test_wrap_does_not_copy();
     test_each_lc_visits_every_command();
     test_find_segment();
     test_find_section();

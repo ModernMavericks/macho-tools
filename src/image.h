@@ -18,10 +18,14 @@
 #include <mach-o/loader.h>
 
 typedef struct {
-    uint8_t               *buf;   /* whole file, heap; owned by the mi_image */
-    size_t                 size;  /* the FILE's size -- what was read in */
+    uint8_t               *buf;   /* the image; heap-owned by mi_open*, or a
+                                    * caller's buffer wrapped by mi_wrap */
+    size_t                 size;  /* the FILE's size -- what was read in, or
+                                    * the wrapped buffer's size for mi_wrap */
     size_t                 cap;   /* how much buffer there is; >= size */
     struct mach_header_64 *hdr;   /* == (struct mach_header_64 *)buf */
+    int                     owned; /* nonzero if mi_close must free(buf); 0 for
+                                     * a buffer mi_wrap merely views */
 } mi_image;
 
 /* Read `path` whole, validate it is a 64-bit Mach-O whose load commands fit
@@ -37,8 +41,19 @@ int mi_open(const char *path, mi_image *out);
  * growth is bounded and known -- this exists for the case where it is not. */
 int mi_open_slack(const char *path, size_t slack, mi_image *out);
 
-/* Free the buffer and zero the struct. Safe on an all-zero mi_image, and safe
- * after mi_release. */
+/* Build an mi_image over `buf` (exactly `size` bytes), which the CALLER owns --
+ * no file, no read, no allocation. Runs the same validation mi_open does
+ * (magic, load commands fitting inside `size`, no cmdsize striding past the
+ * end) and returns non-zero on failure, leaving *out untouched. `cap` is set
+ * to `size`. This is how a synthetic, in-memory Mach-O (macho_grow_test.c
+ * builds several) gets the same validated view mi_open gives a file --
+ * without a file to read. mi_close on a wrapped image never frees `buf`: the
+ * caller still owns it. */
+int mi_wrap(uint8_t *buf, size_t size, mi_image *out);
+
+/* Free the buffer and zero the struct -- but only if the image owns it: a
+ * buffer handed to mi_wrap belongs to the caller and is left untouched. Safe
+ * on an all-zero mi_image, and safe after mi_release. */
 void mi_close(mi_image *im);
 
 /* Hand the buffer to the caller and empty the image. Use this when the caller

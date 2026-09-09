@@ -16,6 +16,35 @@ static int name_eq(const char *field, const char *want) {
     return strncmp(field, want, 16) == 0;
 }
 
+/* Shared by mi_open_slack and mi_wrap: is `buf[0..size)` a 64-bit Mach-O whose
+ * load commands fit inside it? The load commands must fit in the buffer, and
+ * each must be large enough to be a load command and not stride past the end
+ * of the region. A rewriter that trusts ncmds and walks off the buffer is the
+ * failure this prevents, and it is why every caller gets to drop its own
+ * bounds check. Returns 0 and sets *hdr_out on success, non-zero otherwise. */
+static int mi_validate(const uint8_t *buf, size_t size, struct mach_header_64 **hdr_out) {
+    if (size < sizeof(struct mach_header_64)) return 1;
+
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) return 1;
+
+    size_t region = sizeof(*hdr) + (size_t)hdr->sizeofcmds;
+    if (region > size) return 1;
+
+    size_t off = 0;
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        if (off + sizeof(struct load_command) > (size_t)hdr->sizeofcmds) return 1;
+        const struct load_command *lc =
+            (const struct load_command *)(buf + sizeof(*hdr) + off);
+        if (lc->cmdsize < sizeof(struct load_command)) return 1;
+        if (off + lc->cmdsize > (size_t)hdr->sizeofcmds) return 1;
+        off += lc->cmdsize;
+    }
+
+    *hdr_out = hdr;
+    return 0;
+}
+
 int mi_open(const char *path, mi_image *out) {
     return mi_open_slack(path, 0, out);
 }
@@ -37,42 +66,38 @@ int mi_open_slack(const char *path, size_t slack, mi_image *out) {
     }
     close(fd);
 
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    if (hdr->magic != MH_MAGIC_64) { free(buf); return 1; }
+    struct mach_header_64 *hdr;
+    if (mi_validate(buf, (size_t)st.st_size, &hdr) != 0) { free(buf); return 1; }
 
-    /* The load commands must fit in the file, and each must be large enough to
-     * be a load command and not stride past the end of the region. A rewriter
-     * that trusts ncmds and walks off the buffer is the failure this prevents,
-     * and it is why every caller gets to drop its own bounds check. */
-    size_t region = sizeof(*hdr) + (size_t)hdr->sizeofcmds;
-    if (region > (size_t)st.st_size) { free(buf); return 1; }
+    out->buf   = buf;
+    out->size  = (size_t)st.st_size;
+    out->cap   = cap;
+    out->hdr   = hdr;
+    out->owned = 1;
+    return 0;
+}
 
-    size_t off = 0;
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        if (off + sizeof(struct load_command) > (size_t)hdr->sizeofcmds) { free(buf); return 1; }
-        const struct load_command *lc =
-            (const struct load_command *)(buf + sizeof(*hdr) + off);
-        if (lc->cmdsize < sizeof(struct load_command)) { free(buf); return 1; }
-        if (off + lc->cmdsize > (size_t)hdr->sizeofcmds) { free(buf); return 1; }
-        off += lc->cmdsize;
-    }
+int mi_wrap(uint8_t *buf, size_t size, mi_image *out) {
+    struct mach_header_64 *hdr;
+    if (mi_validate(buf, size, &hdr) != 0) return 1;
 
-    out->buf  = buf;
-    out->size = (size_t)st.st_size;
-    out->cap  = cap;
-    out->hdr  = hdr;
+    out->buf   = buf;
+    out->size  = size;
+    out->cap   = size;
+    out->hdr   = hdr;
+    out->owned = 0;
     return 0;
 }
 
 void mi_close(mi_image *im) {
     if (!im) return;
-    free(im->buf);
-    im->buf = NULL; im->size = 0; im->cap = 0; im->hdr = NULL;
+    if (im->owned) free(im->buf);
+    im->buf = NULL; im->size = 0; im->cap = 0; im->hdr = NULL; im->owned = 0;
 }
 
 uint8_t *mi_release(mi_image *im) {
     uint8_t *buf = im->buf;
-    im->buf = NULL; im->size = 0; im->cap = 0; im->hdr = NULL;
+    im->buf = NULL; im->size = 0; im->cap = 0; im->hdr = NULL; im->owned = 0;
     return buf;
 }
 
