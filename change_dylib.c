@@ -178,7 +178,7 @@ static int renumber_bind_stream(uint8_t *base, uint32_t size, const int *map,
         }
         case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB: {
             uint64_t v = 0;
-            int len = mg_uleb_decode(p + 1, end, &v);
+            int len = mu_decode(p + 1, end, &v);
             int neu;
             if (len <= 0) { fprintf(stderr, "ERROR: %s: bad ULEB\n", what); return -1; }
             if (v < 1 || v > (uint64_t)nold) {
@@ -194,7 +194,7 @@ static int renumber_bind_stream(uint8_t *base, uint32_t size, const int *map,
             }
             /* Rewrite in place only if the new value encodes to the same width;
              * growing the stream would shift all of LINKEDIT. */
-            if (mg_uleb_minlen((uint64_t)neu) != len) {
+            if (mu_minlen((uint64_t)neu) != len) {
                 fprintf(stderr, "ERROR: %s: ULEB ordinal %d changes width "
                                 "(would need a stream rebuild)\n", what, neu);
                 return -1;

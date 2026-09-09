@@ -26,38 +26,38 @@ static int fails = 0;
 /* ---- ULEB128 primitives ---- */
 static void test_uleb_decode(void) {
     uint64_t v; int n;
-    uint8_t a[] = {0x00};                 n = mg_uleb_decode(a, a+1, &v); CHECK(n==1 && v==0,      "uleb 0x00 -> 0 (got n=%d v=%llu)", n, (unsigned long long)v);
-    uint8_t b[] = {0x7f};                 n = mg_uleb_decode(b, b+1, &v); CHECK(n==1 && v==127,    "uleb 0x7f -> 127");
-    uint8_t c[] = {0x80,0x01};            n = mg_uleb_decode(c, c+2, &v); CHECK(n==2 && v==128,    "uleb 80 01 -> 128");
-    uint8_t d[] = {0xc0,0x15};            n = mg_uleb_decode(d, d+2, &v); CHECK(n==2 && v==2752,   "uleb c0 15 -> 2752 (the 2.1.227 leading delta)");
-    uint8_t e[] = {0xff,0x7f};            n = mg_uleb_decode(e, e+2, &v); CHECK(n==2 && v==16383,  "uleb ff 7f -> 16383");
-    uint8_t f[] = {0x80,0x80,0x01};       n = mg_uleb_decode(f, f+3, &v); CHECK(n==3 && v==16384,  "uleb 80 80 01 -> 16384");
+    uint8_t a[] = {0x00};                 n = mu_decode(a, a+1, &v); CHECK(n==1 && v==0,      "uleb 0x00 -> 0 (got n=%d v=%llu)", n, (unsigned long long)v);
+    uint8_t b[] = {0x7f};                 n = mu_decode(b, b+1, &v); CHECK(n==1 && v==127,    "uleb 0x7f -> 127");
+    uint8_t c[] = {0x80,0x01};            n = mu_decode(c, c+2, &v); CHECK(n==2 && v==128,    "uleb 80 01 -> 128");
+    uint8_t d[] = {0xc0,0x15};            n = mu_decode(d, d+2, &v); CHECK(n==2 && v==2752,   "uleb c0 15 -> 2752 (the 2.1.227 leading delta)");
+    uint8_t e[] = {0xff,0x7f};            n = mu_decode(e, e+2, &v); CHECK(n==2 && v==16383,  "uleb ff 7f -> 16383");
+    uint8_t f[] = {0x80,0x80,0x01};       n = mu_decode(f, f+3, &v); CHECK(n==3 && v==16384,  "uleb 80 80 01 -> 16384");
     /* runs off the end (continuation bit set, no more bytes) -> malformed */
-    uint8_t g[] = {0x80};                 n = mg_uleb_decode(g, g+1, &v); CHECK(n==0,              "uleb truncated -> 0 (got n=%d)", n);
+    uint8_t g[] = {0x80};                 n = mu_decode(g, g+1, &v); CHECK(n==0,              "uleb truncated -> 0 (got n=%d)", n);
 }
 
 static void test_uleb_minlen(void) {
-    CHECK(mg_uleb_minlen(0)==1,       "minlen(0)=1");
-    CHECK(mg_uleb_minlen(127)==1,     "minlen(127)=1");
-    CHECK(mg_uleb_minlen(128)==2,     "minlen(128)=2");
-    CHECK(mg_uleb_minlen(2752)==2,    "minlen(2752)=2");
-    CHECK(mg_uleb_minlen(16383)==2,   "minlen(16383)=2");
-    CHECK(mg_uleb_minlen(16384)==3,   "minlen(16384)=3");
-    CHECK(mg_uleb_minlen(6848)==2,    "minlen(6848)=2  (2752 + one page)");
+    CHECK(mu_minlen(0)==1,       "minlen(0)=1");
+    CHECK(mu_minlen(127)==1,     "minlen(127)=1");
+    CHECK(mu_minlen(128)==2,     "minlen(128)=2");
+    CHECK(mu_minlen(2752)==2,    "minlen(2752)=2");
+    CHECK(mu_minlen(16383)==2,   "minlen(16383)=2");
+    CHECK(mu_minlen(16384)==3,   "minlen(16384)=3");
+    CHECK(mu_minlen(6848)==2,    "minlen(6848)=2  (2752 + one page)");
 }
 
 static void test_uleb_encode_fixed(void) {
     uint8_t buf[8]; uint64_t v; int n;
     /* minimal width */
-    CHECK(mg_uleb_encode_fixed(buf, 6848, 2)==1, "encode 6848 in 2 bytes ok");
-    n = mg_uleb_decode(buf, buf+2, &v); CHECK(n==2 && v==6848, "  round-trips to 6848");
+    CHECK(mu_encode_fixed(buf, 6848, 2)==1, "encode 6848 in 2 bytes ok");
+    n = mu_decode(buf, buf+2, &v); CHECK(n==2 && v==6848, "  round-trips to 6848");
     CHECK(buf[0]==0xc0 && buf[1]==0x35, "  bytes are c0 35 (expected 2.1.227 fixed leading delta)");
     /* non-minimal padding: 2752 forced into 3 bytes */
     memset(buf,0xAA,sizeof buf);
-    CHECK(mg_uleb_encode_fixed(buf, 2752, 3)==1, "encode 2752 padded to 3 bytes ok");
-    n = mg_uleb_decode(buf, buf+3, &v); CHECK(n==3 && v==2752, "  padded still decodes to 2752 in 3 bytes");
+    CHECK(mu_encode_fixed(buf, 2752, 3)==1, "encode 2752 padded to 3 bytes ok");
+    n = mu_decode(buf, buf+3, &v); CHECK(n==3 && v==2752, "  padded still decodes to 2752 in 3 bytes");
     /* does not fit: 16384 needs 3, width 2 -> refuse */
-    CHECK(mg_uleb_encode_fixed(buf, 16384, 2)==0, "encode 16384 in 2 bytes refused");
+    CHECK(mu_encode_fixed(buf, 16384, 2)==0, "encode 16384 in 2 bytes refused");
 }
 
 /* ---- the leading-delta re-encode ---- */
@@ -74,7 +74,7 @@ static void test_reencode_same_width(void) {
 static void test_reencode_widen_refuses(void) {
     /* leading delta 16000 (0x3e80): 16000+4096=20096 needs 3 bytes, was 2 -> refuse */
     uint8_t blob[] = {0x80,0x7d, /*tail*/ 0x40, 0x00};   /* 0x80,0x7d = 16000 */
-    uint64_t chk; int n = mg_uleb_decode(blob, blob+2, &chk);
+    uint64_t chk; int n = mu_decode(blob, blob+2, &chk);
     CHECK(n==2 && chk==16000, "precondition: leading delta decodes to 16000");
     uint8_t saved[sizeof blob]; memcpy(saved, blob, sizeof blob);
     int r = mg_reencode_funcstarts_base(blob, sizeof blob, 0x1000);
@@ -88,7 +88,7 @@ static void test_reencode_nonminimal_original_preserved(void) {
     uint8_t blob[] = {0xc0,0x95,0x00, /*tail*/ 0x50, 0x00};
     int r = mg_reencode_funcstarts_base(blob, sizeof blob, 0x1000);
     CHECK(r==1, "reencode of a non-minimally-encoded leading delta succeeds");
-    uint64_t v; int n = mg_uleb_decode(blob, blob+3, &v);
+    uint64_t v; int n = mu_decode(blob, blob+3, &v);
     CHECK(n==3 && v==6848, "leading delta still 3 bytes, decodes to 6848 (got n=%d v=%llu)", n, (unsigned long long)v);
     CHECK(blob[3]==0x50, "tail preserved");
 }
@@ -105,8 +105,8 @@ static void build_funcstarts(uint8_t *out, int *outlen, uint64_t base,
                              const uint64_t *addrs, int n) {
     int len = 0; uint64_t prev = base;
     for (int i = 0; i < n; i++) {
-        int w = mg_uleb_minlen(addrs[i] - prev);
-        mg_uleb_encode_fixed(out + len, addrs[i] - prev, w);
+        int w = mu_minlen(addrs[i] - prev);
+        mu_encode_fixed(out + len, addrs[i] - prev, w);
         len += w; prev = addrs[i];
     }
     out[len++] = 0x00;   /* terminator */
@@ -658,7 +658,7 @@ static void test_grow_rebases_export_trie(void) {
     CHECK(t != NULL, "export trie still locatable");
     if (!t) { free(buf); return; }
     /* node A's address, still a 2-byte ULEB at the same place */
-    uint64_t a = 0; int n = mg_uleb_decode(t + 10, t + 17, &a);
+    uint64_t a = 0; int n = mu_decode(t + 10, t + 17, &a);
     CHECK(n == 2, "node A address still encoded in 2 bytes (got %d)", n);
     CHECK(a == 0x1000 + g, "node A address gains grow: got %#llx want %#llx",
           (unsigned long long)a, (unsigned long long)(0x1000 + g));
