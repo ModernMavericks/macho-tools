@@ -81,7 +81,20 @@ endforeach()
 target_link_libraries(change_dylib PRIVATE macho9core)
 target_link_libraries(patch_macho PRIVATE macho9core)
 
-install(TARGETS ${MACHO_TOOLS} RUNTIME DESTINATION bin)
+# The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): `verify`/`info`/`grow`
+# delegate in-process to macho9core + macho_grow.h; `dylib`/`rpath`/`lc`
+# delegate by running change_dylib (see cli/macho9.c's file header for why --
+# its rewrite+renumbering logic is not yet a reusable function). Kept out of
+# the ${tool}.c-named foreach above because its source lives in cli/, and it
+# needs the repo root on its include path to reach macho_grow.h the way
+# change_dylib.c does from its own directory.
+add_executable(macho9 cli/macho9.c)
+target_compile_options(macho9 PRIVATE -O2 -Wall)
+target_include_directories(macho9 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(macho9 PRIVATE macho9core)
+mavericks_assert_binary_compatible(macho9)
+
+install(TARGETS ${MACHO_TOOLS} macho9 RUNTIME DESTINATION bin)
 
 enable_testing()
 
@@ -126,3 +139,11 @@ set_tests_properties(chained_fixups PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME characterize
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/characterize.sh" "$<TARGET_FILE_DIR:change_dylib>" check)
+
+# macho9's own CLI: --capabilities plus each verb it implements. Builds its own
+# fixtures (FIXTURE_FLAGS = -mmacosx-version-min=10.9, same reasoning as
+# change_dylib_test.sh) rather than reading tests/fixture.macho, so no
+# WORKING_DIRECTORY is needed -- everything it needs is the bindir, passed the
+# same way chained_fixups passes patch_macho's.
+add_test(NAME cli_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:macho9>")
