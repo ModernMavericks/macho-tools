@@ -403,6 +403,30 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
         add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(inserts[s]) + 1 + 7) & ~7UL);
     for (int a = 0; a < nradds; a++)
         add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(radds[a]) + 1 + 7) & ~7UL);
+    /* -change/-change-rpath can ALSO grow a command past its original
+     * cmdsize -- build_lcs's `matched`/`rmatched` branches size the rewritten
+     * command as (base + strlen(new_path) + 1), rounded up, keeping whichever
+     * is larger of that or the original cmdsize (see the "if (needed <
+     * cmdsize) needed = cmdsize;" lines below). Before this, add_bytes never
+     * accounted for that growth at all: a long enough -change replacement
+     * (repro: `-change /usr/lib/libSystem.B.dylib` with a ~9000-char new
+     * path) made build_lcs write well past the end of a buffer sized only
+     * for the -add/-insert commands, a heap buffer overflow (confirmed
+     * under libgmalloc: SIGSEGV). This doesn't know here which existing
+     * command a given -change will match (that's decided later, by name,
+     * inside build_lcs) or that command's actual `base` (dc->dylib.name.
+     * offset / rc->path.offset), so it bounds the worst case the same way
+     * -add above does: as if the match grew a brand-new, full-size
+     * dylib_command/rpath_command header plus the new path -- at least as
+     * large as `base + new_len` can ever be for a well-formed command,
+     * whatever the match turns out to be (or if it turns out not to match
+     * anything at all, in which case this is simply unused slack). */
+    for (int c = 0; c < nchanges; c++)
+        if (changes[c].new_path != NULL && changes[c].new_path[0] != '\0')
+            add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(changes[c].new_path) + 1 + 7) & ~7UL);
+    for (int c = 0; c < nrchanges; c++)
+        if (rchanges[c].new_path != NULL)
+            add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(rchanges[c].new_path) + 1 + 7) & ~7UL);
 
     /* Map each existing 1-based library ordinal to its new value (0 = deleted),
      * built once by mo_map_build so this rewrite and the ordinal renumbering

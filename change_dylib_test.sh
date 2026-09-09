@@ -1156,6 +1156,95 @@ grep -qi "overlapping" "$T/overlap_fix.out" \
     && ok "fat declared-overlap: input left completely untouched on refusal" \
     || bad "fat declared-overlap" "input was modified despite the refusal"
 
+# --- 17. heap overflow on a long -change replacement path -------------------
+#
+# process_one sizes its scratch buffer (new_lcs) as `first_sect_off +
+# add_bytes + 64`, where add_bytes used to count only the bytes -add/-insert/
+# -add-rpath contribute -- NOT -change/-change-rpath, even though build_lcs
+# happily grows a MATCHED command to `base + strlen(new_path)` (rounded up),
+# keeping whichever is larger of that or the original cmdsize. A long enough
+# -change replacement made build_lcs write past the end of a buffer sized
+# for a change that never happened: repro `change_dylib bin -change
+# /usr/lib/libSystem.B.dylib <9000 chars>` -> SIGSEGV under libgmalloc.
+# Pre-existing (present in 868e2a6, long before this branch), fixed here by
+# including -change/-change-rpath's replacement lengths in add_bytes too --
+# see the comment on that calculation in change_dylib.c.
+#
+# The overflow happens INSIDE build_lcs, before process_one's own "does it
+# fit the header pad" check ever runs -- so it reproduced with or without
+# -grow (confirmed by hand against the pre-fix binary, both ways, under
+# libgmalloc: SIGSEGV either way). This suite doesn't run under libgmalloc
+# itself (heap corruption without a detector watching can silently succeed
+# instead of crashing -- the same reasoning as case 12's comment), so this
+# asserts observable BEHAVIOR: the tool never crashes (a shell only reports
+# a plain nonzero exit for a refusal, never the 128+signal shape a SIGSEGV
+# produces) and, when the write does go through (-grow, so it fits), the
+# resulting file actually contains the long path intact and nothing else
+# looks truncated. Confirmed separately by hand, under
+# DYLD_INSERT_LIBRARIES=libgmalloc.dylib: the pre-fix binary SIGSEGVs
+# (exit 139) on this exact repro, with or without -grow; the fixed binary
+# exits cleanly both ways.
+build_main "$T/longchange_fixture"
+LONG_PATH=$(printf 'Q%.0s' $(seq 1 9000))
+
+# Checked with a tiny C byte-search (memmem), not grep: this host's `grep`
+# (ugrep) reports "out of memory" trying to fixed-string-match a 9000-byte
+# pattern against a binary file -- a grep quirk, not a change_dylib one, but
+# a good reminder that even a non-otool/nm text tool can ask a different
+# question (or none at all) depending on what's on a given host's PATH.
+cat > "$T/has_bytes.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file needle\n", argv[0]); return 2; }
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st; fstat(fd, &st);
+    char *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    size_t nlen = strlen(argv[2]);
+    return memmem(buf, (size_t)st.st_size, argv[2], nlen) != NULL ? 0 : 1;
+}
+EOF
+"$CC" -O2 -o "$T/has_bytes" "$T/has_bytes.c"
+
+# Without -grow: must refuse cleanly (header pad can't possibly hold a
+# 9000-byte path), never crash.
+rc=0
+"$T/change_dylib" "$T/longchange_fixture" -change "@loader_path/liba.dylib" "$LONG_PATH" \
+    >/dev/null 2>"$T/longchange_noG.err" || rc=$?
+if [ "$rc" -gt 127 ]; then
+    bad "long -change (no -grow)" "tool was killed by a signal (exit $rc) -- looks like the heap overflow"
+elif [ "$rc" -eq 0 ]; then
+    bad "long -change (no -grow)" "expected a clean refusal (header pad can't hold 9000 bytes) but exited 0"
+else
+    ok "long -change (no -grow): refused cleanly (exit $rc), no crash"
+fi
+
+# With -grow: must succeed, and the long path must land in the file intact.
+rc=0
+"$T/change_dylib" "$T/longchange_fixture" -grow -change "@loader_path/liba.dylib" "$LONG_PATH" \
+    >/dev/null 2>"$T/longchange_G.err" || rc=$?
+if [ "$rc" -gt 127 ]; then
+    bad "long -change (-grow)" "tool was killed by a signal (exit $rc) -- the heap overflow"
+elif [ "$rc" -ne 0 ]; then
+    bad "long -change (-grow)" "expected success with -grow but exited $rc: $(cat "$T/longchange_G.err")"
+else
+    ok "long -change (-grow): completed without crashing (exit 0)"
+fi
+if "$T/has_bytes" "$T/longchange_fixture" "$LONG_PATH"; then
+    ok "long -change (-grow): the full 9000-byte replacement path landed intact"
+else
+    bad "long -change (-grow)" "the long replacement path is not intact in the output file"
+fi
+
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
 echo "change_dylib_test: $fails FAILED"; exit 1
