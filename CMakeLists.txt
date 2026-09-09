@@ -137,7 +137,9 @@ add_test(NAME grow_test COMMAND grow_test)
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
 # exercised against a binary a linker actually emitted rather than one this test
 # invented. WORKING_DIRECTORY is the source dir because the fixture path is
-# relative -- same reason change_dylib_test needs it.
+# relative. (change_dylib_test.sh, below, needs no WORKING_DIRECTORY of its
+# own: it `cd`s to its own directory itself, the way every sh-based test here
+# does.)
 add_executable(image_test tests/image_test.c)
 target_compile_options(image_test PRIVATE -O2 -Wall)
 target_link_libraries(image_test PRIVATE macho9core)
@@ -161,11 +163,15 @@ target_link_libraries(linkedit_test PRIVATE macho9core)
 add_test(NAME linkedit_test COMMAND linkedit_test)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
-# ordinal shows up as a dyld failure rather than a silent mis-binding. Needs the
-# source dir because it compiles change_dylib.c itself.
+# ordinal shows up as a dyld failure rather than a silent mis-binding. Now
+# matches chained-fixups.sh/characterize.sh/cli_test.sh/leaf-tool-crashes.sh:
+# passed the bindir so it runs the change_dylib and fix_macho CMake actually
+# built, instead of compiling its own copies from a hand-enumerated source
+# list that had to be kept in sync with macho9core by hand (Task 5) -- it
+# still compiles from source, deriving the list from a glob, when run
+# standalone with no bindir argument.
 add_test(NAME change_dylib_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/change_dylib_test.sh"
-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:change_dylib>")
 
 # Build equivalence. The tool binaries can never match across a 2014 clang and a
 # 2026 one, so comparing them is the wrong invariant. These tools are

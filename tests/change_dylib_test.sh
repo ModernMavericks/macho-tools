@@ -9,9 +9,15 @@
 # library. This builds real dylibs, rewrites a real executable, and RUNS it —
 # a wrong ordinal shows up as a dyld "Symbol not found" or a wrong answer.
 #
-#   ./change_dylib_test.sh          (needs only clang + otool)
+#   sh tests/change_dylib_test.sh               standalone (needs only clang + otool)
+#   sh tests/change_dylib_test.sh <bindir>       via ctest: uses the change_dylib
+#                                                 and fix_macho CMake already built
 set -e
-cd "$(dirname "$0")"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR"
+ROOT_DIR="$SCRIPT_DIR/.."
+SRC_DIR="$ROOT_DIR/src"
+COMPAT_DIR="$ROOT_DIR/compat"
 CC="${CC:-clang}"
 
 # The FIXTURES must be 10.9-targeted, not host-targeted. A modern linker emits
@@ -21,26 +27,45 @@ CC="${CC:-clang}"
 # it tests. -mmacosx-version-min=10.9 gets the classic LC_DYLD_INFO_ONLY form on
 # either host, so the test asks the same question everywhere.
 #
-# Note this applies only to the fixtures. change_dylib itself (line below) is a
-# host tool and is built for the host.
+# Note this applies only to the fixtures. change_dylib/fix_macho themselves
+# (below) are host tools, built for (or already built on) the host.
 FIXTURE_FLAGS="-mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/change_dylib_test.$$"
 mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT INT TERM
 
-# Builds change_dylib from source rather than consuming a CMake target, so this
-# script keeps working standalone (`./change_dylib_test.sh`, clang + otool only).
-# That means it must track what change_dylib includes: src/grow.h (formerly the
-# header-only macho_grow.h; now grow.c is a real translation unit that must be
-# compiled and linked in, not merely #include'd) pulls in src/uleb.h and
-# src/trie.h (the export-trie rebuild, for a widening ULEB) and src/linkedit.h
-# (the __LINKEDIT offset-bump table), change_dylib.c itself now includes
-# src/ordinals.h and src/fat.h (the shared fat_header/fat_arch validator both
-# it and fix_macho use), src/lc_kinds.h (the -strip-lc KIND table, shared with
-# macho9's `lc -delete`), and src/atomic_write.h (write_atomic's mkstemp+rename
-# replace, shared with `macho9 grow`), so the toolkit sources it needs are
-# listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c
+# Take the binaries CMake already built when a build dir is passed -- matching
+# chained-fixups.sh/characterize.sh/cli_test.sh/leaf-tool-crashes.sh, which
+# all receive $<TARGET_FILE_DIR:...> this way and run the binary CMake built,
+# not one they compile themselves. Compile from source ONLY as the standalone
+# fallback (`sh tests/change_dylib_test.sh`, no arguments, clang + otool only).
+#
+# The standalone build used to hand-enumerate macho9core's source list right
+# here -- a SECOND place deciding what the library contains, independent of
+# CMakeLists.txt's own `add_library(macho9core ...)` list, which had already
+# needed hand-updating five times (uleb, image, ordinals, fat, trie, lc_kinds,
+# atomic_write, linkedit, grow) as the toolkit grew. Two places independently
+# deciding one thing is this repo's signature bug class (two deletion
+# predicates, two fat parsers, two export-LC scans, two LC-kind tables, all
+# shipped); this was that same class living in a test script, where it could
+# let this exact path -- the one a standalone `sh change_dylib_test.sh` run
+# actually exercises -- silently drift out of sync while ctest itself stayed
+# green, because ctest (below) never took this branch at all. Globbing
+# src/*.c instead means it cannot drift: whatever CMakeLists.txt's
+# macho9core target compiles is exactly what this glob also picks up, both
+# reading the same directory.
+BIN="${1:-}"
+if [ -n "$BIN" ] && [ -x "$BIN/change_dylib" ] && [ -x "$BIN/fix_macho" ]; then
+    echo "change_dylib_test: using the CMake-built binaries in $BIN"
+    CHANGE_DYLIB="$BIN/change_dylib"
+    FIX_MACHO="$BIN/fix_macho"
+else
+    echo "change_dylib_test: no usable bindir given -- compiling standalone from source"
+    CHANGE_DYLIB="$T/change_dylib"
+    FIX_MACHO="$T/fix_macho"
+    "$CC" -O2 -I "$SRC_DIR" -o "$CHANGE_DYLIB" "$COMPAT_DIR/change_dylib.c" "$SRC_DIR"/*.c
+    "$CC" -O2 -I "$SRC_DIR" -o "$FIX_MACHO" "$COMPAT_DIR/fix_macho.c" "$SRC_DIR"/*.c
+fi
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
@@ -49,6 +74,23 @@ bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
 # distinctly from PASS/FAIL, per-assertion, rather than silently omitted --
 # a silent skip is how coverage rots. Does not touch $fails.
 skip() { echo "SKIP $1: $2"; }
+
+# A handful of cases below capture a helper's OUTPUT (a rewritten binary's
+# stdout, or ordinal_of's printed ordinal) with `2>&1` merged in, then compare
+# that captured value for equality against an expected string. That is a
+# libgmalloc harness bug: this whole suite is sometimes run under
+# DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib (see case 18's own
+# libgmalloc run, and INGREDIENTS.md/tests/README.md on why this codebase
+# leans on it), which prints an unrelated banner to STDERR the first time any
+# process it's injected into touches the heap. Merging that banner into a
+# captured value being equality-checked turns a perfectly healthy run into a
+# spurious failure -- not a memory bug, a harness bug, and specifically one
+# that makes the suite unusable under the exact tool this codebase uses to
+# find real memory bugs. Fixed at each of the 7 call sites below by sending
+# stderr to its own scratch file instead of merging it into the captured
+# value; the file's content is still folded into any bad() message, so a
+# helper that genuinely fails still fails loudly, it just no longer corrupts
+# the comparison itself.
 
 # ordinal_of FILE SYMBOL: prints the 1-based library ordinal an undefined
 # nlist symbol's n_desc records, or exits nonzero with a message on stderr.
@@ -301,16 +343,16 @@ out=$(cd "$T" && ./main) && [ "$out" = "33" ] \
 # --- 1. -insert puts the new dylib FIRST and renumbers ------------------------
 # Without renumbering, a_sym's ordinal 1 now names libspare -> dyld aborts.
 build_main "$T/main_ins"
-"$T/change_dylib" "$T/main_ins" -grow -insert "@loader_path/libspare.dylib" >/dev/null || bad "tool run" "change_dylib failed"
+"$CHANGE_DYLIB" "$T/main_ins" -grow -insert "@loader_path/libspare.dylib" >/dev/null || bad "tool run" "change_dylib failed"
 first=$(otool -L "$T/main_ins" | sed -n '2p' | awk '{print $1}')
 case "$first" in
     *libspare.dylib) ok "-insert: libspare is the first dependency" ;;
     *) bad "-insert order" "first dep is '$first'" ;;
 esac
-if out=$(cd "$T" && ./main_ins 2>&1) && [ "$out" = "33" ]; then
+if out=$(cd "$T" && ./main_ins 2>"$T/main_ins.err") && [ "$out" = "33" ]; then
     ok "-insert: renumbered, binary still resolves a_sym/b_sym (33)"
 else
-    bad "-insert renumber" "got '$out'"
+    bad "-insert renumber" "got '$out'$( [ -s "$T/main_ins.err" ] && echo "; stderr: $(cat "$T/main_ins.err")")"
 fi
 
 # --- 2. -delete of an EARLIER dylib renumbers the survivors -------------------
@@ -319,19 +361,19 @@ fi
 "$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libspare.dylib" "$T/liba.dylib" "$T/libb.dylib" -o "$T/main_del"
 out=$(cd "$T" && ./main_del) && [ "$out" = "33" ] \
     || bad "delete fixture" "fixture itself broken: '$out'"
-"$T/change_dylib" "$T/main_del" -delete "@loader_path/libspare.dylib" >/dev/null || bad "tool run" "change_dylib failed"
+"$CHANGE_DYLIB" "$T/main_del" -delete "@loader_path/libspare.dylib" >/dev/null || bad "tool run" "change_dylib failed"
 otool -L "$T/main_del" | grep -q libspare \
     && bad "-delete" "libspare still present" \
     || ok "-delete: libspare removed"
-if out=$(cd "$T" && ./main_del 2>&1) && [ "$out" = "33" ]; then
+if out=$(cd "$T" && ./main_del 2>"$T/main_del.err") && [ "$out" = "33" ]; then
     ok "-delete: renumbered, survivors still resolve (33)"
 else
-    bad "-delete renumber" "got '$out'"
+    bad "-delete renumber" "got '$out'$( [ -s "$T/main_del.err" ] && echo "; stderr: $(cat "$T/main_del.err")")"
 fi
 
 # --- 3. deleting a dylib that symbols still bind to must be refused ----------
 build_main "$T/main_bad"
-if "$T/change_dylib" "$T/main_bad" -delete "@loader_path/liba.dylib" >/dev/null 2>&1; then
+if "$CHANGE_DYLIB" "$T/main_bad" -delete "@loader_path/liba.dylib" >/dev/null 2>&1; then
     bad "-delete in-use" "tool accepted deleting a dylib that still has bound symbols"
 else
     ok "-delete: refuses to orphan symbols bound to the deleted dylib"
@@ -339,15 +381,15 @@ fi
 
 # --- 4. -insert composes with -change ----------------------------------------
 build_main "$T/main_both"
-"$T/change_dylib" "$T/main_both" -grow -insert "@loader_path/libspare.dylib" \
+"$CHANGE_DYLIB" "$T/main_both" -grow -insert "@loader_path/libspare.dylib" \
     -change "@loader_path/libb.dylib" "@loader_path/libb2.dylib" >/dev/null || bad "tool run" "change_dylib failed"
 cp "$T/libb.dylib" "$T/libb2.dylib"
 otool -L "$T/main_both" | grep -q libb2 \
     && ok "-insert + -change compose" || bad "compose" "libb2 not present"
-if out=$(cd "$T" && ./main_both 2>&1) && [ "$out" = "33" ]; then
+if out=$(cd "$T" && ./main_both 2>"$T/main_both.err") && [ "$out" = "33" ]; then
     ok "-insert + -change: still resolves (33)"
 else
-    bad "compose run" "got '$out'"
+    bad "compose run" "got '$out'$( [ -s "$T/main_both.err" ] && echo "; stderr: $(cat "$T/main_both.err")")"
 fi
 
 # --- 5. two dylibs exporting the SAME symbol ---------------------------------
@@ -375,13 +417,13 @@ done
 # ordinals: 1=libspare, 2=libdup1 (the one we bind to), 3=libdup2
 "$CC" -O2 $FIXTURE_FLAGS "$T/dupmain.c" "$T/libspare.dylib" "$T/libdup1.dylib" "$T/libdup2.dylib" \
     -o "$T/main_dup"
-"$T/change_dylib" "$T/main_dup" -delete "@loader_path/libspare.dylib" >/dev/null \
+"$CHANGE_DYLIB" "$T/main_dup" -delete "@loader_path/libspare.dylib" >/dev/null \
     || bad "tool run" "change_dylib failed"
-out=$(cd "$T" && ./main_dup 2>&1) || true
+out=$(cd "$T" && ./main_dup 2>"$T/main_dup.err") || true
 if [ "$out" = "1" ]; then
     ok "-delete: still calls libdup1 (no silent rebind to libdup2)"
 else
-    bad "-delete silent rebind" "got '$out' — bound to the wrong dylib"
+    bad "-delete silent rebind" "got '$out' — bound to the wrong dylib$( [ -s "$T/main_dup.err" ] && echo "; stderr: $(cat "$T/main_dup.err")")"
 fi
 
 # --- 7. a path both -change'd and -delete'd in one invocation ----------------
@@ -408,16 +450,16 @@ fi
 "$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libspare.dylib" "$T/liba.dylib" "$T/libb.dylib" \
     -o "$T/main_conflict"
 cp "$T/libspare.dylib" "$T/libspare_renamed.dylib"
-"$T/change_dylib" "$T/main_conflict" \
+"$CHANGE_DYLIB" "$T/main_conflict" \
     -change "@loader_path/libspare.dylib" "@loader_path/libspare_renamed.dylib" \
     -delete "@loader_path/libspare.dylib" >/dev/null 2>&1
 rc=$?
 deps=$(otool -L "$T/main_conflict")
 if [ $rc -eq 0 ] && ! echo "$deps" | grep -q libspare; then
-    if out=$(cd "$T" && ./main_conflict 2>&1) && [ "$out" = "33" ]; then
+    if out=$(cd "$T" && ./main_conflict 2>"$T/main_conflict.err") && [ "$out" = "33" ]; then
         ok "-change and -delete of the same path: delete wins, still runs (33)"
     else
-        bad "-change+-delete conflict" "tool accepted it but the binary is broken: '$out'"
+        bad "-change+-delete conflict" "tool accepted it but the binary is broken: '$out'$( [ -s "$T/main_conflict.err" ] && echo "; stderr: $(cat "$T/main_conflict.err")")"
     fi
 elif [ $rc -eq 0 ]; then
     bad "-change+-delete conflict" "tool exited 0 but kept libspare: $deps"
@@ -478,8 +520,8 @@ EOF
 if ! otool -l "$T/libupd_a.dylib" | grep -q LC_LOAD_UPWARD_DYLIB; then
     bad "upward fixture" "linker did not produce LC_LOAD_UPWARD_DYLIB; skipping case 8"
 else
-    before=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>&1)
-    [ "$before" = "3" ] || bad "upward fixture" "fixture itself not as expected before any rewrite: _getpid ordinal is '$before', wanted 3"
+    before=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>"$T/ordinal_before.err")
+    [ "$before" = "3" ] || bad "upward fixture" "fixture itself not as expected before any rewrite: _getpid ordinal is '$before', wanted 3$( [ -s "$T/ordinal_before.err" ] && echo "; stderr: $(cat "$T/ordinal_before.err")")"
     # ordinals as linked: 1=libspare, 2=libupd_b (upward), 3=libSystem, so
     # _getpid (a real libSystem call, not foldable by the optimizer) starts
     # at ordinal 3. Deleting 1 and 2 must leave only libSystem, now ordinal 1,
@@ -493,7 +535,7 @@ else
     # untouched by change_dylib, so it's not something the ordinal fix
     # introduces. MACHO_NO_VERIFY=1 opts out of that unrelated gate so this
     # case tests ordinal renumbering, not mg_plausible.
-    MACHO_NO_VERIFY=1 "$T/change_dylib" "$T/libupd_a.dylib" \
+    MACHO_NO_VERIFY=1 "$CHANGE_DYLIB" "$T/libupd_a.dylib" \
         -delete "@loader_path/libspare.dylib" \
         -delete "@loader_path/libupd_b.dylib" >/dev/null \
         || bad "tool run" "change_dylib failed on the upward-dylib fixture"
@@ -503,7 +545,7 @@ else
     else
         ok "-delete: an LC_LOAD_UPWARD_DYLIB is matched/deleted like any other dylib LC"
     fi
-    after=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>&1)
+    after=$("$T/ordinal_of" "$T/libupd_a.dylib" _getpid 2>"$T/ordinal_after.err")
     case "$after" in
         [0-9]*)
             if [ "$after" = "1" ]; then
@@ -513,7 +555,7 @@ else
             fi
             ;;
         *)
-            bad "-delete upward renumber" "ordinal_of returned no number, not a wrong number: $after"
+            bad "-delete upward renumber" "ordinal_of returned no number, not a wrong number: '$after'$( [ -s "$T/ordinal_after.err" ] && echo "; stderr: $(cat "$T/ordinal_after.err")")"
             ;;
     esac
 fi
@@ -526,7 +568,7 @@ fi
 cap_case() {
     desc=$1; shift
     build_main "$T/main_cap"
-    if "$T/change_dylib" "$T/main_cap" "$@" >/dev/null 2>"$T/cap.err"; then
+    if "$CHANGE_DYLIB" "$T/main_cap" "$@" >/dev/null 2>"$T/cap.err"; then
         bad "$desc" "accepted more operations than the array holds"
     elif grep -qi 'too many' "$T/cap.err"; then
         ok "$desc"
@@ -555,7 +597,7 @@ cap_case "-delete-rpath beyond capacity is refused" "$@"
 build_main "$T/main_atcap"
 set -- ; i=0
 while [ $i -lt 32 ]; do set -- "$@" -add "@loader_path/libspare.dylib"; i=$((i+1)); done
-if "$T/change_dylib" "$T/main_atcap" -grow "$@" >/dev/null 2>"$T/atcap.err"; then
+if "$CHANGE_DYLIB" "$T/main_atcap" -grow "$@" >/dev/null 2>"$T/atcap.err"; then
     ok "-add exactly at capacity is accepted"
 else
     bad "-add at capacity" "refused at the cap: $(head -1 "$T/atcap.err")"
@@ -610,7 +652,7 @@ EOF
 # --- 10. a plain -change on a fat input: both slices land correctly ---------
 "$T/makefat" "$T/main_fat" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
 arch1_before=$("$T/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
-"$T/change_dylib" "$T/main_fat" -change "@loader_path/liba.dylib" "@loader_path/liba_fat.dylib" >/dev/null \
+"$CHANGE_DYLIB" "$T/main_fat" -change "@loader_path/liba.dylib" "@loader_path/liba_fat.dylib" >/dev/null \
     || bad "fat tool run" "change_dylib failed on a fat input"
 
 narch=$("$T/fatcheck" archinfo "$T/main_fat" | head -1)
@@ -651,7 +693,7 @@ while [ $i -lt 32 ]; do
     set -- "$@" -add "@loader_path/libpad_a_pretty_long_synthetic_name_used_only_to_force_real_header_growth_$i.dylib"
     i=$((i+1))
 done
-"$T/change_dylib" "$T/main_fat_grow" -grow "$@" >/dev/null 2>"$T/fatgrow.err" \
+"$CHANGE_DYLIB" "$T/main_fat_grow" -grow "$@" >/dev/null 2>"$T/fatgrow.err" \
     || bad "fat grow tool run" "change_dylib failed: $(head -1 "$T/fatgrow.err")"
 
 after_arch0=$("$T/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
@@ -766,7 +808,7 @@ EOF
 "$T/mkdescfat" "$T/main_descfat" "$T/main" "$T/slice32.bin"
 before_size=$(wc -c < "$T/main_descfat" | tr -d ' ')
 
-if "$T/change_dylib" "$T/main_descfat" \
+if "$CHANGE_DYLIB" "$T/main_descfat" \
     -change "@loader_path/liba.dylib" "@loader_path/liba_desc.dylib" >/dev/null 2>"$T/descfat.err"; then
     ok "fat descending-offset: tool ran to completion without crashing"
 else
@@ -897,7 +939,7 @@ while [ $i -lt 32 ]; do
     i=$((i+1))
 done
 rc=0
-"$T/change_dylib" "$T/main_fat3" -grow "$@" >/dev/null 2>"$T/fat3.err" || rc=$?
+"$CHANGE_DYLIB" "$T/main_fat3" -grow "$@" >/dev/null 2>"$T/fat3.err" || rc=$?
 
 if [ $rc -eq 0 ]; then
     # The algorithm never repacks smarter than "sequential from a cursor" --
@@ -990,7 +1032,7 @@ build_main "$T/wa_real"
 xattr -w com.macho9.test present "$T/wa_real" 2>/dev/null || true
 ln -s wa_real "$T/wa_link"
 before_ino=$(stat -f %i "$T/wa_real")
-"$T/change_dylib" "$T/wa_link" -add-rpath /opt/macho9_wa_pad >/dev/null \
+"$CHANGE_DYLIB" "$T/wa_link" -add-rpath /opt/macho9_wa_pad >/dev/null \
     || bad "write_atomic symlink" "change_dylib failed"
 if [ -L "$T/wa_link" ] && [ "$(readlink "$T/wa_link")" = "wa_real" ]; then
     ok "write_atomic: symlink is still a symlink, to the same name"
@@ -1018,7 +1060,7 @@ esac
 # must fall back to an in-place write, and BOTH names must show the change.
 build_main "$T/wa_hard1"
 ln "$T/wa_hard1" "$T/wa_hard2"
-"$T/change_dylib" "$T/wa_hard1" -add-rpath /opt/macho9_wa_hardpad >/dev/null \
+"$CHANGE_DYLIB" "$T/wa_hard1" -add-rpath /opt/macho9_wa_hardpad >/dev/null \
     || bad "write_atomic hardlink" "change_dylib failed"
 if rpath_present "$T/wa_hard1" "/opt/macho9_wa_hardpad" && rpath_present "$T/wa_hard2" "/opt/macho9_wa_hardpad"; then
     ok "write_atomic: hard-linked sibling shows the change too (still one inode)"
@@ -1034,7 +1076,7 @@ fi
 # failing partway must never leave a half-written binary in place).
 build_main "$T/wa_plain"
 before_ino=$(stat -f %i "$T/wa_plain")
-"$T/change_dylib" "$T/wa_plain" -add-rpath /opt/macho9_wa_plain >/dev/null \
+"$CHANGE_DYLIB" "$T/wa_plain" -add-rpath /opt/macho9_wa_plain >/dev/null \
     || bad "write_atomic ordinary" "change_dylib failed"
 after_ino=$(stat -f %i "$T/wa_plain")
 if rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && [ "$before_ino" != "$after_ino" ]; then
@@ -1119,7 +1161,7 @@ if [ ! -x "$T/lazy_main" ] || ! "$T/has_lc" "$T/lazy_main" 0x20; then
 else
     before_md5=$(md5 -q "$T/lazy_main" 2>/dev/null || md5sum "$T/lazy_main" | awk '{print $1}')
     rc=0
-    "$T/change_dylib" "$T/lazy_main" -add-rpath /opt/should_never_apply >"$T/lazy_out.txt" 2>"$T/lazy_err.txt" || rc=$?
+    "$CHANGE_DYLIB" "$T/lazy_main" -add-rpath /opt/should_never_apply >"$T/lazy_out.txt" 2>"$T/lazy_err.txt" || rc=$?
     after_md5=$(md5 -q "$T/lazy_main" 2>/dev/null || md5sum "$T/lazy_main" | awk '{print $1}')
 
     [ "$rc" -ne 0 ] \
@@ -1149,14 +1191,9 @@ fi
 # stayed green, because nothing exercised it -- this closes that hole
 # directly, against the tool that actually depends on it.
 #
-# fix_macho is built from source here (like change_dylib above) rather than
-# consumed as a CMake target, for the same standalone-script reason. It now
-# routes process_macho's validation through mi_wrap (src/image.c) and bounds
-# a dylib name offset via mo_lc_str_at (src/ordinals.c, which in turn needs
-# src/uleb.c for its bind-stream ULEB decoding, even though fix_macho itself
-# never calls that path) -- so it needs the same toolkit sources change_dylib
-# above does, not just fat.c.
-"$CC" -O2 -I src -o "$T/fix_macho" fix_macho.c src/fat.c src/image.c src/ordinals.c src/uleb.c
+# fix_macho (like change_dylib) came from $BIN if a bindir was given, or was
+# compiled above as part of the standalone fallback -- either way $FIX_MACHO
+# is ready to use here, with no separate build step needed for this case.
 
 cat > "$T/mk2fat_overlap.c" <<'EOF'
 #include <stdio.h>
@@ -1198,7 +1235,7 @@ EOF
 before_md5=$(md5 -q "$T/fat_two_declared_slices" 2>/dev/null || md5sum "$T/fat_two_declared_slices" | awk '{print $1}')
 
 rc=0
-"$T/fix_macho" "$T/fat_two_declared_slices" -strip_build_version >"$T/overlap_fix.out" 2>&1 || rc=$?
+"$FIX_MACHO" "$T/fat_two_declared_slices" -strip_build_version >"$T/overlap_fix.out" 2>&1 || rc=$?
 after_md5=$(md5 -q "$T/fat_two_declared_slices" 2>/dev/null || md5sum "$T/fat_two_declared_slices" | awk '{print $1}')
 
 [ "$rc" -ne 0 ] \
@@ -1273,7 +1310,7 @@ EOF
 # Without -grow: must refuse cleanly (header pad can't possibly hold a
 # 9000-byte path), never crash.
 rc=0
-"$T/change_dylib" "$T/longchange_fixture" -change "@loader_path/liba.dylib" "$LONG_PATH" \
+"$CHANGE_DYLIB" "$T/longchange_fixture" -change "@loader_path/liba.dylib" "$LONG_PATH" \
     >/dev/null 2>"$T/longchange_noG.err" || rc=$?
 if [ "$rc" -gt 127 ]; then
     bad "long -change (no -grow)" "tool was killed by a signal (exit $rc) -- looks like the heap overflow"
@@ -1285,7 +1322,7 @@ fi
 
 # With -grow: must succeed, and the long path must land in the file intact.
 rc=0
-"$T/change_dylib" "$T/longchange_fixture" -grow -change "@loader_path/liba.dylib" "$LONG_PATH" \
+"$CHANGE_DYLIB" "$T/longchange_fixture" -grow -change "@loader_path/liba.dylib" "$LONG_PATH" \
     >/dev/null 2>"$T/longchange_G.err" || rc=$?
 if [ "$rc" -gt 127 ]; then
     bad "long -change (-grow)" "tool was killed by a signal (exit $rc) -- the heap overflow"
@@ -1332,7 +1369,7 @@ fi
 # duplicate, and does so through the tool's own tested code path rather than
 # hand-built bytes.
 build_main "$T/dupname_fixture"
-"$T/change_dylib" "$T/dupname_fixture" -grow -insert "@loader_path/liba.dylib" >/dev/null \
+"$CHANGE_DYLIB" "$T/dupname_fixture" -grow -insert "@loader_path/liba.dylib" >/dev/null \
     || bad "dupname fixture setup" "-insert failed unexpectedly"
 dup_count=$(otool -l "$T/dupname_fixture" | grep -c "name @loader_path/liba.dylib")
 [ "$dup_count" -eq 2 ] \
@@ -1345,7 +1382,7 @@ DUP_LONG_PATH=$(printf 'Z%.0s' $(seq 1 3000))
 # matching commands actually got renamed, not just one silently dropped or
 # truncated.
 rc=0
-"$T/change_dylib" "$T/dupname_fixture" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
+"$CHANGE_DYLIB" "$T/dupname_fixture" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
     >"$T/dupname_change.out" 2>"$T/dupname_change.err" || rc=$?
 if [ "$rc" -gt 127 ]; then
     bad "dup-install-name -change" "tool was killed by a signal (exit $rc) -- the heap overflow this case exists to catch"
@@ -1366,11 +1403,11 @@ new_count=$(otool -l "$T/dupname_fixture" | grep -c "name $DUP_LONG_PATH")
 # not silently) if this host has no libgmalloc.
 if [ -f /usr/lib/libgmalloc.dylib ]; then
     build_main "$T/dupname_fixture_gm"
-    "$T/change_dylib" "$T/dupname_fixture_gm" -grow -insert "@loader_path/liba.dylib" >/dev/null \
+    "$CHANGE_DYLIB" "$T/dupname_fixture_gm" -grow -insert "@loader_path/liba.dylib" >/dev/null \
         || bad "dupname fixture setup (libgmalloc copy)" "-insert failed unexpectedly"
     rc=0
     DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
-        "$T/change_dylib" "$T/dupname_fixture_gm" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
+        "$CHANGE_DYLIB" "$T/dupname_fixture_gm" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
         >"$T/dupname_gm.out" 2>"$T/dupname_gm.err" || rc=$?
     if [ "$rc" -gt 127 ]; then
         bad "dup-install-name -change (libgmalloc)" "killed by a signal (exit $rc) under libgmalloc -- the heap overflow this case exists to catch"
@@ -1460,7 +1497,7 @@ EOF
 "$CC" -O2 -o "$T/corrupt_rpath_offset" "$T/corrupt_rpath_offset.c"
 
 build_main "$T/bad_rpath_fixture"
-"$T/change_dylib" "$T/bad_rpath_fixture" -add-rpath /orig/rp >/dev/null \
+"$CHANGE_DYLIB" "$T/bad_rpath_fixture" -add-rpath /orig/rp >/dev/null \
     || bad "bad-rpath-offset fixture setup" "-add-rpath failed unexpectedly"
 rpath_present "$T/bad_rpath_fixture" "/orig/rp" \
     && ok "bad-rpath-offset fixture: starts with one well-formed LC_RPATH" \
@@ -1470,7 +1507,7 @@ rpath_present "$T/bad_rpath_fixture" "/orig/rp" \
 
 before_md5=$(md5 -q "$T/bad_rpath_fixture" 2>/dev/null || md5sum "$T/bad_rpath_fixture" | awk '{print $1}')
 rc=0
-"$T/change_dylib" "$T/bad_rpath_fixture" -add-rpath /another/rp \
+"$CHANGE_DYLIB" "$T/bad_rpath_fixture" -add-rpath /another/rp \
     >"$T/bad_rpath.out" 2>"$T/bad_rpath.err" || rc=$?
 after_md5=$(md5 -q "$T/bad_rpath_fixture" 2>/dev/null || md5sum "$T/bad_rpath_fixture" | awk '{print $1}')
 
