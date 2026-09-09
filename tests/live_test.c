@@ -261,6 +261,137 @@ static void test_malformed_sizeofcmds_refuses_fast(void) {
           secs);
 }
 
+/* ---- the four header-internal bounds checks, individually discriminated ----
+ *
+ * Review found live.h's four checks (see its own top comment's "WHAT THIS
+ * FILE VALIDATES" section) asymmetrically covered relative to image.c's
+ * identical mi_validate: the ONLY malformed case above (cmdsize=0) exercises
+ * just one of the four -- `cmdsize < sizeof(load_command)`. Deleting either
+ * `cmdsize % 8 != 0` (live.h:191) or LC_SEGMENT_64's `cmdsize != want`
+ * (live.h:205) left every one of the 10 suites green. This matters more here
+ * than the analogous gap would in image.c: live.h ships into avxemu's SIGILL
+ * handler, so a missing nsects bound is an unbounded read inside a signal
+ * handler, not merely a bad refusal in an offline tool.
+ *
+ * Five tests below, mirroring image_test.c's own five malformed-header cases
+ * one-for-one (minus the file-size bound, which has no live.h analogue --
+ * see live.h's own top comment on why): together they discriminate each of
+ * live.h's four checks (the segment-cmdsize family is two lines, 195 and
+ * 205, each pinned by its own test here exactly as image_test.c pins its
+ * mi_validate equivalents at :64). Each was mutation-proven individually:
+ * commenting out just the ONE check named in the test's comment, forcing a
+ * clean rebuild, and confirming ONLY that test (not the others) fails --
+ * see this wave's report for the table. */
+
+static void test_each_lc_refuses_short_cmdsize(void) {
+    /* Pins live.h:186, `lc->cmdsize < sizeof(struct load_command)`,
+     * independent of test_malformed_sizeofcmds_refuses_fast's giant ncmds
+     * (that test's real purpose is the O(ncmds) spin-time regression, not
+     * this specific bound). */
+    uint8_t buf[sizeof(struct mach_header_64) + 16];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 16;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    /* 0, not merely "below 8": any nonzero value below 8 is also caught by
+     * the cmdsize%8 check (191), which would not isolate 186 from 191. 0 is
+     * a multiple of 8 and satisfies off+cmdsize<=sizeofcmds trivially, so
+     * this input reaches ONLY the check under test. */
+    lc->cmdsize = 0;
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1, "mlive_each_lc(cmdsize < sizeof(load_command)) refuses (got %d)", rc);
+}
+
+static void test_each_lc_refuses_unaligned_cmdsize(void) {
+    /* Pins live.h:191, `lc->cmdsize % 8 != 0` -- a cmdsize large enough to be
+     * a load command, small enough to fit sizeofcmds, but not 8-byte
+     * aligned, misaligning every command walked after it. */
+    uint8_t buf[sizeof(struct mach_header_64) + 24];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 24;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    lc->cmdsize = 17;   /* well-formed size, but not a multiple of 8 */
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1, "mlive_each_lc(cmdsize not 8-byte aligned) refuses (got %d)", rc);
+}
+
+static void test_each_lc_refuses_cmdsize_past_sizeofcmds(void) {
+    /* Pins live.h:192, `off + lc->cmdsize > sizeofcmds` -- sizeofcmds bounds
+     * the region as a whole, but this one command claims more room than the
+     * region has left. */
+    uint8_t buf[sizeof(struct mach_header_64) + 16];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 16;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    lc->cmdsize = 32;   /* overshoots the 16-byte region */
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1, "mlive_each_lc(cmdsize striding past sizeofcmds) refuses (got %d)", rc);
+}
+
+static void test_each_lc_refuses_segment_shorter_than_struct(void) {
+    /* Pins live.h:195, `lc->cmdsize < sizeof(struct segment_command_64)` --
+     * an LC_SEGMENT_64 whose cmdsize doesn't even cover the fixed-size
+     * struct, let alone any trailing sections. Without this,
+     * mlive_find_section would read segname/nsects past the mapped region. */
+    uint8_t buf[sizeof(struct mach_header_64) + 8];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 8;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_SEGMENT_64;
+    lc->cmdsize = 8;   /* far below sizeof(struct segment_command_64) */
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1,
+          "mlive_each_lc(LC_SEGMENT_64 cmdsize < sizeof(segment_command_64)) refuses (got %d)",
+          rc);
+}
+
+static void test_each_lc_refuses_nsects_disagreeing_with_cmdsize(void) {
+    /* Pins live.h:205, `lc->cmdsize != want` -- the check a bare
+     * cmdsize/sizeofcmds bound misses: cmdsize covers the base struct but
+     * disagrees with nsects, which mlive_find_section trusts unchecked once
+     * this passes. This is the exact shape code review used to demonstrate
+     * an unbounded read inside a signal handler is possible without it. */
+    uint8_t buf[sizeof(struct mach_header_64) + sizeof(struct segment_command_64)];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = (uint32_t)sizeof(struct segment_command_64);
+    struct segment_command_64 *sg =
+        (struct segment_command_64 *)(void *)(buf + sizeof(*hdr));
+    sg->cmd = LC_SEGMENT_64;
+    sg->cmdsize = (uint32_t)sizeof(struct segment_command_64);   /* covers 0 sections */
+    sg->nsects = 5;   /* claims 5 trailing section_64 entries that don't fit */
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1,
+          "mlive_each_lc(LC_SEGMENT_64 nsects disagreeing with cmdsize) refuses (got %d)",
+          rc);
+}
+
 static void test_missing_segment_or_section_returns_null(void) {
     const struct mach_header_64 *mh =
         (const struct mach_header_64 *)_dyld_get_image_header(0);
@@ -393,6 +524,11 @@ int main(void) {
     test_null_header_returns_null_or_zero();
     test_bad_magic_is_rejected();
     test_malformed_sizeofcmds_refuses_fast();
+    test_each_lc_refuses_short_cmdsize();
+    test_each_lc_refuses_unaligned_cmdsize();
+    test_each_lc_refuses_cmdsize_past_sizeofcmds();
+    test_each_lc_refuses_segment_shorter_than_struct();
+    test_each_lc_refuses_nsects_disagreeing_with_cmdsize();
     test_missing_segment_or_section_returns_null();
     test_probe_object_is_allocation_free();
 

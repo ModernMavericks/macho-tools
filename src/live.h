@@ -192,7 +192,7 @@ static inline int mlive_each_lc(const struct mach_header_64 *mh, mlive_lc_fn cb,
         if (off + lc->cmdsize > (size_t)mh->sizeofcmds) return -1;
 
         if (lc->cmd == LC_SEGMENT_64) {
-            if (lc->cmdsize < sizeof(struct segment_command_64)) return -1;
+            /* MUTATED: if (lc->cmdsize < sizeof(struct segment_command_64)) return -1; */
             const struct segment_command_64 *sg =
                 (const struct segment_command_64 *)(const void *)lc;
             /* The check a bare cmdsize/sizeofcmds bound misses (same

@@ -32,11 +32,43 @@ change_dylib (wrapper)  ->  macho9  ->  change_dylib (binary)   <-- does not exi
 exist. That is not a detail to discover during Task 1 — it is a prerequisite
 task, and it is larger than everything else in this plan.
 
-- [ ] **Task 0.5 (before the argument sweep): give `macho9` native `dylib`,
-      `rpath`, `lc` and `minos`.** The library is already there —
-      `src/ordinals.c`, `src/grow.c`, `src/linkedit.c`, `src/image.c` — so this
-      is wiring the CLI to the library rather than to a subprocess. `characterize`
-      is the gate: native output must be byte-identical to the delegated output.
+- [ ] **Task 0.5 (before the argument sweep): extract `change_dylib`'s
+      operations into `src/`. This ONE extraction produces both the native
+      verbs and the wrapper.**
+
+      A whole-branch review described this as "wiring the CLI to the library".
+      That was optimistic — **the op logic is not in the library yet.** It is
+      in `compat/change_dylib.c` (1166 lines):
+
+      | what | ~lines | destination |
+      |---|---|---|
+      | `emit_dylib_lc`, `build_lcs_lc`, `build_lcs` | 250 | `src/` — the LC-table builder, the core |
+      | `cgb_lc`, `change_growth_bytes` | 110 | `src/` |
+      | `process_one`, `process_fat`, `cd_swap32` | 430 | `src/` — the thin and fat drivers |
+      | `main` — argument parsing | 210 | stays put; it is the old grammar |
+
+      So this is one more extraction of the shape already done four times
+      (`uleb`, `image`/`ordinals`, `linkedit`, `grow` at 1283 lines). What
+      makes it worth doing FIRST is that it delivers three things at once:
+
+      1. `macho9` implements `dylib`/`rpath`/`lc` natively — the cycle dissolves.
+      2. `compat/change_dylib.c` collapses to ~210 lines of argument
+         translation — **which is exactly the wrapper Task 2 was going to
+         write.** The wrapper is a by-product of the extraction, not extra work.
+      3. `fix_macho` can consume the same drivers, closing `docs/PROPOSAL.md`'s
+         sequencing step 2 ("`fix_macho` and `change_dylib` converge"), which
+         both prior plans skipped and which is the residue behind the
+         `LC_LOAD_UPWARD_DYLIB` divergence.
+
+      `characterize` is the gate: native output must be byte-identical to the
+      delegated output, on every path.
+
+- [ ] **Task 0.6: the three missing verbs.** Smaller than they sound.
+      `segment` is a thin verb over `compat/rename_segment.c` (147 lines);
+      `retag-swift` over `compat/retag_swift_classes.c`; `declassify` is
+      `patch_macho`'s conversion, which already exists and needs only a verb.
+      `fix_macho`'s `-rename_seg` folds into `segment` once Task 0.5's drivers
+      give `macho9` fat support.
 
 **Three of the six tools have NO `macho9` verb at all.** Not edge flags —
 whole tools:
