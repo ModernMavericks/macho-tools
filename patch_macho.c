@@ -66,6 +66,67 @@ static void ob_str(struct opbuf *b, const char *s) {
     ob_byte(b, 0);
 }
 
+/* mi_each_lc's collecting-walk context for the pass below: gathers every
+ * LC_SEGMENT_64 (needed afterward to translate a chained-fixups segment
+ * index into a file offset), locates LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_
+ * FIXUPS/LC_DYLD_INFO_ONLY/LC_BUILD_VERSION, and records which commands the
+ * rest of this tool will strip. Read-only w.r.t. the chain itself (never
+ * touches lc->cmd, lc->cmdsize, or ncmds) except for the one early stop
+ * below, which is exactly what the stop-capable mi_each_lc exists for. */
+struct pm_collect_ctx {
+    struct segment_command_64 *segs[32];
+    int nsegs;
+    uint32_t exports_off, exports_size;
+    uint32_t fixups_off, fixups_size;
+    int has_dyld_info_only;
+    struct { uint8_t *pos; uint32_t size; } to_remove[4];
+    int n_remove;
+};
+
+static int pm_collect_lc(const struct load_command *lc_, void *ctx_) {
+    struct pm_collect_ctx *ctx = ctx_;
+    /* Cast away const as rename_segment.c's rs_rename_lc and retag_swift_
+     * classes.c's find_section_lc do -- see image.h's contract comment.
+     * segs[] keeps a MUTABLE pointer because the fixups-translation pass
+     * further down writes through segs[si] (a segment's file data, not its
+     * load command). */
+    struct load_command *lc = (struct load_command *)lc_;
+    if (lc->cmd == LC_SEGMENT_64) {
+        struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+        /* Refuse rather than guess (the global rule -grow's own comment
+         * states): silently dropping a 33rd segment here would leave si
+         * (this segment's index into segs[]) referring to the WRONG segment
+         * for every chained-fixups entry from here on, an unnoticed
+         * reordering of which fixups apply to which segment. No 10.9-era
+         * binary plausibly has this many segments; refusing costs nothing
+         * real. Returning 1 stops mi_each_lc immediately -- the caller must
+         * not trust ctx beyond this point, same as build_lcs's early exits
+         * in change_dylib.c. */
+        if (ctx->nsegs >= 32) {
+            fprintf(stderr, "ERROR: more than 32 LC_SEGMENT_64 commands; refusing "
+                            "rather than silently dropping one from the "
+                            "chained-fixups translation\n");
+            return 1;
+        }
+        ctx->segs[ctx->nsegs++] = seg;
+    } else if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
+        uint32_t *d = (uint32_t *)lc;
+        ctx->exports_off = d[2]; ctx->exports_size = d[3];
+        ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){(uint8_t *)lc, lc->cmdsize};
+        printf("Exports trie: off=%u size=%u\n", ctx->exports_off, ctx->exports_size);
+    } else if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) {
+        uint32_t *d = (uint32_t *)lc;
+        ctx->fixups_off = d[2]; ctx->fixups_size = d[3];
+        ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){(uint8_t *)lc, lc->cmdsize};
+        printf("Chained fixups: off=%u size=%u\n", ctx->fixups_off, ctx->fixups_size);
+    } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
+        ctx->has_dyld_info_only = 1;
+    } else if (lc->cmd == LC_BUILD_VERSION) {
+        ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){(uint8_t *)lc, lc->cmdsize};
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "Usage: %s input output\n", argv[0]); return 1; }
 
@@ -81,22 +142,34 @@ int main(int argc, char **argv) {
     size_t fsize = im.size;
     struct mach_header_64 *hdr = im.hdr;
 
-    /* Collect segments and find special load commands */
-    struct segment_command_64 *segs[32] = {0};
-    int nsegs = 0;
     /* __TEXT's vmaddr: the pre-slide base. Was a strcmp inside the walk below;
      * segname is a char[16] that need not be NUL-terminated, so strcmp could run
      * off the end of a 16-character name. mi_find_segment compares against the
      * field width instead. */
     struct segment_command_64 *text_seg = mi_find_segment(&im, "__TEXT");
     uint64_t image_base_vmaddr = text_seg ? text_seg->vmaddr : 0;
-    uint32_t exports_off = 0, exports_size = 0;
-    uint32_t fixups_off = 0, fixups_size = 0;
-    int has_dyld_info_only = 0;
 
-    /* Track positions and sizes of commands to remove */
-    struct { uint8_t *pos; uint32_t size; } to_remove[4];
-    int n_remove = 0;
+    /* Collect segments and find special load commands. Walked via mi_each_lc
+     * while `im` still owns the buffer -- mi_release happens right after,
+     * once the walk (and its one early-stop refusal) is done. */
+    struct pm_collect_ctx cctx;
+    memset(&cctx, 0, sizeof cctx);
+    if (!mi_each_lc(&im, pm_collect_lc, &cctx)) {
+        /* pm_collect_lc already printed why; im still owns buf here. */
+        mi_close(&im);
+        return 1;
+    }
+    struct segment_command_64 **segs = cctx.segs;
+    int nsegs = cctx.nsegs;
+    uint32_t exports_off = cctx.exports_off, exports_size = cctx.exports_size;
+    /* fixups_size is read inside pm_collect_lc's own diagnostic printf and
+     * nowhere after -- no local copy here, else it would be a genuinely new
+     * "set but not used" warning this conversion introduced. */
+    uint32_t fixups_off = cctx.fixups_off;
+    int has_dyld_info_only = cctx.has_dyld_info_only;
+    typeof(cctx.to_remove) to_remove;
+    memcpy(to_remove, cctx.to_remove, sizeof to_remove);
+    int n_remove = cctx.n_remove;
 
     /* mi_release, not the image, owns the buffer from here: the rest of this
      * tool indexes the buffer directly and eventually free()s it (twice below,
@@ -104,44 +177,6 @@ int main(int argc, char **argv) {
      * mi_close would double-free -- if it still thought it owned the memory.
      * The hand-off is explicit, as in change_dylib.c. */
     uint8_t *buf = mi_release(&im);
-
-    uint8_t *lcp = buf + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lc;
-            /* Refuse rather than guess (the global rule -grow's own comment
-             * states): silently dropping a 33rd segment here would leave
-             * si (this segment's index into segs[]) referring to the WRONG
-             * segment for every chained-fixups entry from here on, an
-             * unnoticed reordering of which fixups apply to which segment.
-             * No 10.9-era binary plausibly has this many segments; refusing
-             * costs nothing real. */
-            if (nsegs >= 32) {
-                fprintf(stderr, "ERROR: more than 32 LC_SEGMENT_64 commands; refusing "
-                                "rather than silently dropping one from the "
-                                "chained-fixups translation\n");
-                free(buf);
-                return 1;
-            }
-            segs[nsegs++] = seg;
-        } else if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
-            uint32_t *d = (uint32_t *)lc;
-            exports_off = d[2]; exports_size = d[3];
-            to_remove[n_remove++] = (typeof(to_remove[0])){lcp, lc->cmdsize};
-            printf("Exports trie: off=%u size=%u\n", exports_off, exports_size);
-        } else if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) {
-            uint32_t *d = (uint32_t *)lc;
-            fixups_off = d[2]; fixups_size = d[3];
-            to_remove[n_remove++] = (typeof(to_remove[0])){lcp, lc->cmdsize};
-            printf("Chained fixups: off=%u size=%u\n", fixups_off, fixups_size);
-        } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
-            has_dyld_info_only = 1;
-        } else if (lc->cmd == LC_BUILD_VERSION) {
-            to_remove[n_remove++] = (typeof(to_remove[0])){lcp, lc->cmdsize};
-        }
-        lcp += lc->cmdsize;
-    }
 
     /* Idempotency: a binary that already has LC_DYLD_INFO_ONLY and no chained
      * fixups has been through this tool before (or never needed patching),
