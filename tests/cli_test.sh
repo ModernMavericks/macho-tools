@@ -1364,13 +1364,48 @@ cmp -s "$T/swift_fixture" "$T/swift_twice_before" \
 # with no output -- the whole reason it does not just forward the old tool's
 # bare "return 0". A fat container is the realistic case: this verb is
 # thin-only, exactly like retag_swift_classes.
+#
+# The container is built HERE, out of the very fixture the assertions above
+# just retagged successfully, rather than borrowed from the `segment` section
+# ~150 lines up. Two reasons: a borrowed fixture means deleting or renaming
+# that section silently breaks a retag-swift assertion, and wrapping THIS
+# fixture makes the pair a control -- the same bytes are retaggable thin and
+# refused fat, so the refusal is provably about the container, not the
+# content. The one thing still shared is the segread helper that assembles
+# it, and that dependency is checked rather than assumed.
+if [ ! -x "$T/segread" ]; then
+    bad "retag-swift: fat" "the segread helper (built in the segment section above) is missing, so the fat-refusal assertions could not be built"
+else
+    printf 'not a mach-o at all, just bytes.\n' > "$T/retag_fat_blob"
+    "$T/segread" wrap "$T/retag_fat" "$T/swift_fixture" "$T/retag_fat_blob"
+    rc=0
+    "$MACHO9" retag-swift "$T/retag_fat" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
+    [ "$rc" -eq 2 ] && ok "retag-swift: refuses a fat container with the documented refusal code" \
+        || bad "retag-swift: fat" "expected exit 2, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
+    grep -q "not a readable 64-bit Mach-O" "$T/retag_fat.err" \
+        && ok "retag-swift: says why it refused, instead of silently doing nothing" \
+        || bad "retag-swift: fat message" "no explanation on stderr: $(cat "$T/retag_fat.err")"
+    # The control: the same class records, thin, ARE reachable. Without this
+    # the assertions above would also pass against a verb that refused
+    # everything.
+    cp "$T/swift_fixture" "$T/retag_thin_control"
+    rc=0
+    "$MACHO9" retag-swift "$T/retag_thin_control" >"$T/retag_thin_control.out" 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] \
+        && ok "retag-swift: the same bytes, thin, are accepted -- the refusal is about the container" \
+        || bad "retag-swift: thin control" "expected exit 0, got $rc: $(cat "$T/retag_thin_control.out")"
+fi
+
+# MSWIFT_ERROR (a path that cannot even be opened) must be 1 -- a genuine
+# operational failure, NOT the EX_REFUSED the unreadable-input case gets, and
+# certainly not 0. This is the assertion that covers cmd_retag_swift's
+# by-name test of the negative codes: collapse those branches and one of
+# these two exit codes moves.
 rc=0
-"$MACHO9" retag-swift "$T/segment_fat" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "retag-swift: refuses a fat container with the documented refusal code" \
-    || bad "retag-swift: fat" "expected exit 2, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
-grep -q "not a readable 64-bit Mach-O" "$T/retag_fat.err" \
-    && ok "retag-swift: says why it refused, instead of silently doing nothing" \
-    || bad "retag-swift: fat message" "no explanation on stderr: $(cat "$T/retag_fat.err")"
+"$MACHO9" retag-swift "$T/no-such-file-for-retag" >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
+[ "$rc" -eq 1 ] \
+    && ok "retag-swift: an unopenable path is a failure (1), not a refusal (2) and not silent success" \
+    || bad "retag-swift: missing path" "expected exit 1, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"

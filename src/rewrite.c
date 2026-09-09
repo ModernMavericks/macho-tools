@@ -295,7 +295,13 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
          * the two front-ends cannot disagree about what a rename is; only
          * getting here through mr_apply_file is what additionally gives this
          * one fat containers and an atomic write-back. */
-        if (ctx->ops->segment_rename_old &&
+        /* BOTH pointers, matching rewrite.h's "Both NULL means no rename was
+         * requested": a half-filled pair would otherwise reach
+         * mseg_rename_lc's strncpy with a NULL source. No caller sets one
+         * without the other today (cmd_segment sets both), which is exactly
+         * why the guard has to say what the contract says rather than what
+         * today's only caller happens to do. */
+        if (ctx->ops->segment_rename_old && ctx->ops->segment_rename_new &&
             mseg_rename_lc((struct load_command *)(ctx->new_lcs + ctx->new_off),
                            ctx->ops->segment_rename_old, ctx->ops->segment_rename_new)) {
             if (ctx->verbose)

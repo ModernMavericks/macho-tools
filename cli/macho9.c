@@ -657,10 +657,27 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  * rename_segment has always done, in the same place, via the same
  * mseg_name_fits.
  *
- * mr_apply_file reports "nothing to change" and exits 0 when no segment
- * matched. That is deliberately NOT rename_segment's exit 2: this verb hands
- * back the shared driver's own code, exactly as dylib/rpath/lc do, and Task 2
- * is where the wrapper decides what the old grammar's callers should see. */
+ * THREE DELIBERATE DIVERGENCES FROM rename_segment, all of which a wrapper
+ * author (Task 2) has to know about, because reproducing rename_segment's
+ * observable behaviour on top of this verb means accounting for each:
+ *
+ *   - EXIT CODE WHEN NOTHING MATCHED. mr_apply_file reports "nothing to
+ *     change" and exits 0; rename_segment exits 2. This verb hands back the
+ *     shared driver's own code, exactly as dylib/rpath/lc do, and Task 2 is
+ *     where the wrapper decides what the old grammar's callers should see.
+ *   - mg_plausible. mr_process_thin runs it over the finished image before
+ *     writing (src/rewrite.c, "Last gate before the bytes reach disk") and
+ *     refuses if it fails; rename_segment has no such gate. So this verb can
+ *     REFUSE a binary rename_segment would happily rename -- not because the
+ *     rename is unsafe, but because the image was already implausible before
+ *     anything touched it. That is the right default for a shared rewriter
+ *     and MACHO_NO_VERIFY=1 opts out, but it is a real behavioural
+ *     difference, not a wording one.
+ *   - STDOUT. mr_process_thin prints its own "header pad N bytes available"
+ *     and "updated (sizeofcmds=...)" lines, and mr_apply_file its "Updated
+ *     ..." line; rename_segment prints exactly one line, "%s: renamed %d
+ *     segment(s) %s -> %s". A wrapper that passes this verb's stdout through
+ *     will not look like rename_segment. */
 static int cmd_segment(const char *path, const char *oldname, const char *newname) {
     if (!mseg_name_fits(newname)) {
         fprintf(stderr, "macho9 segment: new segment name '%s' is longer than the %d bytes "
@@ -683,7 +700,28 @@ static int cmd_segment(const char *path, const char *oldname, const char *newnam
  * cannot read gets SAID SO here, rather than the bare "return 0" the old
  * multi-file tool used to keep its argv loop going: a single-file verb that
  * prints nothing and exits 0 on a fat binary is exactly the silent success
- * docs/PROPOSAL.md's `verify` section exists to rule out. */
+ * docs/PROPOSAL.md's `verify` section exists to rule out.
+ *
+ * TWO DELIBERATE DIVERGENCES FROM retag_swift_classes, both of which a
+ * wrapper author (Task 2) has to know about, because in each case the two
+ * front-ends return DIFFERENT codes for the same input:
+ *
+ *   - MSWIFT_NOT_MACHO. retag_swift_classes skips such an argument silently
+ *     and keeps going through the rest of its argv, ending at 0; this verb
+ *     has exactly one file to talk about, so it refuses (EX_REFUSED) and says
+ *     why.
+ *   - MSWIFT_RACED -- `path` named a different inode by the time it was
+ *     validated, so NOTHING was written. retag_swift_classes returns 0 for
+ *     that (a benign skip in a multi-file run, already reported on stderr);
+ *     this verb returns 1. Reporting success for work it did not do is the
+ *     silent-success shape this codebase refuses, and a caller that scripted
+ *     `macho9 retag-swift F && install F` on a 0 would install the file the
+ *     race left behind.
+ *
+ * Both codes are tested BY NAME below, never as `n < 0` -- swift_retag.h says
+ * why: a fourth benign code added later would otherwise silently become a
+ * macho9 failure, which is the same "two places deciding one thing" drift the
+ * shared module exists to prevent. */
 static int cmd_retag_swift(const char *path) {
     int n = mswift_retag_file(path);
     if (n == MSWIFT_NOT_MACHO) {
@@ -693,7 +731,19 @@ static int cmd_retag_swift(const char *path) {
                         "Mach-O at all.\n", path);
         return EX_REFUSED;
     }
-    if (n < 0) return 1;   /* MSWIFT_ERROR / MSWIFT_RACED: already reported */
+    /* Both already printed their own diagnostic inside mswift_retag_file. */
+    if (n == MSWIFT_ERROR || n == MSWIFT_RACED) return 1;
+    if (n < 0) {
+        /* A code swift_retag.h grew that this verb has not been taught. Refuse
+         * rather than fall through to "retagged -4 class record(s)" and exit
+         * 0 -- an unrecognized negative is precisely the case the by-name rule
+         * above exists for, and guessing which side of refusal it belongs on
+         * is not this verb's call to make. */
+        fprintf(stderr, "macho9 retag-swift: %s: mswift_retag_file returned an "
+                        "unrecognized code %d; refusing rather than reporting a "
+                        "count this verb cannot vouch for\n", path, n);
+        return 1;
+    }
     printf("%s: retagged %d class record(s)\n", path, n);
     return 0;
 }

@@ -184,6 +184,13 @@ while IFS= read -r SRC; do
     # ships, so the rename really does change bytes on any thin 64-bit input
     # (and reports its own refusal, identically on both sides, on the rest).
     tool rename_segment __DATA __DATA_R9
+    # DO NOT OVER-TRUST THIS ONE. A 10.9 corpus predates Swift entirely, so no
+    # binary in it carries a stable-ABI is-Swift tag: the retag arithmetic
+    # never fires, this sweep never modifies an input, and what it actually
+    # compares is the open / mi_open / find_section / "total:" paths. That is
+    # worth comparing -- those are most of what moved into src/swift_retag.c --
+    # but the tag flip itself is pinned by cli_test.sh's mkswift fixture, not
+    # here, and a `differing=0` on this line says nothing about it.
     tool retag_swift_classes
 done < "$T/corpus"
 
