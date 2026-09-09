@@ -365,7 +365,8 @@ esac
 # mkswift helper below already use.
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../src" && pwd)
 cat > "$T/mkchained.c" <<'EOF'
-/* mkchained make OUT    -- write a tiny 64-bit Mach-O that uses CHAINED
+/* mkchained make|make-weak|make-big OUT
+ *                        -- write a tiny 64-bit Mach-O that uses CHAINED
  *                          FIXUPS, the format `declassify`/patch_macho exists
  *                          to lower. No linker on any host this repo supports
  *                          can be asked to emit one on demand (10.9's predates
@@ -388,6 +389,16 @@ cat > "$T/mkchained.c" <<'EOF'
  * hold 0 (dyld fills a bind slot in at load time). Those two quadwords are the
  * whole point: they are the arithmetic the conversion does that nothing else
  * in this repo does, and they are observable in the output file's bytes.
+ *
+ * make-weak differs in ONE field: the import's library ordinal is -3
+ * (BIND_SPECIAL_DYLIB_WEAK_LOOKUP), which 10.9's dyld rejects outright with
+ * "bad special ordinal". The conversion has to remap it to flat lookup (-2)
+ * plus the weak-import flag, and that remap is visible in the emitted opcodes.
+ *
+ * make-big differs in SIZE: a 2MB __DATA whose every quadword is one link of a
+ * single rebase chain, ~262k fixups. At about 5 opcode bytes each that is well
+ * past the 1MB the conversion buffers, so it must REFUSE. Before the bound
+ * existed this fixture walked straight off the end of a 1MB malloc.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -399,23 +410,23 @@ cat > "$T/mkchained.c" <<'EOF'
 #include <mach-o/loader.h>
 #include "mach_compat.h"
 
-#define FSIZE        0x3000
 #define TEXT_VMADDR  0x100000000ULL
 #define SECT_OFF     0x400          /* first section's file offset: the bound
                                      * the conversion checks for the 48 bytes
                                      * LC_DYLD_INFO_ONLY needs */
 #define DATA_OFF     0x1000
-#define LINKEDIT_OFF 0x2000
-#define FIXUPS_OFF   0x2000
-#define FIXUPS_SIZE  0x100
-#define TRIE_OFF     0x2100
+#define DATA_SIZE    0x1000
+#define BIG_DATA_SIZE 0x200000
 #define TRIE_SIZE    0x10
+#define FIXUPS_SIZE  0x100
 
 #define CF_PTR_64_OFFSET 6
 #define REBASE_TARGET    0x1000ULL  /* base-relative, so the converted slot
                                      * must read TEXT_VMADDR + this */
 #define BIND_SLOT_OFF    8
 #define SYMNAME          "_mkchained_sym"
+
+enum { MK_PLAIN, MK_WEAK, MK_BIG };
 
 /* segname/sectname are char[16] and need NOT be NUL-terminated; see
  * tests/README.md's host-portability section for why strcpy is wrong here. */
@@ -451,8 +462,14 @@ static void put_sect(struct segment_command_64 *seg, int i, const char *sect,
     s->addr = addr; s->size = size; s->offset = offset;
 }
 
-static int make(const char *path) {
-    uint8_t *buf = calloc(1, FSIZE);
+static int make(const char *path, int mode) {
+    uint64_t data_size = (mode == MK_BIG) ? BIG_DATA_SIZE : DATA_SIZE;
+    uint64_t linkedit_off = DATA_OFF + data_size;
+    uint64_t fixups_off = linkedit_off;
+    uint64_t trie_off = linkedit_off + FIXUPS_SIZE;
+    size_t fsize = (size_t)(linkedit_off + 0x1000);
+
+    uint8_t *buf = calloc(1, fsize);
     if (!buf) return 2;
 
     struct mach_header_64 *h = (struct mach_header_64 *)buf;
@@ -468,23 +485,23 @@ static int make(const char *path) {
     put_sect(text, 0, "__text", "__TEXT", TEXT_VMADDR + SECT_OFF, 4, SECT_OFF);
     p += text->cmdsize;
 
-    struct segment_command_64 *data = put_seg(p, "__DATA", TEXT_VMADDR + DATA_OFF, 0x1000,
-                                              DATA_OFF, 0x1000, 1);
-    put_sect(data, 0, "__data", "__DATA", TEXT_VMADDR + DATA_OFF, 0x10, DATA_OFF);
+    struct segment_command_64 *data = put_seg(p, "__DATA", TEXT_VMADDR + DATA_OFF, data_size,
+                                              DATA_OFF, data_size, 1);
+    put_sect(data, 0, "__data", "__DATA", TEXT_VMADDR + DATA_OFF, data_size, DATA_OFF);
     p += data->cmdsize;
 
-    struct segment_command_64 *le = put_seg(p, "__LINKEDIT", TEXT_VMADDR + LINKEDIT_OFF, 0x1000,
-                                            LINKEDIT_OFF, 0x1000, 0);
+    struct segment_command_64 *le = put_seg(p, "__LINKEDIT", TEXT_VMADDR + linkedit_off, 0x1000,
+                                            linkedit_off, 0x1000, 0);
     p += le->cmdsize;
 
     struct linkedit_data_command *cf = (struct linkedit_data_command *)p;
     cf->cmd = LC_DYLD_CHAINED_FIXUPS; cf->cmdsize = sizeof *cf;
-    cf->dataoff = FIXUPS_OFF; cf->datasize = FIXUPS_SIZE;
+    cf->dataoff = (uint32_t)fixups_off; cf->datasize = FIXUPS_SIZE;
     p += cf->cmdsize;
 
     struct linkedit_data_command *tr = (struct linkedit_data_command *)p;
     tr->cmd = LC_DYLD_EXPORTS_TRIE; tr->cmdsize = sizeof *tr;
-    tr->dataoff = TRIE_OFF; tr->datasize = TRIE_SIZE;
+    tr->dataoff = (uint32_t)trie_off; tr->datasize = TRIE_SIZE;
     p += tr->cmdsize;
 
     /* LC_BUILD_VERSION by hand: 10.9's <mach-o/loader.h> has no
@@ -498,17 +515,23 @@ static int make(const char *path) {
     h->ncmds = 6;
     h->sizeofcmds = (uint32_t)(p - (buf + sizeof *h));
 
-    /* The chain in __DATA. Both links use pointer format 6
+    /* The chain in __DATA. Every link uses pointer format 6
      * (DYLD_CHAINED_PTR_64_OFFSET): bit 63 selects bind over rebase, bits
      * [62:51] are the distance to the next link in 4-byte strides, and the low
      * bits are a base-relative target (rebase) or an import ordinal (bind). */
     uint64_t *slot = (uint64_t *)(buf + DATA_OFF);
-    slot[0] = REBASE_TARGET | ((uint64_t)(BIND_SLOT_OFF / 4) << 51);
-    slot[1] = (1ULL << 63) | 0ULL;   /* bind import 0, next = 0 = end of chain */
+    if (mode == MK_BIG) {
+        uint64_t n = data_size / 8;
+        for (uint64_t i = 0; i < n; i++)
+            slot[i] = REBASE_TARGET | ((i + 1 < n) ? ((uint64_t)2 << 51) : 0);
+    } else {
+        slot[0] = REBASE_TARGET | ((uint64_t)(BIND_SLOT_OFF / 4) << 51);
+        slot[1] = (1ULL << 63) | 0ULL;   /* bind import 0, next = 0 = end of chain */
+    }
 
     /* The fixups blob: header, starts-image, one starts-segment for __DATA
      * (segment index 1), one import, one symbol name. */
-    uint8_t *fx = buf + FIXUPS_OFF;
+    uint8_t *fx = buf + fixups_off;
     uint32_t *fh = (uint32_t *)fx;
     fh[0] = 0;      /* fixups_version */
     fh[1] = 0x20;   /* starts_offset */
@@ -530,18 +553,22 @@ static int make(const char *path) {
     *(uint16_t *)(ss + 6)  = CF_PTR_64_OFFSET;  /* pointer_format */
     *(uint64_t *)(ss + 8)  = DATA_OFF;          /* segment_offset */
     *(uint32_t *)(ss + 16) = 0;                 /* max_valid_pointer */
-    *(uint16_t *)(ss + 20) = 1;                 /* page_count */
+    *(uint16_t *)(ss + 20) = 1;                 /* page_count: one page START,
+                                                 * whose chain may run on past
+                                                 * that page -- which is what
+                                                 * make-big's does */
     *(uint16_t *)(ss + 22) = 0;                 /* page_start[0]: chain at +0 */
 
-    /* import 0: lib_ordinal 1, not weak, name at offset 0 of the symbol pool */
-    *(uint32_t *)(fx + 0x60) = 1u | (0u << 8) | (0u << 9);
+    /* import 0. lib_ordinal 1 normally; 0xFD reads back as the signed -3 that
+     * means BIND_SPECIAL_DYLIB_WEAK_LOOKUP, the ordinal 10.9's dyld refuses. */
+    *(uint32_t *)(fx + 0x60) = (mode == MK_WEAK) ? 0xFDu : 1u;
     memcpy(fx + 0x80, SYMNAME, sizeof SYMNAME);
 
-    memset(buf + TRIE_OFF, 0, TRIE_SIZE);
+    memset(buf + trie_off, 0, TRIE_SIZE);
 
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (fd < 0) { perror("create"); free(buf); return 2; }
-    if (write(fd, buf, FSIZE) != (ssize_t)FSIZE) { perror("write"); close(fd); free(buf); return 2; }
+    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); close(fd); free(buf); return 2; }
     close(fd);
     free(buf);
     return 0;
@@ -590,14 +617,16 @@ static int check(const char *path) {
             printf("rebase=%u+%u\n", di->rebase_off, di->rebase_size);
             printf("bind=%u+%u\n", di->bind_off, di->bind_size);
             printf("export=%u+%u\n", di->export_off, di->export_size);
-            /* The bind stream's first three opcodes are SET_TYPE_IMM,
-             * SET_DYLIB_ORDINAL_IMM and SET_SYMBOL_TRAILING_FLAGS_IMM, each
-             * one byte, and the symbol name follows the third as a NUL-
-             * terminated string. Reading it back is how this proves the BIND
-             * link was translated and not merely counted -- and reading it at
-             * a FIXED offset is deliberate: if the emitted opcode sequence
-             * ever changes shape, that is a behaviour change in the
-             * conversion and this must fail rather than adapt. */
+            /* The bind stream's first three opcodes are SET_TYPE_IMM, the
+             * dylib-ordinal opcode and SET_SYMBOL_TRAILING_FLAGS_IMM, each one
+             * byte, and the symbol name follows the third as a NUL-terminated
+             * string. Reading them back is how this proves the BIND link was
+             * translated and not merely counted, and it is what makes the -3
+             * weak remap observable: the second byte says which dylib opcode
+             * was chosen and the third carries the weak-import flag. Reading
+             * at a FIXED offset is deliberate: if the emitted opcode sequence
+             * ever changes shape, that is a behaviour change in the conversion
+             * and this must fail rather than adapt. */
             if (di->bind_size > 4 && di->bind_off + di->bind_size <= (uint32_t)st.st_size) {
                 uint8_t *b = buf + di->bind_off;
                 printf("bindops=%02x,%02x,%02x\n", b[0], b[1], b[2]);
@@ -617,10 +646,12 @@ static int check(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkchained make|check FILE\n"); return 2; }
-    if (strcmp(argv[1], "make") == 0) return make(argv[2]);
+    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|check FILE\n"); return 2; }
+    if (strcmp(argv[1], "make") == 0) return make(argv[2], MK_PLAIN);
+    if (strcmp(argv[1], "make-weak") == 0) return make(argv[2], MK_WEAK);
+    if (strcmp(argv[1], "make-big") == 0) return make(argv[2], MK_BIG);
     if (strcmp(argv[1], "check") == 0) return check(argv[2]);
-    fprintf(stderr, "usage: mkchained make|check FILE\n");
+    fprintf(stderr, "usage: mkchained make|make-weak|make-big|check FILE\n");
     return 2;
 }
 EOF
@@ -663,6 +694,12 @@ dcl_expect trie 0
 dcl_expect buildver 0
 dcl_expect dyldinfo 1
 dcl_expect bindsym _mkchained_sym
+# The three bind opcodes, read back as bytes: SET_TYPE_IMM|POINTER (0x51),
+# SET_DYLIB_ORDINAL_IMM|1 (0x11), SET_SYMBOL_TRAILING_FLAGS_IMM with no flags
+# (0x40). mkchained prints them; nothing asserted them until now, which left
+# "the bind was translated" resting on the symbol name alone. It is also the
+# baseline the weak-ordinal case below is a deviation from.
+dcl_expect bindops 51,11,40
 [ "$dcl_fail" -eq 0 ] && ok "declassify: rebase rewritten, bind zeroed and named, modern commands stripped"
 
 # __LINKEDIT has to end exactly where the file now does: the conversion
@@ -681,6 +718,51 @@ if [ "${rebase##*+}" -gt 0 ] && [ "${bind##*+}" -gt 0 ]; then
     ok "declassify: LC_DYLD_INFO_ONLY points at non-empty rebase and bind streams"
 else
     bad "declassify: LC_DYLD_INFO_ONLY" "empty stream(s): rebase=$rebase bind=$bind"
+fi
+
+# THE -3 WEAK-LOOKUP REMAP, which nothing in this repo asserted and which
+# fails at LOAD TIME on the real product when it is wrong: a bind whose library
+# ordinal is -3 (BIND_SPECIAL_DYLIB_WEAK_LOOKUP, emitted by every modern
+# toolchain) is rejected by 10.9's dyld with "bad special ordinal". The
+# conversion has to rewrite it as flat lookup (-2) plus the weak-import flag,
+# and the rewrite is visible in the opcodes: 0x3e is
+# SET_DYLIB_SPECIAL_IMM|(-2 & 0x0F) where the plain fixture has 0x11
+# (SET_DYLIB_ORDINAL_IMM|1), and 0x41 is SET_SYMBOL_TRAILING_FLAGS_IMM with
+# BIND_SYMBOL_FLAGS_WEAK_IMPORT where the plain fixture has 0x40.
+"$T/mkchained" make-weak "$T/weak.in"
+"$MACHO9" declassify "$T/weak.in" "$T/weak.out" >/dev/null 2>"$T/weak.err" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ]; then
+    dcl_out=$("$T/mkchained" check "$T/weak.out")
+    dcl_fail=0
+    dcl_expect bindops 51,3e,41
+    dcl_expect bindsym _mkchained_sym
+    dcl_expect slot1 0x0
+    [ "$dcl_fail" -eq 0 ] && ok "declassify: a -3 weak-lookup ordinal becomes flat lookup + weak-import"
+else
+    bad "declassify: weak ordinal" "exited $rc: $(cat "$T/weak.err")"
+fi
+
+# THE OPCODE BUFFER'S BOUND. The conversion emits into two fixed 1MB buffers
+# (declassify.h's LIMITS). A binary with more fixups than that used to walk
+# straight off the end of the allocation -- ~5 bytes per rebase, so about 200k
+# fixups reaches it, which a large modern binary genuinely carries. This
+# fixture is a 2MB __DATA that is one 262k-link rebase chain: the conversion
+# must REFUSE it, say so, and write nothing.
+"$T/mkchained" make-big "$T/big.in"
+rm -f "$T/big.out"
+"$MACHO9" declassify "$T/big.in" "$T/big.out" >/dev/null 2>"$T/big.err" && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && ok "declassify: refuses a binary with more fixups than the opcode buffer holds" \
+    || bad "declassify: opcode overflow" "expected EX_REFUSED (2), got $rc: $(cat "$T/big.err")"
+grep -q "opcode buffer" "$T/big.err" \
+    && ok "declassify: names the opcode buffer as the reason" \
+    || bad "declassify: opcode overflow" "no reason on stderr: $(cat "$T/big.err")"
+[ -e "$T/big.out" ] && bad "declassify: opcode overflow" "wrote an output for an input it refused" \
+    || ok "declassify: an over-large input produces no output file"
+if [ -x "$BIN/patch_macho" ]; then
+    rm -f "$T/big.pm"
+    "$BIN/patch_macho" "$T/big.in" "$T/big.pm" >/dev/null 2>&1 && rc=0 || rc=$?
+    [ "$rc" -eq 1 ] && ok "declassify: patch_macho refuses the same over-large input with its flat 1" \
+        || bad "declassify: opcode overflow (patch_macho)" "expected 1, got $rc"
 fi
 
 # BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting

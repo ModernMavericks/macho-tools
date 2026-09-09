@@ -174,12 +174,20 @@ tool() {
 #                                    comparing it across builds would report a
 #                                    difference that is the point of the task.
 #
+# The macho9 half runs on EVERY file, not only the ones patch_macho converted:
+# where patch_macho declines, declassify must decline too (with its own code --
+# EX_REFUSED for a judgement about the input, 1 for an operational failure --
+# but never 0, which would be a silent success on an input the other front-end
+# refused). Keeping it inside the success branch would have left the sentence
+# below true of patch_macho and false of declassify.
+#
 # A 10.9 corpus has no chained fixups in it, so what this exercises on the
-# target machine is the read path, the pass-through, and the refusals -- most
-# of what moved -- while the conversion arithmetic itself is pinned by
-# cli_test.sh's hand-built fixture and by chained-fixups.sh on a host whose
-# linker emits the format. `differing=0` on this line is not a claim about the
-# conversion; it is a claim about everything around it.
+# target machine -- for BOTH front-ends -- is the read path, the pass-through,
+# and the refusals: most of what moved, but not the conversion arithmetic,
+# which is pinned by cli_test.sh's hand-built fixtures and by
+# chained-fixups.sh on a host whose linker emits the format. `differing=0` on
+# this line is not a claim about the conversion; it is a claim about
+# everything around it.
 conv() {
     total=$((total + 1))
     cp "$SRC" "$T/A/f"; cp "$SRC" "$T/B/f"
@@ -193,12 +201,12 @@ conv() {
     if [ "$arc" -eq 0 ] || [ "$brc" -eq 0 ]; then
         cmp -s "$T/A/o" "$T/B/o" || bad="$bad bytes"
         cmp -s "$SRC" "$T/A/o" || modified=$((modified + 1))
-        ( cd "$T/B" && "$NEW/macho9" declassify f o9 ) >"$T/b9.out" 2>"$T/b9.err"; b9rc=$?
-        if [ "$b9rc" -ne 0 ]; then
-            bad="$bad declassify-exit($b9rc)"
-        else
-            cmp -s "$T/B/o" "$T/B/o9" || bad="$bad declassify-bytes"
-        fi
+    fi
+    ( cd "$T/B" && "$NEW/macho9" declassify f o9 ) >"$T/b9.out" 2>"$T/b9.err"; b9rc=$?
+    if [ "$brc" -eq 0 ]; then
+        [ "$b9rc" -eq 0 ] && cmp -s "$T/B/o" "$T/B/o9" || bad="$bad declassify($b9rc)"
+    else
+        [ "$b9rc" -ne 0 ] || bad="$bad declassify-took-a-refused-input"
     fi
     record "patch_macho $SRC (and macho9 declassify)" "$bad"
 }

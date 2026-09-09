@@ -778,10 +778,12 @@ static int cmd_retag_swift(const char *path) {
  *   - EXIT CODES. patch_macho returns a flat 1 for everything that goes
  *     wrong. This verb returns EX_REFUSED where it examined the input and
  *     declined on purpose -- not a readable 64-bit Mach-O, no chained fixups
- *     to convert, or any of the conversion's own refusals (too many segments
- *     or strippable commands, an unknown pointer format, no room for the
- *     48-byte LC_DYLD_INFO_ONLY, no __LINKEDIT) -- and 1 only for an
- *     operational failure, which here means writing OUT. That is what
+ *     to convert, or any of the conversion's own refusals -- declassify.h's
+ *     LIMITS section lists them all: too many segments or strippable
+ *     commands, more fixups than the opcode buffers hold, an unknown pointer
+ *     format, no room for the 48-byte LC_DYLD_INFO_ONLY, no __LINKEDIT --
+ *     and 1 only for an operational failure, which here means an allocation
+ *     md_declassify could not make, or writing OUT. That is what
  *     EX_REFUSED's contract above asks for, and this verb is free to use it:
  *     unlike dylib/rpath/lc/minos it has never forwarded another program's
  *     exit code, so there is nothing to preserve. A wrapper that must look
@@ -821,6 +823,11 @@ static int cmd_declassify(const char *in, const char *out) {
         return EX_REFUSED;
     }
     if (rc == MDCL_REFUSED) return EX_REFUSED;  /* md_declassify already said why */
+    /* An allocation md_declassify could not make. Also already reported, but
+     * NOT a refusal: EX_REFUSED's contract above rules out using it for "a
+     * malloc that failed", and a caller scripting around "this file just isn't
+     * one macho9 will touch" would be told the wrong thing. */
+    if (rc == MDCL_ERROR) return 1;
     if (rc != MDCL_CONVERTED && rc != MDCL_PASSTHROUGH) {
         /* A code declassify.h grew that this verb has not been taught. Refuse
          * rather than write an output file from a buffer md_declassify never

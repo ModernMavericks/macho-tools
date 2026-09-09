@@ -39,8 +39,9 @@ int main(int argc, char **argv) {
         return 1;
     }
     /* Anything that is not one of the two successes is a failure this tool
-     * reports as 1 -- MDCL_REFUSED today, and any code declassify.h grows
-     * later. Spelled as "not a success" rather than "== MDCL_REFUSED" so a
+     * reports as 1 -- MDCL_REFUSED and MDCL_ERROR today, and any code
+     * declassify.h grows later. macho9's verb tells those two apart; this one
+     * never has and does not start now. Spelled as "not a success" rather than "== MDCL_REFUSED" so a
      * future code cannot fall through to writing an output file from a NULL
      * buffer; the exit code stays the flat 1 this tool has always used. */
     if (rc != MDCL_CONVERTED && rc != MDCL_PASSTHROUGH) return 1;

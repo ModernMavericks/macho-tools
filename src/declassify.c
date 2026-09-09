@@ -51,14 +51,45 @@ struct cf_import {
 #define CF_PTR_64_OFFSET 6
 #define CF_START_NONE    0xFFFF
 
-/* Dynamic buffer for opcodes */
+/* Dynamic buffer for opcodes.
+ *
+ * OB_CAP is a fixed allocation, not a growing one, and `cap` is now the bound
+ * it always looked like: before this it was written by ob_init and read
+ * NOWHERE, while ob_byte indexed `data` with no check at all. A binary whose
+ * __DATA_CONST carries more fixups than this holds -- rebase emission is about
+ * 5 bytes per fixup, so roughly 200k of them -- wrote straight past the
+ * allocation. That is not a hypothetical input class: the Node-based binary
+ * install.sh fetches and runs this conversion over is exactly the shape that
+ * gets there.
+ *
+ * The refusal is DEFERRED rather than immediate: ob_byte drops the byte and
+ * sets a sticky `overflow`, and md_declassify turns that into MDCL_REFUSED
+ * once the walk is over. Deferring keeps the bound out of the hot path's
+ * control flow (ob_uleb/ob_str emit through ob_byte and would each need their
+ * own abort otherwise) and keeps the diagnostic in one place; nothing is
+ * written to disk on that path, so a truncated stream can never escape.
+ * ob_init's malloc is checked the same way, with `cap = 0` making every
+ * subsequent ob_byte a no-op -- but md_declassify checks for it immediately,
+ * because an allocation failure is not the same kind of answer as "this file
+ * needs more opcodes than we buffer" (see MDCL_ERROR vs MDCL_REFUSED). */
+#define OB_CAP (1024*1024)
+
 struct opbuf {
     uint8_t *data;
     size_t len, cap;
+    int overflow;   /* sticky: set by a byte that did not fit, or a failed malloc */
 };
 
-static void ob_init(struct opbuf *b) { b->data = malloc(1024*1024); b->len = 0; b->cap = 1024*1024; }
-static void ob_byte(struct opbuf *b, uint8_t v) { b->data[b->len++] = v; }
+static void ob_init(struct opbuf *b) {
+    b->data = malloc(OB_CAP);
+    b->len = 0;
+    b->cap = b->data ? OB_CAP : 0;
+    b->overflow = b->data ? 0 : 1;
+}
+static void ob_byte(struct opbuf *b, uint8_t v) {
+    if (b->len >= b->cap) { b->overflow = 1; return; }
+    b->data[b->len++] = v;
+}
 static void ob_uleb(struct opbuf *b, uint64_t v) {
     do { uint8_t byte = v & 0x7F; v >>= 7; if (v) byte |= 0x80; ob_byte(b, byte); } while (v);
 }
@@ -174,6 +205,10 @@ static int md_collect_lc(const struct load_command *lc_, void *ctx_) {
 }
 
 int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
+    /* What the two cleanup labels at the bottom hand back. Declared here
+     * because a goto may not jump over its initialization. */
+    int rc;
+
     /* Read file. The 2MB of slack is this conversion's own requirement: it
      * appends the rebuilt rebase/bind streams into the tail of the buffer
      * rather than reallocating, so the headroom has to be there from the
@@ -184,6 +219,13 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     if (mi_open_slack(path, 2*1024*1024, &im) != 0)
         return MDCL_NOT_MACHO;
     size_t fsize = im.size;
+    /* Writable bytes past the end of the file, captured HERE because
+     * mi_release empties the image a few dozen lines down and this is the only
+     * place the allocation's real size is knowable. It is the budget the
+     * appended rebase/bind streams have to fit inside, and it used to be
+     * discarded -- the two memcpys below wrote into the slack without ever
+     * asking how much of it there was. */
+    size_t slack = im.cap - fsize;
     struct mach_header_64 *hdr = im.hdr;
 
     /* __TEXT's vmaddr: the pre-slide base. Was a strcmp inside the walk below;
@@ -248,6 +290,15 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     /* Generate rebase and bind opcodes */
     struct opbuf rebase, bind;
     ob_init(&rebase); ob_init(&bind);
+    /* An allocation failure is an operational failure, not a judgement about
+     * the input, so it is MDCL_ERROR and not MDCL_REFUSED -- cli/macho9.c's
+     * EX_REFUSED comment is explicit that "a malloc that failed" must not be
+     * reported as a refusal. */
+    if (rebase.overflow || bind.overflow) {
+        fprintf(stderr, "ERROR: could not allocate the %d-byte rebase/bind opcode buffers\n", OB_CAP);
+        rc = MDCL_ERROR;
+        goto fail;
+    }
     ob_byte(&rebase, REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER);
     ob_byte(&bind, BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER);
 
@@ -362,6 +413,21 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     ob_byte(&bind, BIND_OPCODE_DONE);
     printf("Processed %d rebases, %d binds\n", total_rebases, total_binds);
 
+    /* The deferred refusal ob_byte's bound sets up. Refusing rather than
+     * guessing is the global rule, and the alternative here is not a guess but
+     * a LIE: a stream cut off at OB_CAP describes some of the fixups and
+     * silently drops the rest, producing a binary dyld loads with a fraction
+     * of its pointers rebased. */
+    if (rebase.overflow || bind.overflow) {
+        fprintf(stderr, "ERROR: the rebuilt %s did not fit in the %d-byte opcode buffer "
+                        "(%d rebases, %d binds); refusing rather than emitting a truncated "
+                        "stream\n",
+                rebase.overflow ? (bind.overflow ? "rebase and bind streams" : "rebase stream")
+                                : "bind stream",
+                OB_CAP, total_rebases, total_binds);
+        goto refuse;
+    }
+
     /* Remove old commands from the header (process in reverse order to maintain positions) */
     /* Sort by position descending */
     for (int i = 0; i < n_remove - 1; i++) {
@@ -387,7 +453,25 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     }
 
     /* Add LC_DYLD_INFO_ONLY */
-    /* Append data at end of file (aligned) */
+    /* Append data at end of file (aligned).
+     *
+     * Both streams and both 8-byte alignment roundings have to fit in the
+     * slack mi_open_slack reserved: the worst case is 7 wasted bytes before
+     * the rebase stream and 7 more before the bind stream, hence the 14. The
+     * two memcpys below had no bound of any kind before this -- and note that
+     * the per-stream OB_CAP check above does NOT subsume this one: it bounds
+     * each stream at 1MB, which two of them plus alignment can only just fit
+     * in 2MB of slack. Today those constants make this check unreachable, so
+     * it is a backstop rather than a live refusal -- exactly the property that
+     * would evaporate silently if someone raised OB_CAP or lowered the slack,
+     * which is why it is a check and not a comment. */
+    if (rebase.len + bind.len + 14 > slack) {
+        fprintf(stderr, "ERROR: the rebuilt rebase (%zu bytes) and bind (%zu bytes) streams "
+                        "do not fit in the %zu bytes of slack reserved past the file; "
+                        "refusing rather than writing past the buffer\n",
+                rebase.len, bind.len, slack);
+        goto refuse;
+    }
     size_t new_end = (fsize + 7) & ~7UL;
     uint32_t rebase_foff = (uint32_t)new_end;
     memcpy(buf + new_end, rebase.data, rebase.len);
@@ -455,12 +539,17 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     *out_len = new_end;
     return MDCL_CONVERTED;
 
-    /* The three refusals above reach here instead of returning where they
-     * stand. patch_macho's main() could just `return 1` and let exit() reclaim
-     * everything; a library function has to hand back the memory it took, and
-     * hand back nothing else -- *out_buf and *out_len are untouched on every
-     * negative return, which is what declassify.h promises callers. */
+    /* Every refusal raised after the opcode buffers exist reaches here instead
+     * of returning where it stands. patch_macho's main() could just `return 1`
+     * and let exit() reclaim everything; a library function has to hand back
+     * the memory it took, and hand back nothing else -- *out_buf and *out_len
+     * are untouched on every negative return, which is what declassify.h
+     * promises callers. `fail` is the same cleanup for a caller that has
+     * already chosen a different code (MDCL_ERROR); it must not be reached
+     * with rc unset. */
 refuse:
+    rc = MDCL_REFUSED;
+fail:
     free(rebase.data); free(bind.data); free(buf);
-    return MDCL_REFUSED;
+    return rc;
 }

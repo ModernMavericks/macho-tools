@@ -58,12 +58,40 @@
 #define MDCL_NOT_MACHO   (-1)  /* not a readable 64-bit thin Mach-O; NOTHING
                                 * printed, so a front-end that cares must say
                                 * so itself, in its own vocabulary */
-#define MDCL_REFUSED     (-2)  /* examined and declined on purpose (no chained
-                                * fixups to convert, more segments or strippable
-                                * commands than the tables hold, an unknown
-                                * pointer format, no room for the 48-byte
-                                * LC_DYLD_INFO_ONLY, no __LINKEDIT); the reason
-                                * is already on stderr */
+#define MDCL_REFUSED     (-2)  /* examined and declined on purpose (see LIMITS
+                                * below for the full list); the reason is
+                                * already on stderr */
+#define MDCL_ERROR       (-3)  /* an operational failure -- an allocation this
+                                * conversion could not make -- not a judgement
+                                * about the input; already reported. A caller
+                                * that distinguishes refusal from failure (the
+                                * `declassify` verb does) must NOT report this
+                                * as a refusal */
+
+/* LIMITS, and what happens at each -- every one of them is a refusal, never a
+ * truncated or corrupted output. The conversion works inside two fixed
+ * budgets, both of them deliberate: it appends into slack allocated with the
+ * file rather than reallocating, and it emits into fixed opcode buffers.
+ *
+ *   32 LC_SEGMENT_64 commands, and 16 strippable ones
+ *     (LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION together)
+ *     -- more of either is MDCL_REFUSED.
+ *   1MB of rebase opcodes and 1MB of bind opcodes, about 200k fixups each
+ *     (roughly 5 bytes per fixup). A binary with more fixups than that is
+ *     MDCL_REFUSED, not a binary whose remaining pointers silently go
+ *     unrebased. This is the limit a very large modern binary reaches first.
+ *   2MB of slack past the end of the file, which both finished streams plus
+ *     their 8-byte alignment must fit inside -- MDCL_REFUSED otherwise.
+ *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY, and a __LINKEDIT
+ *     segment to extend -- MDCL_REFUSED without either.
+ *   An unknown chained-fixups pointer format is MDCL_REFUSED. A fixup that
+ *     points outside the file, or a bind naming an ordinal the import table
+ *     does not have, abandons THAT CHAIN with a message and keeps going --
+ *     the one place this conversion continues rather than refusing, unchanged
+ *     from patch_macho.
+ *
+ * A caller therefore never has to bound its input itself, and never has to
+ * wonder whether a zero return means the whole file was converted. */
 
 /*
  * Read the Mach-O at `path` and produce the declassified image in memory.
@@ -75,7 +103,7 @@
  * declassify` and `patch_macho` byte-identical by construction rather than by
  * agreement (tests/cli_test.sh and tests/chained-fixups.sh assert it anyway).
  *
- * On either negative return nothing is allocated and nothing is written; the
+ * On ANY negative return nothing is allocated and nothing is written; the
  * file on disk is never touched by this function in any case, since it only
  * ever reads.
  */
