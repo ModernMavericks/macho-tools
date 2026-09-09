@@ -31,9 +31,10 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # Builds change_dylib from source rather than consuming a CMake target, so this
 # script keeps working standalone (`./change_dylib_test.sh`, clang + otool only).
 # That means it must track what change_dylib includes: macho_grow.h now pulls in
-# src/uleb.h, and change_dylib.c itself now includes src/ordinals.h, so the
+# src/uleb.h, change_dylib.c itself now includes src/ordinals.h and src/fat.h
+# (the shared fat_header/fat_arch validator both it and fix_macho use), so the
 # toolkit sources it needs are listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
@@ -190,7 +191,8 @@ static uint8_t *readfile(const char *path, size_t *outsz) {
 static uint32_t sw32(uint32_t v) {
     return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
 }
-static void locate_arch(const uint8_t *buf, size_t sz, int idx, uint32_t *off, uint32_t *size) {
+static void locate_arch(const uint8_t *buf, size_t sz, int idx, uint32_t *off, uint32_t *size,
+                         uint32_t *align) {
     uint32_t magic = *(const uint32_t *)buf;
     if (magic != FAT_MAGIC && magic != FAT_CIGAM) { fprintf(stderr, "not a fat file\n"); exit(2); }
     int swap = (magic == FAT_CIGAM);
@@ -200,8 +202,9 @@ static void locate_arch(const uint8_t *buf, size_t sz, int idx, uint32_t *off, u
     const struct fat_arch *ar = (const struct fat_arch *)(buf + sizeof(struct fat_header));
     uint32_t o = swap ? sw32((uint32_t)ar[idx].offset) : (uint32_t)ar[idx].offset;
     uint32_t s = swap ? sw32((uint32_t)ar[idx].size)   : (uint32_t)ar[idx].size;
+    uint32_t a = swap ? sw32(ar[idx].align) : ar[idx].align;
     if ((size_t)o + s > sz) { fprintf(stderr, "arch %d out of bounds\n", idx); exit(2); }
-    *off = o; *size = s;
+    *off = o; *size = s; *align = a;
 }
 static void dump_dylibs(const uint8_t *p, size_t sz) {
     if (sz < sizeof(struct mach_header_64)) { fprintf(stderr, "slice too small\n"); exit(2); }
@@ -230,14 +233,14 @@ int main(int argc, char **argv) {
         uint32_t narch = swap ? sw32(fh->nfat_arch) : fh->nfat_arch;
         printf("narch=%u\n", narch);
         for (uint32_t i = 0; i < narch; i++) {
-            uint32_t o, s; locate_arch(buf, sz, (int)i, &o, &s);
-            printf("%u %u %u\n", i, o, s);
+            uint32_t o, s, a; locate_arch(buf, sz, (int)i, &o, &s, &a);
+            printf("%u %u %u %u\n", i, o, s, a);
         }
         return 0;
     } else if (strcmp(mode, "dump") == 0) {
         if (argc != 5) { fprintf(stderr, "usage: fatcheck dump <file> <idx> <outfile>\n"); return 2; }
         int idx = atoi(argv[3]);
-        uint32_t o, s; locate_arch(buf, sz, idx, &o, &s);
+        uint32_t o, s, a; locate_arch(buf, sz, idx, &o, &s, &a);
         int ofd = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (ofd < 0) { perror("open out"); return 2; }
         if (write(ofd, buf + o, s) != (ssize_t)s) { perror("write"); return 2; }
@@ -246,7 +249,7 @@ int main(int argc, char **argv) {
     } else if (strcmp(mode, "dylibs") == 0) {
         if (argc != 4) { fprintf(stderr, "usage: fatcheck dylibs <file> <idx>\n"); return 2; }
         int idx = atoi(argv[3]);
-        uint32_t o, s; locate_arch(buf, sz, idx, &o, &s);
+        uint32_t o, s, a; locate_arch(buf, sz, idx, &o, &s, &a);
         dump_dylibs(buf + o, s);
         return 0;
     }
@@ -653,11 +656,125 @@ else
     bad "fat+grow overlap" "arch1 at $after_arch1_off overlaps arch0's end at $after_arch0_end"
 fi
 
+# "no overlap" alone is satisfied by ANY packing, aligned or not -- a
+# misaligned fat slice is the classic "looks fine, won't load" failure the
+# align field exists to prevent, so this needs its own, positional assertion.
+# Mutation-tested: with the alignment computation in process_fat replaced by
+# `want = cursor` (no rounding at all), this specific check is what fails --
+# confirmed by hand during development; the overlap check above still passes.
+after_arch1_align=$(echo "$after_arch1" | awk '{print $4}')
+if [ $((after_arch1_off % (1 << after_arch1_align))) -eq 0 ]; then
+    ok "fat+grow: the shifted 32-bit slice's new offset honors its alignment (2^$after_arch1_align)"
+else
+    bad "fat+grow alignment" "arch1 at $after_arch1_off is not aligned to 2^$after_arch1_align"
+fi
+
 "$T/fatcheck" dump "$T/main_fat_grow" 1 "$T/fat_slice1_after_grow.bin"
 if cmp -s "$T/slice32.bin" "$T/fat_slice1_after_grow.bin"; then
     ok "fat+grow: the 32-bit slice's bytes are still exactly preserved at its new offset"
 else
     bad "fat+grow slice preserved" "the 32-bit slice's bytes changed after the shift"
+fi
+
+# --- 12. CRITICAL regression: a descending arch-offset table must not -------
+#         corrupt the input or overflow the reassembly buffer.
+# Nothing in the fat format requires fat_arch[] to be in ascending file-offset
+# order -- lipo/makefat merely happen to emit it that way. A table with
+# arch[0] at a HIGHER file offset than arch[1] is legal fat, and both entries
+# independently pass an offset+size-in-bounds check.
+#
+# Reviewed bug this pins: process_fat sized the reassembly buffer from
+# `cursor` -- wherever the LAST slice in the loop landed -- instead of the
+# MAXIMUM end across every slice. On a descending table the last slice
+# processed is the smallest-offset one, so the buffer came out far too small
+# for the memcpy of an earlier, higher-offset slice: a heap buffer overflow
+# (confirmed with libgmalloc: SIGSEGV) that, WITHOUT a heap-corruption
+# detector watching, exited 0 after silently truncating this suite's 74088-
+# byte fixture down to 8192 bytes -- the real input gone, no error printed.
+# Reproduced against the pre-fix binary by hand during development (see
+# task-5-report.md) before writing this regression test.
+#
+# mkdescfat builds that exact shape: a real linked x86_64 slice at a fixed
+# HIGH offset (0x10000) and the 32-bit slice at a fixed LOW offset (0x1000),
+# both real (positive) slices, neither overlapping the header/table region.
+cat > "$T/mkdescfat.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/fat.h>
+static uint8_t *readfile(const char *path, size_t *outsz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror(path); exit(2); }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
+    close(fd);
+    *outsz = (size_t)st.st_size;
+    return buf;
+}
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+int main(int argc, char **argv) {
+    if (argc != 4) { fprintf(stderr, "usage: %s out slice_hi slice_lo\n", argv[0]); return 2; }
+    size_t sz_hi, sz_lo;
+    uint8_t *b_hi = readfile(argv[2], &sz_hi);
+    uint8_t *b_lo = readfile(argv[3], &sz_lo);
+    uint32_t off_hi = 0x10000, off_lo = 0x1000;
+    uint32_t total = off_hi + (uint32_t)sz_hi;
+    uint8_t *out = calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)out;
+    fh->magic = sw32(FAT_MAGIC);
+    fh->nfat_arch = sw32(2);
+    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
+    /* arch[0] is the HIGHER-offset slice -- descending, on purpose */
+    ar[0].cputype = sw32(0x1000007); ar[0].cpusubtype = sw32(3);
+    ar[0].offset = sw32(off_hi); ar[0].size = sw32((uint32_t)sz_hi); ar[0].align = sw32(12);
+    ar[1].cputype = sw32(7); ar[1].cpusubtype = sw32(3);
+    ar[1].offset = sw32(off_lo); ar[1].size = sw32((uint32_t)sz_lo); ar[1].align = sw32(12);
+    memcpy(out + off_hi, b_hi, sz_hi);
+    memcpy(out + off_lo, b_lo, sz_lo);
+    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) { perror("open out"); return 2; }
+    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
+    close(ofd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mkdescfat" "$T/mkdescfat.c"
+"$T/mkdescfat" "$T/main_descfat" "$T/main" "$T/slice32.bin"
+before_size=$(wc -c < "$T/main_descfat" | tr -d ' ')
+
+if "$T/change_dylib" "$T/main_descfat" \
+    -change "@loader_path/liba.dylib" "@loader_path/liba_desc.dylib" >/dev/null 2>"$T/descfat.err"; then
+    ok "fat descending-offset: tool ran to completion without crashing"
+else
+    bad "fat descending-offset run" "change_dylib failed/crashed: $(head -1 "$T/descfat.err")"
+fi
+
+after_size=$(wc -c < "$T/main_descfat" | tr -d ' ')
+if [ "$after_size" -ge "$before_size" ]; then
+    ok "fat descending-offset: output not smaller than input ($before_size -> $after_size bytes)"
+else
+    bad "fat descending-offset size" "input was $before_size bytes, output is only $after_size -- TRUNCATED"
+fi
+
+dylibs_hi=$("$T/fatcheck" dylibs "$T/main_descfat" 0)
+if echo "$dylibs_hi" | grep -q '^@loader_path/liba_desc\.dylib$'; then
+    ok "fat descending-offset: the high-offset slice's dylib path was actually changed"
+else
+    bad "fat descending-offset dylib" "high-offset slice does not name the new path: $dylibs_hi"
+fi
+
+"$T/fatcheck" dump "$T/main_descfat" 1 "$T/descfat_lo_after.bin"
+if cmp -s "$T/slice32.bin" "$T/descfat_lo_after.bin"; then
+    ok "fat descending-offset: the low-offset slice is still preserved byte-for-byte"
+else
+    bad "fat descending-offset lo slice" "the low-offset slice's bytes changed or are missing"
 fi
 
 echo
