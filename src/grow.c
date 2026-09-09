@@ -622,23 +622,36 @@ int mg_addr_known(const uint64_t *sorted, int n, uint64_t a) {
     return 0;
 }
 
-int mg_plausible(const uint8_t *buf, size_t fsize) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    uint64_t base = 0; uint32_t fsoff = 0, fssize = 0;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_FUNCTION_STARTS) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            fsoff = d->dataoff; fssize = d->datasize;
-        }
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            if (!base && seg->fileoff == 0 && seg->filesize > 0) base = seg->vmaddr;
-        }
-        sp += lc->cmdsize;
+struct mg_plausible_find_ctx {
+    uint32_t fsoff, fssize;
+};
+
+/* mg_plausible's mi_each_lc callback: capture the LAST LC_FUNCTION_STARTS
+ * seen (matching the original loop, which had no `break` and so kept
+ * overwriting fsoff/fssize on every match -- a well-formed image has at
+ * most one, so this only matters for a malformed one, and is preserved
+ * exactly rather than "fixed" into a first-match). Never stops early: every
+ * command must be visited, same as the original unconditional loop. */
+static int mg_plausible_find_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_plausible_find_ctx *ctx = (struct mg_plausible_find_ctx *)ctx_;
+    if (lc->cmd == LC_FUNCTION_STARTS) {
+        const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+        ctx->fsoff = d->dataoff; ctx->fssize = d->datasize;
     }
+    return 0;
+}
+
+int mg_plausible(const uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
+    /* image base: exactly mi_text_base's own search (first segment mapping
+     * the header, fileoff 0 with content). */
+    uint64_t base = mi_text_base(&im);
     if (!base) return -1;
+
+    struct mg_plausible_find_ctx fctx = { 0, 0 };
+    mi_each_lc(&im, mg_plausible_find_cb, &fctx);
+    uint32_t fsoff = fctx.fsoff, fssize = fctx.fssize;
     if (!fsoff || !fssize) return 0;                 /* nothing to check against */
     if ((uint64_t)fsoff + fssize > fsize) return -1;
 
