@@ -1,21 +1,6 @@
 #include "lc_kinds.h"
 #include <mach-o/loader.h>
-
-/* Not declared in every SDK's mach-o/loader.h (10.9's predates them). Same
- * fallback values change_dylib.c, cli/macho9.c, patch_macho.c, fix_macho.c
- * and add_version_min.c already carry for their own purposes -- data, not
- * logic, so one more copy here (to build LC_STRIP_KINDS itself) is the same
- * call this codebase already made elsewhere; consolidating those fallback
- * #defines is tracked separately and out of scope here. */
-#ifndef LC_SOURCE_VERSION
-#define LC_SOURCE_VERSION 0x2A
-#endif
-#ifndef LC_BUILD_VERSION
-#define LC_BUILD_VERSION 0x32
-#endif
-#ifndef LC_DYLIB_CODE_SIGN_DRS
-#define LC_DYLIB_CODE_SIGN_DRS 0x2B
-#endif
+#include "mach_compat.h"
 
 /* Load commands safe to drop: purely informational, or invalidated the
  * moment the binary is rewritten. Deliberately excludes LC_FUNCTION_STARTS

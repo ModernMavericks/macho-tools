@@ -178,12 +178,19 @@ else
     # Neither a clean run nor the specific signal we know how to explain.
     # Per the coordinator: do not guess. Anything unrecognized here means the
     # grow/lc sections below cannot trust EITHER conclusion, so they must not
-    # silently skip -- see their use of signing_probe_unknown.
+    # silently skip. That is fully achieved by leaving signing_enforced at 0:
+    # the grow/lc sections below gate their run-assertions on
+    # `signing_enforced -eq 1` (skip only when enforcement is POSITIVELY
+    # confirmed), so 0 here already means "treat as real, don't skip" for
+    # this unrecognized case exactly as it does for the confirmed-unenforced
+    # one -- a separate signing_probe_unknown flag was tracked alongside this
+    # for a time but nothing downstream ever read it (confirmed: no other
+    # reference to it in this file), so it added a state without adding
+    # behavior. Removed rather than left to imply a distinction that wasn't
+    # there.
     signing_enforced=0
-    signing_probe_unknown=1
     bad "host probe" "unrecognized outcome (exit $signing_probe_rc: $(head -1 "$T/signing_probe.out" 2>/dev/null || cat "$T/perturb.out" 2>/dev/null || echo 'no output')) -- cannot determine whether this host enforces code-signing on modified binaries; treating grow/lc run-assertions as real rather than risking a masked defect"
 fi
-signing_probe_unknown="${signing_probe_unknown:-0}"
 
 # ---------------------------------------------------------------------------
 # Is this host the product's actual target platform (Mac OS X 10.9, Darwin
@@ -208,6 +215,20 @@ case "$caps" in
     "format 1"*) ok "capabilities: starts with format line" ;;
     *) bad "capabilities: format line" "got: $(echo "$caps" | head -1)" ;;
 esac
+# exitcodes documents EX_REFUSED (see cli/macho9.c) so a caller can tell
+# "macho9 examined FILE and declined" apart from "macho9 itself failed"
+# without scraping stderr text. Assert the line exists, names refused=2,
+# and that a real refusal (verify on a non-Mach-O file) actually exits with
+# that code -- not just some nonzero value.
+echo "$caps" | grep -q "^exitcodes ok=0 refused=2 failed=1$" \
+    && ok "capabilities: exitcodes line documents refused=2" \
+    || bad "capabilities: exitcodes line" "missing or wrong: $(echo "$caps" | grep '^exitcodes')"
+echo 'not a mach-o' > "$T/not-a-macho-in-cli-test"
+rc=0
+"$MACHO9" verify "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] \
+    && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 2" \
+    || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 2"
 for v in verify info grow minos lc dylib rpath; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
@@ -361,6 +382,33 @@ else
 fi
 "$MACHO9" verify "$T/grow_fixture" >/dev/null && ok "grow: result still verifies" \
     || bad "grow: post-grow verify" "failed"
+
+# grow now replaces its target via wa_write_atomic (src/atomic_write.h,
+# mkstemp+rename) -- the same path change_dylib uses -- instead of
+# ftruncate()+write() straight into the open file. Prove the symlink-safety
+# that buys: growing THROUGH a symlink must rewrite the REAL target (fresh
+# inode, since rename() always creates one) and leave the symlink itself
+# intact, not replace the symlink with a plain file the way a naive rename
+# of the symlink PATH itself would.
+build_main "$T/grow_link_target"
+ln -sf grow_link_target "$T/grow_link"
+target_ino_before=$(stat -f %i "$T/grow_link_target")
+"$MACHO9" grow "$T/grow_link" 4096 >"$T/grow_link.out" 2>&1 \
+    || bad "grow: symlink" "exit failed: $(cat "$T/grow_link.out")"
+if [ -L "$T/grow_link" ]; then
+    ok "grow: growing through a symlink leaves the symlink a symlink"
+else
+    bad "grow: symlink" "the symlink itself got replaced by a plain file"
+fi
+target_ino_after=$(stat -f %i "$T/grow_link_target")
+if [ "$target_ino_after" != "$target_ino_before" ]; then
+    ok "grow: the real target was replaced via mkstemp+rename (fresh inode = atomicity kept)"
+else
+    bad "grow: symlink" "target inode unchanged -- wrote in place, not atomically"
+fi
+readlink "$T/grow_link" | grep -q "^grow_link_target$" \
+    && ok "grow: symlink still points at the same name" \
+    || bad "grow: symlink" "symlink target changed: $(readlink "$T/grow_link")"
 
 # Whether a GROWN binary can be EXECUTED, ruling (settled after evidence: a
 # prior round's host-capability probe showed the cross runner runs a

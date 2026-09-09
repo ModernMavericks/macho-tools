@@ -58,13 +58,34 @@
 #include "ordinals.h"
 #include "macho_grow.h"
 #include "lc_kinds.h"
+#include "atomic_write.h"
+#include "mach_compat.h"
 
-/* Not declared in every SDK's mach-o/loader.h (10.9's predates them). Same
- * fallback values change_dylib.c and patch_macho.c already carry -- data, not
- * logic, so duplicating it here is the same call this codebase already made. */
-#ifndef LC_LOAD_UPWARD_DYLIB
-#define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
-#endif
+/* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
+ * which meant a caller checking only "did this exit nonzero" (still fully
+ * supported -- see below) could not tell "macho9 examined FILE and declined,
+ * on purpose, because of what it found" (not a Mach-O, not plausible, a
+ * KIND/version this build doesn't support, mg_grow_header's own designed
+ * refusal) apart from "something actually went wrong running macho9 itself"
+ * (couldn't open/read/write, malloc failed, fork/exec failed, a usage
+ * error). Refusal is load-bearing throughout this codebase -- "-grow refuses
+ * rather than guesses" is a global rule, not an incidental behavior -- so a
+ * caller that wants to script around "this file just isn't one macho9 will
+ * touch" (vs. "retry, or investigate an environment problem") deserves a way
+ * to tell the two apart without scraping stderr text, which --capabilities
+ * already exists to make unnecessary for everything else this binary
+ * reports. EX_REFUSED is used ONLY at a point where macho9 itself examined
+ * the input and made that call; it is never used for a genuine operational
+ * failure (a syscall that failed, a missing sibling binary, a fork/waitpid
+ * error, a bad number of command-line arguments) or for a delegated verb's
+ * (dylib/rpath/lc) exit code, which is simply forwarded from the change_dylib
+ * subprocess as before -- that subprocess does not make this distinction
+ * itself, so forwarding it verbatim keeps this from claiming a precision it
+ * does not have. 1 keeps meaning exactly what it always did, so a caller
+ * that only checks "== 0" or "!= 0" needs no changes; --capabilities
+ * documents both codes (see print_capabilities below) and tests/README.md
+ * repeats it for humans. */
+#define EX_REFUSED 2
 
 /* The KIND vocabulary `lc -delete` accepts is LC_STRIP_KINDS (src/lc_kinds.h),
  * shared with change_dylib's -strip-lc -- so lc's translation to it is a
@@ -123,7 +144,18 @@ static void print_ops_csv(int is_rpath) {
  *
  *   line 1: "format <N>"       -- bump N only if a later build changes this
  *                                  TEXT's shape in a way old parsing breaks.
- *   line 2+: "verb <name> [key=value ...]"
+ *   line 2: "exitcodes ok=0 refused=<N> failed=1" -- what this binary's own
+ *       (non-delegated) exit codes mean: ok=0 always; refused=EX_REFUSED is
+ *       used only where macho9 itself examined FILE and declined on purpose
+ *       (bad magic, implausible, an unsupported KIND/version, a grow
+ *       mg_grow_header itself refused); failed=1 is everything else
+ *       (syscall/malloc/fork failure, usage error) -- unchanged from before
+ *       this line existed, so a caller checking only nonzero needs no
+ *       changes. dylib/rpath/lc forward whatever change_dylib returned,
+ *       which does not yet make this distinction, so their exit codes are
+ *       not covered by this line. See EX_REFUSED's own comment for the full
+ *       reasoning.
+ *   line 3+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out.
  *       Recognized attributes:
@@ -161,6 +193,7 @@ static int print_capabilities(void) {
     int have_add_version_min = sibling_exists("add_version_min");
 
     printf("format 1\n");
+    printf("exitcodes ok=0 refused=%d failed=1\n", EX_REFUSED);
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
@@ -205,11 +238,29 @@ static void usage(const char *prog) {
  * macho9's own true location regardless of how it was invoked (bare name via
  * PATH, relative, symlinked), which a naive argv[0] read would not. */
 static int sibling_path(const char *name, char *out, size_t outsz) {
-    char exe[PATH_MAX];
-    uint32_t sz = sizeof(exe);
-    if (_NSGetExecutablePath(exe, &sz) != 0) return -1;
+    char stackbuf[PATH_MAX];
+    char *exe = stackbuf;
+    uint32_t sz = sizeof(stackbuf);
+    char *heapbuf = NULL;
+    if (_NSGetExecutablePath(exe, &sz) != 0) {
+        /* Too small: _NSGetExecutablePath's documented contract is to set
+         * `sz` to the size that WOULD have worked when it returns -1, and
+         * this used to just give up right here instead of using that. A
+         * PATH_MAX stack buffer covers essentially every real install, but
+         * the whole reason this resolves the executable path at all (rather
+         * than trusting argv[0]) is to keep finding the sibling tool
+         * regardless of how this binary was invoked or how deep it lives --
+         * so honor the retry the API is explicitly offering rather than
+         * failing on a case it already told us how to handle. */
+        heapbuf = (char *)malloc(sz);
+        if (!heapbuf) return -1;
+        exe = heapbuf;
+        if (_NSGetExecutablePath(exe, &sz) != 0) { free(heapbuf); return -1; }
+    }
     char resolved[PATH_MAX];
-    if (!realpath(exe, resolved)) return -1;
+    int rok = (realpath(exe, resolved) != NULL);
+    free(heapbuf);
+    if (!rok) return -1;
     char dirbuf[PATH_MAX];
     strncpy(dirbuf, resolved, sizeof(dirbuf) - 1);
     dirbuf[sizeof(dirbuf) - 1] = '\0';
@@ -261,12 +312,12 @@ static int cmd_verify(const char *path) {
     mi_image im;
     if (mi_open(path, &im) != 0) {
         fprintf(stderr, "macho9 verify: %s: not a readable 64-bit Mach-O\n", path);
-        return 1;
+        return EX_REFUSED;
     }
     int rc = mg_plausible(im.buf, im.size);
     printf("%s: %s\n", path, rc == 0 ? "OK" : "FAILED (see above)");
     mi_close(&im);
-    return rc == 0 ? 0 : 1;
+    return rc == 0 ? 0 : EX_REFUSED;
 }
 
 /* ---- info: dump load commands, ordinals, pads ---------------------------
@@ -354,7 +405,7 @@ static int cmd_info(const char *path) {
     mi_image im;
     if (mi_open(path, &im) != 0) {
         fprintf(stderr, "macho9 info: %s: not a readable 64-bit Mach-O\n", path);
-        return 1;
+        return EX_REFUSED;
     }
     printf("%s: %zu bytes, %u load commands, filetype=%u\n",
            path, im.size, im.hdr->ncmds, im.hdr->filetype);
@@ -379,7 +430,15 @@ static int cmd_info(const char *path) {
  * left for this verb to check on top -- it opens, calls the real primitive,
  * and writes back only on success. On failure mg_grow_header has already
  * explained why on stderr and left *pbuf as whatever is safe to discard;
- * the file itself is never touched. */
+ * the file itself is never touched.
+ *
+ * The write-back goes through wa_write_atomic (src/atomic_write.h), the same
+ * mkstemp()+rename() (symlink-safe, hard-link-aware, xattr-preserving) path
+ * change_dylib uses -- this used to ftruncate()+write() straight into the
+ * open file instead, which a previous review deferred fixing "as consistent
+ * with change_dylib" back when change_dylib ALSO did that. That reason went
+ * stale the moment change_dylib became atomic and this verb didn't follow;
+ * sharing the one implementation is what keeps that from happening again. */
 static int cmd_grow(const char *path, const char *n_str) {
     char *end;
     unsigned long n = strtoul(n_str, &end, 10);
@@ -388,29 +447,40 @@ static int cmd_grow(const char *path, const char *n_str) {
         return 1;
     }
 
+    /* Opened O_RDWR up front only to fail fast on an unwritable/missing file
+     * and to learn its mode for the replacement's fchmod -- not held for the
+     * write-back, which wa_write_atomic does via its own mkstemp()+rename(),
+     * same rationale as change_dylib.c's main(). */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("macho9 grow: open"); return 1; }
+    struct stat st;
+    mode_t mode = (fstat(fd, &st) == 0) ? st.st_mode : 0644;
+    close(fd);
 
     mi_image im;
     if (mi_open(path, &im) != 0) {
         fprintf(stderr, "macho9 grow: %s: not a readable 64-bit Mach-O\n", path);
-        close(fd);
-        return 1;
+        return EX_REFUSED;
     }
     size_t fsize = im.size;
     uint8_t *buf = mi_release(&im);
 
     if (mg_grow_header(&buf, &fsize, (uint32_t)n) != 0) {
+        /* mg_grow_header's whole design is "refuse rather than guess" (a
+         * global rule -- see EX_REFUSED's own comment) -- growth that would
+         * need a real __LINKEDIT resize, a non-PIE image, an unsupported
+         * ULEB re-encode -- so a failure here is a refusal, not an
+         * operational error. */
         fprintf(stderr, "macho9 grow: %s left unmodified\n", path);
         free(buf);
-        close(fd);
-        return 1;
+        return EX_REFUSED;
     }
 
-    if (ftruncate(fd, (off_t)fsize) != 0) { perror("macho9 grow: ftruncate"); free(buf); close(fd); return 1; }
-    lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("macho9 grow: write"); free(buf); close(fd); return 1; }
-    close(fd);
+    if (wa_write_atomic(path, mode, buf, fsize) != 0) {
+        fprintf(stderr, "macho9 grow: %s left unmodified (atomic replace failed)\n", path);
+        free(buf);
+        return 1;
+    }
     printf("Grew %s: header pad enlarged, file now %zu bytes\n", path, fsize);
     free(buf);
     return 0;
@@ -426,7 +496,7 @@ static int cmd_grow(const char *path, const char *n_str) {
 static int cmd_minos(const char *path, const char *version) {
     if (strcmp(version, "10.9") != 0) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
-        return 1;
+        return EX_REFUSED;
     }
     char *argv[3];
     argv[1] = (char *)path;
@@ -460,7 +530,7 @@ static int cmd_lc(int argc, char **argv) {
                 for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++) fprintf(stderr, " %s", LC_STRIP_KINDS[kk].name);
                 fprintf(stderr, ")\n");
                 free(child);
-                return 1;
+                return EX_REFUSED;
             }
             child[k++] = "-strip-lc";
             child[k++] = (char *)kind;

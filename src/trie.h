@@ -24,6 +24,15 @@
 
 #include <stdint.h>
 
+/* Recursion cap for mt_trie_rebuild's decode walk -- a pathological/
+ * adversarial trie deep enough to risk exhausting the C stack is refused
+ * rather than walked. macho_grow.h's own hand-rolled trie walks (mg_trie_scan
+ * and its neighbor, both scanning the IN-PLACE-shift path that mt_trie_rebuild
+ * is the fallback for) enforce the identical depth limit, on the identical
+ * kind of pathological input -- shared here, once, so the two can't quietly
+ * drift to different limits the way a hand-copied `128` invites. */
+#define MT_TRIE_MAX_DEPTH 128
+
 /* Rebuild the export trie at trie[0..size). Every exported address (nonzero)
  * gains `shift`; address 0 is left as 0 — that is __mh_execute_header, which
  * names the header itself, and the header moved down with the base too, so 0

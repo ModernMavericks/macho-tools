@@ -18,18 +18,7 @@
 #include "fat.h"
 #include "image.h"
 #include "ordinals.h"
-
-/* The 10.9 SDK's <mach-o/fat.h> predates the 64-bit fat container and does
- * not define these -- see change_dylib.c's identical guard for the fuller
- * reasoning. Values match every SDK that DOES define them. */
-#ifndef FAT_MAGIC_64
-#define FAT_MAGIC_64 0xcafebabfu
-#endif
-#ifndef FAT_CIGAM_64
-#define FAT_CIGAM_64 0xbfbafecau
-#endif
-
-#define LC_BUILD_VERSION_CMD 0x00000032
+#include "mach_compat.h"
 
 struct change_entry {
     const char *old_path;
@@ -68,7 +57,7 @@ static int process_macho(uint8_t *buf, size_t size, struct change_entry *changes
     for (uint32_t i = 0; i < hdr->ncmds; i++) {
         struct load_command *lc = (struct load_command *)lcp;
 
-        if (strip_bv && lc->cmd == LC_BUILD_VERSION_CMD) {
+        if (strip_bv && lc->cmd == LC_BUILD_VERSION) {
             /* Remove by converting to padding (set to zero-filled) */
             uint32_t sz = lc->cmdsize;
             size_t tail = lcend - (lcp + sz);

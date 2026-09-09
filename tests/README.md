@@ -12,6 +12,32 @@ Seven suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
 | `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements |
 
+## `macho9`'s exit codes
+
+`macho9`'s own verbs (`verify`, `info`, `grow`, `minos`, and `lc`'s KIND
+validation) use three exit codes, also documented machine-readably in
+`--capabilities`' `exitcodes` line:
+
+| code | meaning |
+|---|---|
+| `0` | success |
+| `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, or a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule) |
+| `1` | everything else: a syscall/malloc/fork failure, a usage error — genuinely something going wrong, not a considered refusal |
+
+Refusal is load-bearing throughout this codebase (`-grow` refuses rather than
+widening a default case is a global rule, not a `macho9`-specific one), so a
+caller that wants to script around "this file just isn't one `macho9` will
+touch" versus "something is actually broken, investigate or retry" can check
+for `2` specifically instead of scraping stderr text. `1` still means exactly
+what it always did, so any existing caller checking only `== 0` or `!= 0` is
+unaffected by this distinction's addition.
+
+`dylib`/`rpath`/`lc` (past its own KIND check) delegate to `change_dylib` as a
+subprocess and forward its exit code verbatim; `change_dylib` does not yet
+make this refused/failed distinction itself, so those verbs' exit codes are
+NOT covered by the table above — only `macho9`'s own directly-decided exits
+are.
+
 ## EXPECTED, and what it is for
 
 `EXPECTED` holds the SHA-256 of what the whole pipeline produces from

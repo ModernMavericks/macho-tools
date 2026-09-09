@@ -6,22 +6,7 @@
 
 #include "ordinals.h"
 #include "uleb.h"
-
-/* The 10.9 SDK headers predate chained fixups; change_dylib.c got this
- * definition for free via macho_grow.h's guarded #define. This file doesn't
- * include macho_grow.h (it's tool-specific and header-only), so it needs its
- * own copy of the same guarded fallback. */
-#ifndef LC_DYLD_CHAINED_FIXUPS
-#define LC_DYLD_CHAINED_FIXUPS 0x80000034
-#endif
-
-/* Same story as LC_DYLD_CHAINED_FIXUPS above, and the same guarded fallback
- * value macho_grow.h already carries for its own (unrelated) purposes: the
- * 10.9 SDK's <mach-o/loader.h> predates this constant. mo_map_build needs it
- * below to REFUSE the load command, not to classify it -- see that comment. */
-#ifndef LC_LAZY_LOAD_DYLIB
-#define LC_LAZY_LOAD_DYLIB 0x20
-#endif
+#include "mach_compat.h"
 
 int mo_is_ordinal_lc(uint32_t cmd) {
     return cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB ||

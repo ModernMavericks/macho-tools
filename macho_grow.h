@@ -50,24 +50,9 @@
  * can't absorb an address's widened ULEB. */
 #include "trie.h"
 
-/* Load-command constants newer than the 10.9 SDK headers. */
-#ifndef LC_DYLD_EXPORTS_TRIE
-#define LC_DYLD_EXPORTS_TRIE        0x80000033
-#endif
-#ifndef LC_DYLD_CHAINED_FIXUPS
-#define LC_DYLD_CHAINED_FIXUPS      0x80000034
-#endif
-#ifndef LC_DYLIB_CODE_SIGN_DRS
-#define LC_DYLIB_CODE_SIGN_DRS      0x2B
-#endif
-#ifndef LC_LINKER_OPTIMIZATION_HINT
-#define LC_LINKER_OPTIMIZATION_HINT 0x2E
-#endif
-/* dyld4-era section type: 4-byte initializer offsets FROM THE IMAGE BASE,
- * replacing the absolute pointers of S_MOD_INIT_FUNC_POINTERS. */
-#ifndef S_INIT_FUNC_OFFSETS
-#define S_INIT_FUNC_OFFSETS 0x16
-#endif
+/* Load-command/section-type constants newer than the 10.9 SDK headers. */
+#include "mach_compat.h"
+
 #define MG_EXPORT_KIND_MASK        0x03
 #define MG_EXPORT_REEXPORT         0x08
 #define MG_EXPORT_STUB_AND_RESOLVER 0x10
@@ -88,6 +73,13 @@
  * if unusual, answer rather than a guess about an image we couldn't read. */
 static uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     mi_image im;
+    /* mi_wrap's own signature is necessarily non-const: mi_image.buf is
+     * uint8_t* because OTHER callers (build_lcs, mg_grow_header itself) use
+     * the same function to get a WRITABLE view. This function is not one of
+     * them -- everything below reads im.buf/im.hdr and never writes through
+     * either -- so the cast only works around mi_wrap's shared signature, it
+     * does not let this function itself break the "never modifies buf"
+     * contract its own `const uint8_t *buf` parameter promises callers. */
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
         fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
                         "that don't fit); refusing to guess the header pad boundary\n");
@@ -204,7 +196,7 @@ static int mg_init_offsets_pass(uint8_t *buf, size_t fsize, uint32_t grow, int p
  * addresses are all zero is safe to leave alone.
  * Returns 0 safe, 1 needs re-encoding, -1 malformed. */
 static int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth) {
-    if (depth > 128 || off >= size) return -1;
+    if (depth > MT_TRIE_MAX_DEPTH || off >= size) return -1;
     const uint8_t *p = trie + off, *end = trie + size;
     uint64_t term; int n = mu_decode(p, end, &term);
     if (n == 0) return -1;
@@ -541,7 +533,7 @@ static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
                         uint32_t grow, int patch, uint64_t base,
                         uint64_t *out, uint8_t *kinds, uint32_t *n, uint32_t max,
                         uint8_t *seen) {
-    if (depth > 128 || off >= size) return -1;
+    if (depth > MT_TRIE_MAX_DEPTH || off >= size) return -1;
     if (seen[off]) return 0;
     seen[off] = 1;
     uint8_t *p = trie + off, *end = trie + size;
@@ -674,33 +666,19 @@ static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
  * carrying base-relative offsets would pass this check. Type covers the
  * encoding families; the name list cannot cover what has not been invented.
  * That residual risk is what the verify pass exists to narrow. */
-#ifndef LC_LAZY_LOAD_DYLIB
-#define LC_LAZY_LOAD_DYLIB 0x20
-#endif
-#ifndef LC_DYLD_ENVIRONMENT
-#define LC_DYLD_ENVIRONMENT 0x27
-#endif
-#ifndef LC_LINKER_OPTION
-#define LC_LINKER_OPTION 0x2D
-#endif
-#ifndef LC_NOTE
-#define LC_NOTE 0x31
-#endif
-#ifndef LC_BUILD_VERSION
-#define LC_BUILD_VERSION 0x32
-#endif
-#ifndef LC_FILESET_ENTRY
-#define LC_FILESET_ENTRY 0x80000035
-#endif
-#ifndef LC_ATOM_INFO
-#define LC_ATOM_INFO 0x36
-#endif
-#ifndef S_INIT_FUNC_OFFSETS
-#define S_INIT_FUNC_OFFSETS 0x16
-#endif
+/* (LC_LAZY_LOAD_DYLIB, LC_DYLD_ENVIRONMENT, LC_LINKER_OPTION, LC_NOTE,
+ * LC_BUILD_VERSION, LC_FILESET_ENTRY, LC_ATOM_INFO, S_INIT_FUNC_OFFSETS: all
+ * from mach_compat.h, included near the top of this file -- this used to be
+ * a second, later copy of some of that same file's fallback #defines,
+ * duplicated within this ONE header, not just across files.) */
 
 static int mg_classify(const uint8_t *buf, size_t fsize) {
     mi_image im;
+    /* Same reasoning as mg_first_sect_off's identical cast above: mi_wrap's
+     * signature is non-const only because some OTHER caller needs a
+     * writable view; this function only reads im.buf/im.hdr (via `sp`)
+     * below, never writes, so casting away const here does not let this
+     * function violate its own `const uint8_t *buf` promise to callers. */
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
         fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
                         "that don't fit); refusing to classify\n");

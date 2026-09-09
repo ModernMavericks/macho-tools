@@ -14,10 +14,7 @@
 #include <mach-o/nlist.h>
 
 #include "image.h"
-
-#define LC_DYLD_EXPORTS_TRIE    0x80000033
-#define LC_DYLD_CHAINED_FIXUPS  0x80000034
-#define LC_BUILD_VERSION_CMD    0x00000032
+#include "mach_compat.h"
 
 /* Chained fixups structures (not in 10.9 headers) */
 struct cf_header {
@@ -126,7 +123,7 @@ int main(int argc, char **argv) {
             printf("Chained fixups: off=%u size=%u\n", fixups_off, fixups_size);
         } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
             has_dyld_info_only = 1;
-        } else if (lc->cmd == LC_BUILD_VERSION_CMD) {
+        } else if (lc->cmd == LC_BUILD_VERSION) {
             to_remove[n_remove++] = (typeof(to_remove[0])){lcp, lc->cmdsize};
         }
         lcp += lc->cmdsize;
@@ -146,7 +143,7 @@ int main(int argc, char **argv) {
         free(buf);
         return 0;
     }
-    if (!fixups_off) { fprintf(stderr, "No chained fixups found\n"); return 1; }
+    if (!fixups_off) { fprintf(stderr, "No chained fixups found\n"); free(buf); return 1; }
     printf("Found %d segments\n", nsegs);
 
     /* Parse chained fixups */

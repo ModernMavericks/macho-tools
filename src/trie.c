@@ -6,11 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Matches mg_trie_node's own recursion-depth guard in macho_grow.h — kept in
- * sync deliberately, not shared, because the two walks are structurally
- * different (this one allocates; that one doesn't). */
-#define MT_TRIE_MAX_DEPTH 128
-
 #define MT_EXPORT_REEXPORT          0x08
 #define MT_EXPORT_STUB_AND_RESOLVER 0x10
 

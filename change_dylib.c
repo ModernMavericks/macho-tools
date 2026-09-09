@@ -54,10 +54,8 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <errno.h>
 #include <limits.h>
 #include <sys/stat.h>
-#include <sys/xattr.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 
@@ -66,6 +64,8 @@
 #include "ordinals.h"
 #include "fat.h"
 #include "lc_kinds.h"
+#include "atomic_write.h"
+#include "mach_compat.h"
 #include <mach-o/fat.h>
 
 /* The -strip-lc KIND vocabulary lives in src/lc_kinds.c now, shared with
@@ -74,22 +74,6 @@
  * kept as a local alias so the rest of this file (and its usage text) don't
  * all need renaming for a table that hasn't changed shape. */
 #define strippable LC_STRIP_KINDS
-
-#ifndef LC_LOAD_UPWARD_DYLIB
-#define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
-#endif
-
-/* The 10.9 SDK's <mach-o/fat.h> predates the 64-bit fat container (wide
- * offsets, for arm64e/watchOS-style slices with a component that overflows
- * 32 bits) and does not define these -- so they are not conditional on
- * anything this codebase controls, only on which SDK headers happened to be
- * on the include path. Values match every SDK that DOES define them. */
-#ifndef FAT_MAGIC_64
-#define FAT_MAGIC_64 0xcafebabfu
-#endif
-#ifndef FAT_CIGAM_64
-#define FAT_CIGAM_64 0xbfbafecau
-#endif
 
 /* Caps on how many times one option may repeat. Each option accumulates into a
  * fixed-size array; nothing reads a length back, so an unchecked write past the
@@ -875,151 +859,10 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
     return 0;
 }
 
-/* Copy every extended attribute from `src_path` onto the open descriptor
- * `dst_fd`. 10.9's <sys/xattr.h> has no fd-to-path or fd-to-fd copy call
- * (that's a Sierra-and-later copyfile(3) feature), so this is
- * listxattr+getxattr+fsetxattr by hand. Best-effort in the sense that it
- * keeps going past a single attribute's failure to try the rest, but it
- * DOES report failure to the caller -- silently dropping quarantine et al.
- * is exactly the bug being fixed here, so a failure is surfaced as a
- * warning rather than swallowed. A source with no xattr support at all
- * (ENOTSUP/ENOENT from the initial listxattr) is not an error. */
-static int copy_xattrs(const char *src_path, int dst_fd) {
-    ssize_t listlen = listxattr(src_path, NULL, 0, 0);
-    if (listlen < 0) return (errno == ENOTSUP || errno == ENOENT) ? 0 : -1;
-    if (listlen == 0) return 0;
-
-    char *names = (char *)malloc((size_t)listlen);
-    if (!names) return -1;
-    ssize_t got = listxattr(src_path, names, (size_t)listlen, 0);
-    if (got < 0) { free(names); return -1; }
-
-    int rc = 0;
-    for (ssize_t off = 0; off < got; ) {
-        const char *name = names + off;
-        off += (ssize_t)strlen(name) + 1;
-
-        ssize_t vlen = getxattr(src_path, name, NULL, 0, 0, 0);
-        if (vlen < 0) { rc = -1; continue; }
-        void *val = NULL;
-        if (vlen > 0) {
-            val = malloc((size_t)vlen);
-            if (!val) { rc = -1; continue; }
-            ssize_t got2 = getxattr(src_path, name, val, (size_t)vlen, 0, 0);
-            if (got2 < 0) { free(val); rc = -1; continue; }
-            vlen = got2;
-        }
-        if (fsetxattr(dst_fd, name, val, (size_t)vlen, 0, 0) != 0) rc = -1;
-        free(val);
-    }
-    free(names);
-    return rc;
-}
-
-/* Write `size` bytes of `buf` directly into the file `path` resolves to, in
- * place: ftruncate() then write(), the sequence this codebase used before
- * write_atomic() existed (see the comment on write_atomic for why it is
- * still needed for hard-linked files). open() follows both symlinks and
- * hard links to the one underlying inode, so this updates every name for
- * the file at once and needs no xattr/owner/ACL copying -- nothing new was
- * created. The cost is the atomicity write_atomic()'s ordinary path buys:
- * a write failing partway (disk full, killed mid-write, ...) leaves `path`
- * truncated with only part of the new content in it. */
-static int write_in_place(const char *path, const uint8_t *buf, size_t size) {
-    int fd = open(path, O_RDWR);
-    if (fd < 0) { perror("open"); return 1; }
-    if (ftruncate(fd, (off_t)size) != 0) { perror("ftruncate"); close(fd); return 1; }
-
-    size_t off = 0;
-    int failed = 0;
-    while (off < size) {
-        ssize_t n = write(fd, buf + off, size - off);
-        if (n < 0) { perror("write"); failed = 1; break; }
-        off += (size_t)n;
-    }
-    if (!failed && fsync(fd) != 0) { perror("fsync"); failed = 1; }
-    close(fd);
-    return failed ? 1 : 0;
-}
-
-/* Write `size` bytes of `buf` as the new content of the file `path` refers
- * to. Two strategies, chosen by link count:
- *
- * ORDINARY CASE (the common one: a single hard link, `path` possibly a
- * symlink to it): atomic mkstemp()+rename(). `path` is realpath()'d FIRST
- * so the rename lands on the real target, never on `path` itself -- if
- * `path` is a symlink, replacing it via rename (the previous, buggy
- * behavior) turned it into a plain file and left the real target, and
- * everything else that follows the same symlink, unpatched. macOS
- * framework dylibs are exactly this shape (Foo.framework/Foo ->
- * Versions/A/Foo) and are a primary target of this toolkit. The temp file
- * is created in the resolved target's directory, so the rename stays on
- * one filesystem and is therefore atomic, and every xattr on the original
- * (quarantine, etc.) is copied onto it before the rename via copy_xattrs().
- * Either the OLD content (and its xattrs) is still there afterward or the
- * NEW content (and copied xattrs) is, in full -- never a half-written or
- * truncated file.
- *
- * HARD-LINK CASE (st_nlink > 1): rename() would give the resolved path a
- * FRESH inode, leaving every other name for that inode -- the sibling hard
- * links -- pointing at the old, unpatched content (and the new inode with
- * none of the original's xattrs/owner/ACL). There's no atomic way to
- * update every name for an inode at once, so this falls back to
- * write_in_place(), which writes through the existing inode -- see its
- * comment for the atomicity this gives up in exchange. */
-static int write_atomic(const char *path, mode_t mode, const uint8_t *buf, size_t size) {
-    char real[PATH_MAX];
-    const char *target = (realpath(path, real) != NULL) ? real : path;
-
-    struct stat tst;
-    int have_stat = (stat(target, &tst) == 0);
-    if (have_stat && tst.st_nlink > 1) {
-        return write_in_place(target, buf, size);
-    }
-
-    size_t tlen = strlen(target) + 8;
-    char *tmpl = (char *)malloc(tlen);
-    if (!tmpl) { fprintf(stderr, "out of memory\n"); return 1; }
-    snprintf(tmpl, tlen, "%s.XXXXXX", target);
-
-    int tfd = mkstemp(tmpl);
-    if (tfd < 0) { perror("mkstemp"); free(tmpl); return 1; }
-    fchmod(tfd, mode);   /* best-effort: match the original file's permissions */
-    /* tst is only valid when the stat above succeeded -- an uninitialized
-     * st_uid/st_gid must never reach fchown. main() only ever gets here
-     * having already opened `path` O_RDWR, so this stat cannot realistically
-     * fail; the guard exists for defined behavior, not because failure is
-     * expected in practice. */
-    if (have_stat) fchown(tfd, tst.st_uid, tst.st_gid);   /* best-effort: needs privilege to change owner */
-    if (copy_xattrs(target, tfd) != 0) {
-        fprintf(stderr, "warning: %s: could not copy all extended attributes "
-                        "(e.g. com.apple.quarantine) to the updated file\n", target);
-    }
-    /* NOTE: ACLs (acl_get_file/acl_set_file) are not copied. 10.9 has the
-     * API to do so, but nothing in this toolkit's current call sites (CI
-     * artifacts, build-tree binaries) sets ACLs on Mach-O files, so it has
-     * not been implemented -- flagging here rather than silently doing
-     * less than the comment above claims. */
-
-    size_t off = 0;
-    int failed = 0;
-    while (off < size) {
-        ssize_t n = write(tfd, buf + off, size - off);
-        if (n < 0) { perror("write"); failed = 1; break; }
-        off += (size_t)n;
-    }
-    if (!failed && fsync(tfd) != 0) { perror("fsync"); failed = 1; }
-    close(tfd);
-
-    if (failed || rename(tmpl, target) != 0) {
-        if (!failed) perror("rename");
-        unlink(tmpl);
-        free(tmpl);
-        return 1;
-    }
-    free(tmpl);
-    return 0;
-}
+/* copy_xattrs, write_in_place and write_atomic moved to src/atomic_write.c
+ * (wa_copy_xattrs / wa_write_in_place / wa_write_atomic) so `macho9 grow`
+ * can share this exact logic instead of writing its result via a plain
+ * ftruncate()+write() of its own -- see atomic_write.h. */
 
 int main(int argc, char **argv) {
     if (argc < 4) {
@@ -1165,7 +1008,27 @@ int main(int argc, char **argv) {
                               inserts, ninserts, strip, nstrip, rchanges, nrchanges,
                               radds, nradds, allow_grow, &modified);
         if (po == PO_SKIP) {
-            fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
+            /* By this point the file has already been open()'d O_RDWR,
+             * fstat'd, and fully read() -- "not READABLE" was never an
+             * accurate description of a PO_SKIP this late, and it collapsed
+             * three genuinely different causes (too short for a header, the
+             * wrong magic, or a magic-valid header whose load commands
+             * mi_wrap's own validation refuses) into one message that named
+             * none of them. Distinguish the three explicitly instead; an
+             * actually-unreadable file already failed earlier, at the
+             * open()/read() calls above, with its own perror()-based
+             * message. */
+            if (fsize < sizeof(struct mach_header_64)) {
+                fprintf(stderr, "%s: too short to be a 64-bit Mach-O (%zu bytes, need at "
+                                "least %zu)\n", path, fsize, sizeof(struct mach_header_64));
+            } else if (((struct mach_header_64 *)buf)->magic != MH_MAGIC_64) {
+                fprintf(stderr, "%s: not a 64-bit Mach-O (magic 0x%x)\n", path,
+                        ((struct mach_header_64 *)buf)->magic);
+            } else {
+                fprintf(stderr, "%s: malformed 64-bit Mach-O (load commands fail "
+                                "validation -- truncated, misaligned, or out of bounds; "
+                                "see any earlier message)\n", path);
+            }
             rc = 1;
         } else {
             rc = (po == PO_ERROR) ? 1 : 0;
@@ -1173,7 +1036,7 @@ int main(int argc, char **argv) {
     }
 
     if (rc == 0 && modified) {
-        if (write_atomic(path, orig_mode, buf, fsize) != 0) {
+        if (wa_write_atomic(path, orig_mode, buf, fsize) != 0) {
             fprintf(stderr, "ERROR: %s left unmodified (atomic replace failed)\n", path);
             rc = 1;
         } else {
