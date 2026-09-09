@@ -599,6 +599,10 @@ int main(int argc, char **argv) {
     uint8_t *buf = mi_release(&im);
 
     uint32_t first_sect_off = mg_first_sect_off(buf, fsize);
+    if (first_sect_off == UINT32_MAX) {
+        fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", path);
+        return 1;
+    }
     uint32_t cur_lc_end = sizeof(struct mach_header_64) + hdr->sizeofcmds;
     uint32_t pad_avail = first_sect_off > cur_lc_end ? first_sect_off - cur_lc_end : 0;
     printf("Header pad: %u bytes available (LC end=%u, first sect=%u)\n",
@@ -676,6 +680,10 @@ int main(int argc, char **argv) {
         }
         hdr = (struct mach_header_64 *)buf;
         first_sect_off = mg_first_sect_off(buf, fsize);
+        if (first_sect_off == UINT32_MAX) {
+            fprintf(stderr, "ERROR: header grow produced an image that fails validation\n");
+            return 1;
+        }
         printf("Grew header pad: first sect now at %u (%u bytes available)\n",
                first_sect_off, first_sect_off - cur_lc_end);
         /* Rebuild against the relocated header so segment/linkedit offsets in

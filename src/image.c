@@ -17,11 +17,15 @@ static int name_eq(const char *field, const char *want) {
 }
 
 /* Shared by mi_open_slack and mi_wrap: is `buf[0..size)` a 64-bit Mach-O whose
- * load commands fit inside it? The load commands must fit in the buffer, and
- * each must be large enough to be a load command and not stride past the end
- * of the region. A rewriter that trusts ncmds and walks off the buffer is the
- * failure this prevents, and it is why every caller gets to drop its own
- * bounds check. Returns 0 and sets *hdr_out on success, non-zero otherwise. */
+ * load commands fit inside it? The load commands must fit in the buffer, each
+ * must be large enough to be a load command and not stride past the end of
+ * the region, AND -- the part a bare cmdsize/sizeofcmds bound misses -- an
+ * LC_SEGMENT_64's own cmdsize must actually cover its trailing section_64
+ * array, since nsects is what every section walk (mi_find_section,
+ * mg_first_sect_off) trusts. A rewriter that trusts one of these without
+ * checking is the failure this prevents, and it is why every caller gets to
+ * drop its own bounds check. Returns 0 and sets *hdr_out on success, non-zero
+ * otherwise. */
 static int mi_validate(const uint8_t *buf, size_t size, struct mach_header_64 **hdr_out) {
     if (size < sizeof(struct mach_header_64)) return 1;
 
@@ -38,6 +42,19 @@ static int mi_validate(const uint8_t *buf, size_t size, struct mach_header_64 **
             (const struct load_command *)(buf + sizeof(*hdr) + off);
         if (lc->cmdsize < sizeof(struct load_command)) return 1;
         if (off + lc->cmdsize > (size_t)hdr->sizeofcmds) return 1;
+
+        if (lc->cmd == LC_SEGMENT_64) {
+            if (lc->cmdsize < sizeof(struct segment_command_64)) return 1;
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            /* nsects is a full uint32_t; widen to uint64_t before multiplying
+             * so the bound check itself can never overflow -- the maximum
+             * product (UINT32_MAX * sizeof(section_64)) fits easily in 64
+             * bits, so this is an exact check, not a heuristic one. */
+            uint64_t want = (uint64_t)sizeof(struct segment_command_64) +
+                            (uint64_t)seg->nsects * sizeof(struct section_64);
+            if (lc->cmdsize != want) return 1;
+        }
+
         off += lc->cmdsize;
     }
 

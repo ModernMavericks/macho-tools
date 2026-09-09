@@ -157,6 +157,92 @@ static void test_wrap_refuses_load_commands_past_the_end(void) {
     free(buf);
 }
 
+static void test_wrap_refuses_zero_cmdsize(void) {
+    /* cmdsize == 0 is the infinite-walk case: any walk that adds cmdsize each
+     * iteration without checking it first would never advance past this
+     * command. */
+    uint8_t buf[sizeof(struct mach_header_64) + 16];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 16;
+    struct load_command *lc = (struct load_command *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    lc->cmdsize = 0;
+
+    mi_image im;
+    CHECK(mi_wrap(buf, sizeof buf, &im) != 0, "mi_wrap(cmdsize == 0) refuses");
+}
+
+static void test_wrap_refuses_a_cmdsize_striding_past_sizeofcmds(void) {
+    /* sizeofcmds correctly bounds the region as a whole, but the one command
+     * inside it claims more room than the region has left. */
+    uint8_t buf[sizeof(struct mach_header_64) + 16];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 16;
+    struct load_command *lc = (struct load_command *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    lc->cmdsize = 32;   /* overshoots the 16-byte region */
+
+    mi_image im;
+    CHECK(mi_wrap(buf, sizeof buf, &im) != 0,
+          "mi_wrap(cmdsize striding past sizeofcmds) refuses");
+}
+
+static void test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct(void) {
+    /* Reviewer's second repro: a 40-byte buffer holding one LC_SEGMENT_64
+     * whose cmdsize (8) doesn't even cover sizeof(segment_command_64) (72).
+     * Before segments got their own check, mi_wrap accepted this, and
+     * mi_find_segment then read segname at buf[40..56] -- past the end of
+     * the buffer. */
+    uint8_t buf[sizeof(struct mach_header_64) + 8];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 8;
+    struct load_command *lc = (struct load_command *)(buf + sizeof(*hdr));
+    lc->cmd = LC_SEGMENT_64;
+    lc->cmdsize = 8;   /* far below sizeof(struct segment_command_64) */
+
+    mi_image im;
+    CHECK(mi_wrap(buf, sizeof buf, &im) != 0,
+          "mi_wrap(LC_SEGMENT_64 cmdsize < sizeof(segment_command_64)) refuses");
+}
+
+static void test_wrap_refuses_nsects_disagreeing_with_cmdsize(void) {
+    /* Reviewer's first repro, reproduced exactly: copy a real fixture, leave
+     * __TEXT's cmdsize alone but corrupt its nsects to a huge value. Before
+     * this was checked, mi_open/mi_wrap ACCEPTED it, and mg_first_sect_off's
+     * `for (j < seg->nsects)` walked the section_64 array straight off the
+     * end of the buffer -- SEGFAULT (exit 139) end-to-end through
+     * change_dylib. nsects disagreeing with cmdsize must be refused here,
+     * before any walk trusts nsects. */
+    mi_image src;
+    if (mi_open(FIXTURE, &src) != 0) { CHECK(0, "nsects: fixture would not open"); return; }
+    size_t size = src.size;
+    uint8_t *buf = (uint8_t *)malloc(size);
+    memcpy(buf, src.buf, size);
+    mi_close(&src);
+
+    struct segment_command_64 *text = NULL;
+    {
+        mi_image tmp;
+        if (mi_wrap(buf, size, &tmp) == 0) text = mi_find_segment(&tmp, "__TEXT");
+    }
+    CHECK(text != NULL, "nsects: found __TEXT to corrupt");
+    if (text) text->nsects = 0x400000;   /* cmdsize is untouched */
+
+    mi_image im;
+    CHECK(mi_wrap(buf, size, &im) != 0,
+          "mi_wrap(__TEXT.nsects disagreeing with cmdsize) refuses");
+    free(buf);
+}
+
 static void test_wrap_does_not_copy(void) {
     /* The defining property: no malloc, no read -- a view over memory the
      * caller already has, stack included. */
@@ -245,6 +331,10 @@ int main(void) {
     test_wrap_accepts_a_caller_owned_buffer();
     test_wrap_refuses_bad_magic();
     test_wrap_refuses_load_commands_past_the_end();
+    test_wrap_refuses_zero_cmdsize();
+    test_wrap_refuses_a_cmdsize_striding_past_sizeofcmds();
+    test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct();
+    test_wrap_refuses_nsects_disagreeing_with_cmdsize();
     test_wrap_does_not_copy();
     test_each_lc_visits_every_command();
     test_find_segment();

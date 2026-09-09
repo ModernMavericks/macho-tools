@@ -82,7 +82,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     size_t fsize = im.size;
-    uint8_t *buf = im.buf;
     struct mach_header_64 *hdr = im.hdr;
 
     /* Collect segments and find special load commands */
@@ -101,6 +100,13 @@ int main(int argc, char **argv) {
     /* Track positions and sizes of commands to remove */
     struct { uint8_t *pos; uint32_t size; } to_remove[4];
     int n_remove = 0;
+
+    /* mi_release, not the image, owns the buffer from here: the rest of this
+     * tool indexes the buffer directly and eventually free()s it (twice below,
+     * on the two exit paths), which would leave an mi_image dangling -- and
+     * mi_close would double-free -- if it still thought it owned the memory.
+     * The hand-off is explicit, as in change_dylib.c. */
+    uint8_t *buf = mi_release(&im);
 
     uint8_t *lcp = buf + sizeof(struct mach_header_64);
     for (uint32_t i = 0; i < hdr->ncmds; i++) {

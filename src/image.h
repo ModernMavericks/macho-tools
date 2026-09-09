@@ -44,11 +44,12 @@ int mi_open_slack(const char *path, size_t slack, mi_image *out);
 /* Build an mi_image over `buf` (exactly `size` bytes), which the CALLER owns --
  * no file, no read, no allocation. Runs the same validation mi_open does
  * (magic, load commands fitting inside `size`, no cmdsize striding past the
- * end) and returns non-zero on failure, leaving *out untouched. `cap` is set
- * to `size`. This is how a synthetic, in-memory Mach-O (macho_grow_test.c
- * builds several) gets the same validated view mi_open gives a file --
- * without a file to read. mi_close on a wrapped image never frees `buf`: the
- * caller still owns it. */
+ * end, and each LC_SEGMENT_64's cmdsize actually covering the section_64
+ * array its own nsects claims) and returns non-zero on failure, leaving *out
+ * untouched. `cap` is set to `size`. This is how a synthetic, in-memory
+ * Mach-O (macho_grow_test.c builds several) gets the same validated view
+ * mi_open gives a file -- without a file to read. mi_close on a wrapped image
+ * never frees `buf`: the caller still owns it. */
 int mi_wrap(uint8_t *buf, size_t size, mi_image *out);
 
 /* Free the buffer and zero the struct -- but only if the image owns it: a

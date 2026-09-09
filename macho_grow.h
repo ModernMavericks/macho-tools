@@ -72,14 +72,23 @@
 
 /* Lowest section file offset — this bounds the header pad. `fsize` is the
  * buffer's real size, wrapped through mi_wrap so this walk cannot stride past
- * it -- the bug class this whole extraction exists to prevent. A buffer that
- * fails to wrap (bad magic, or load commands that don't fit) is treated as
- * having no sections, same as the not-found case below: callers only reach
- * here after their own validation already accepted the image (mi_open,
- * mg_grow_header's magic check), so this should not trigger in practice. */
+ * it -- the bug class this whole extraction exists to prevent.
+ *
+ * Returns UINT32_MAX, with a message on stderr, if the buffer fails to wrap
+ * (bad magic, or load commands that don't fit): refuse rather than guess. A
+ * fixed fallback here would be a real hazard, not a theoretical one --
+ * change_dylib.c's memset(buf + 32, 0, first_sect_off - 32) turns a wrong
+ * guess directly into an out-of-bounds write. Every caller must check for
+ * UINT32_MAX. This differs from the UINT32_MAX -> 4096 default a few lines
+ * down, which is a validated image that simply has no sections -- a real,
+ * if unusual, answer rather than a guess about an image we couldn't read. */
 static uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     mi_image im;
-    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return 4096;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
+                        "that don't fit); refusing to guess the header pad boundary\n");
+        return UINT32_MAX;
+    }
 
     uint32_t first = UINT32_MAX;
     const uint8_t *lcp = im.buf + sizeof(*im.hdr);
@@ -832,6 +841,7 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     }
 
     uint32_t insert = mg_first_sect_off(buf, fsize);
+    if (insert == UINT32_MAX) return -1;   /* already explained itself on stderr */
 
     /* We insert space at `insert` (the first section's file offset) and shift
      * everything from there onward. That point must be at/after the end of the
