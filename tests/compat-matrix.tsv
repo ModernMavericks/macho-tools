@@ -8,7 +8,7 @@
 # base image: tests/fixture.macho + one appended LC_RPATH (@loader_path/../lib)
 #             + one appended LC_LOAD_DYLIB (@loader_path/spare0.dylib)
 #             sha256[0:16] = cbe6b73481d70434
-# generated:  2026-09-09T20:53:08Z on Darwin 13.4.0 x86_64
+# generated:  2026-09-09T21:17:07Z on Darwin 13.4.0 x86_64
 #
 # columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg
 #   old_argv     the old tool's argv[1..], file named 'f'
@@ -19,18 +19,51 @@
 #                refusal, reproduced), macho9, or '-'
 #   *_msg        first line of that side's stderr
 #
+# WHAT IS AND IS NOT COMPARED -- read this before drawing a conclusion
+# from a class name.
+#
+#   Only the OUTPUT BYTES and the EXIT-CODE SIGN are compared. Stdout is
+#   deliberately NOT compared: mr_apply_file prints a header-pad/updated
+#   pair per pass, so one old invocation and a sequence of two or three
+#   macho9 ones cannot print the same thing, and the plan's Task 0
+#   evidence found no caller that parses these tools' stdout as data.
+#   The first line of each side's stderr is in every row instead.
+#
+#   The class ignores the EXACT exit code, only whether it was zero. Two
+#   rows differ there and say so in their columns rather than their class:
+#   patch_macho on a non-Mach-O and on an absent file exit 1, where macho9
+#   declassify exits 2 (EX_REFUSED). That is deliberate -- cli/macho9.c's
+#   cmd_declassify names it as one of FOUR DELIBERATE DIVERGENCES FROM
+#   patch_macho -- but it is invisible to anyone grepping by class.
+#
+#   improvement is a MECHANICAL label meaning only "old refused, the new
+#   side did not". It is not a judgement. rename_segment's exit 2 for
+#   "nothing matched" lands in it, and a controller ruling says that one
+#   must be REPRODUCED by the wrapper, not kept.
+#
+#   blocked with refuser=translate is compat/translate.sh refusing ON
+#   PURPOSE -- an argv the old tool accepted that no macho9 command line
+#   means the same thing as. It is not a macho9 gap. blocked with
+#   refuser=macho9 is the regression-shaped one.
+#
+#   The plan's sixth category, "crashed -> refuses", has no class of its
+#   own: a signal death and a clean refusal both land in both-refuse,
+#   since only the sign of the exit code is read. Nothing crashed in this
+#   sweep, so nothing was lost -- but a future run that does crash will
+#   not stand out, and the *_rc columns are where to look (128+N).
+#
 # classification
-#   preserved              1173  both exited 0, identical output bytes
-#   bytes-differ              1  both exited 0, DIFFERENT output bytes
-#   blocked                   3  old exited 0, the new side did not -- REGRESSION-SHAPED
+#   preserved              1176  both exited 0, identical output bytes
+#   bytes-differ              0  both exited 0, DIFFERENT output bytes
+#   blocked                   4  old exited 0, the new side did not -- see refuser
 #   both-refuse              43  neither exited 0
 #   improvement               2  old refused, the new side did the work
 #   no-command                2  the translation is empty (the old invocation was a no-op)
 #   no-command-MISMATCH       0  empty translation, but the old tool did NOT no-op -- A DEFECT
 #   +partial                  2  (of the refusing rows above) the new side had already written
-#   TOTAL                  1224
+#   TOTAL                  1227
 #
-# inputs actually rewritten: old=1162 new=1165 (of 1224)
+# inputs actually rewritten: old=1165 new=1167 (of 1227)
 #
 change_dylib	both-refuse	f -grow	-	1	cbe6b73481d70434	1	cbe6b73481d70434	translate	Usage: /private/tmp/mm-build/schmonz/macho-tools/native/change_dylib input [-grow] [-change old new] [-delete path] [-reexport path] [-add path] [-insert path] [-strip-lc name] [-change-rpath old new] [-delete-rpath path] [-add-rpath path] ...	Usage: change_dylib input [-grow] [-change old new] [-delete path] [-reexport path] [-add path] [-insert path] [-strip-lc name] [-change-rpath old new] [-delete-rpath path] [-add-rpath path] ...
 change_dylib	no-command	f -grow -grow	-	0	cbe6b73481d70434	0	cbe6b73481d70434	-	-	-
@@ -1200,7 +1233,7 @@ rename_segment	preserved	f __DATA __DATA_R1	macho9 segment f __DATA __DATA_R1	0	
 rename_segment	improvement	f __NOPE __ALSONOPE	macho9 segment f __NOPE __ALSONOPE	2	cbe6b73481d70434	0	cbe6b73481d70434	-	-	-
 rename_segment	preserved	f __DATA 1234567890123456	macho9 segment f __DATA 1234567890123456	0	44fdeec29706f1e5	0	44fdeec29706f1e5	-	-	-
 rename_segment	both-refuse	f __DATA 12345678901234567	-	1	cbe6b73481d70434	1	cbe6b73481d70434	translate	new segment name longer than 16 bytes	new segment name longer than 16 bytes
-rename_segment	preserved	f __DATA 	macho9 segment f __DATA ''	0	93bd291693c381d8	0	93bd291693c381d8	-	-	-
+rename_segment	preserved	f __DATA ''	macho9 segment f __DATA ''	0	93bd291693c381d8	0	93bd291693c381d8	-	-	-
 rename_segment	both-refuse	nm __DATA __DATA_R1	macho9 segment nm __DATA __DATA_R1	1	cbe6b73481d70434	1	cbe6b73481d70434	macho9	nm: not a readable 64-bit Mach-O	nm: too short to be a 64-bit Mach-O (20 bytes, need at least 32)
 rename_segment	both-refuse	/nonexistent/compat-sweep/no-such-file __DATA __DATA_R1	macho9 segment /nonexistent/compat-sweep/no-such-file __DATA __DATA_R1	1	cbe6b73481d70434	1	cbe6b73481d70434	macho9	open: No such file or directory	open: No such file or directory
 rename_segment	both-refuse	f __DATA __DATA_R1 extra	-	1	cbe6b73481d70434	1	cbe6b73481d70434	translate	Usage: /private/tmp/mm-build/schmonz/macho-tools/native/rename_segment binary OLDNAME NEWNAME	Usage: rename_segment binary OLDNAME NEWNAME
@@ -1254,5 +1287,8 @@ change_dylib	preserved	f -strip-lc codesig -strip-lc codesig	macho9 lc f -delete
 change_dylib	preserved	f -strip-lc source-version -strip-lc source-version	macho9 lc f -delete source-version -delete source-version	0	fabfbe92285901e1	0	fabfbe92285901e1	-	-	-
 change_dylib	preserved	f -strip-lc build-version -strip-lc build-version	macho9 lc f -delete build-version -delete build-version	0	cbe6b73481d70434	0	cbe6b73481d70434	-	-	-
 change_dylib	preserved	f -strip-lc code-sign-drs -strip-lc code-sign-drs	macho9 lc f -delete code-sign-drs -delete code-sign-drs	0	0195621c16d950c4	0	0195621c16d950c4	-	-	-
-fix_macho	bytes-differ	f -rename_seg __DATA __X -rename_seg __X __Y	macho9 segment f __DATA __X;macho9 segment f __X __Y	0	ba999e4791c4fdf8	0	08feadf8fe287363	-	-	-
+fix_macho	blocked	f -rename_seg __DATA __X -rename_seg __X __Y	-	0	ba999e4791c4fdf8	2	cbe6b73481d70434	translate	-	translate.sh: no equivalent -- -rename_seg __X renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary
+fix_macho	preserved	f -rename_seg __DATA __A -rename_seg __DATA __B	macho9 segment f __DATA __A;macho9 segment f __DATA __B	0	5d1158d6d6be77f3	0	5d1158d6d6be77f3	-	-	-
+fix_macho	preserved	f -rename_seg __DATA __B -rename_seg __TEXT __DATA	macho9 segment f __DATA __B;macho9 segment f __TEXT __DATA	0	8952d1c02867fc95	0	8952d1c02867fc95	-	-	-
+fix_macho	preserved	f -rename_seg __DATA __A -rename_seg __TEXT __B	macho9 segment f __DATA __A;macho9 segment f __TEXT __B	0	082f232a82b5314e	0	082f232a82b5314e	-	-	-
 rename_segment	preserved	f __DATA __DATA	macho9 segment f __DATA __DATA	0	cbe6b73481d70434	0	cbe6b73481d70434	-	-	-

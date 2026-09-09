@@ -35,7 +35,13 @@
 #     `-grow` with no operations; it prints its header-pad line and changes
 #     nothing.) It is NOT an error, and it is deliberately not translated as
 #     some adjacent command that would do something.
-#   * Nonzero exit means the OLD TOOL ITSELF would have refused this argv --
+#   * Exit 2 means NO EQUIVALENT: this argv is one the old tool accepted but
+#     that no macho9 command line means the same thing as. Today there are two
+#     -- an unknown TOOL name, and fix_macho's chained -rename_seg (see the
+#     divergence list below). Nothing goes to stdout; emitting a
+#     plausible-looking command that would do something else is exactly what
+#     the plan forbids.
+#   * Exit 1 means the OLD TOOL ITSELF would have refused this argv --
 #     a usage error, an unknown flag, an unknown -strip-lc kind, a capacity
 #     cap, an over-long segment name. The origin tool's exact message goes to
 #     stderr and nothing goes to stdout. A wrapper can therefore refuse by
@@ -131,6 +137,14 @@
 #   fix_macho refuses a longer path where macho9 dylib rewrites it using
 #     header pad, skips mg_plausible, tolerates a fat slice it cannot handle,
 #     and writes non-atomically.
+#
+# There is one shape this file REFUSES outright rather than hands on, because
+# no sequence of macho9 commands means the same thing: `fix_macho -rename_seg
+# A B -rename_seg B C`, where a later pair renames a name an earlier pair
+# produced. fix_macho's single pass gives each segment its FIRST match, so the
+# later pair never fires; two `macho9 segment` passes chain, and the two
+# binaries differ while both exit 0. See mt_fm_chain below for the measurement
+# and for the three neighbouring shapes that are NOT affected.
 
 # ---- quoting -------------------------------------------------------------
 #
@@ -297,12 +311,66 @@ mt_fm_usage() {
     return 1
 }
 
+# CHAINED -rename_seg: no equivalent, so refuse.
+#
+# fix_macho applies EVERY -rename_seg pair in one pass over the load commands
+# and `break`s out of its rename loop on the first match
+# (compat/fix_macho.c's process_macho), so each segment gets the first pair
+# matching its ORIGINAL name and a later pair naming a name an earlier pair
+# produced never fires. The translation is one `macho9 segment` invocation per
+# pair, and the second one reads the first one's OUTPUT -- so the chain that
+# fix_macho refuses to follow, the sequence follows.
+#
+# Measured, on tests/fixture.macho, with the real binaries:
+#
+#   -rename_seg __DATA __X -rename_seg __X __Y
+#       fix_macho     -> __X      (the second pair never fires)
+#       the sequence  -> __Y      DIFFERENT BYTES, both exit 0
+#
+# That is a plausible-looking command line that does something else, which the
+# plan forbids outright ("never a plausible-looking command that would do
+# something else"; "never let a wrapper silently do something adjacent to what
+# was asked"). Documenting a silent wrong answer does not satisfy either
+# sentence, so this refuses instead.
+#
+# ONLY that shape refuses. Each of these was checked the same way and agrees
+# byte-for-byte, so refusing them would be over-refusing:
+#
+#   -rename_seg __DATA __A -rename_seg __DATA __B   same OLD twice: fix_macho
+#       takes the first, and the translation's second pass finds no __DATA
+#       left to rename. Both end __A.
+#   -rename_seg __DATA __B -rename_seg __TEXT __DATA   a later NEW equal to an
+#       earlier OLD is fine: by the time the second pair is applied there is
+#       no __DATA for it to collide with.
+#   -rename_seg __DATA __A -rename_seg __TEXT __B   independent pairs.
+#
+# So the condition is exactly "some later pair's OLD equals some earlier pair's
+# NEW", which a chain of three (__DATA -> __P -> __Q -> __R) also trips at its
+# first link.
+#
+# mt_fm_chain OLD -- returns 1, having reported, if OLD is a name some earlier
+# -rename_seg in this same invocation produced.
+mt_fm_chain() {
+    mt_ci=$IFS
+    IFS='
+'
+    for mt_cn in $mt_segnews; do
+        if [ "$1" = "$mt_cn" ]; then
+            IFS=$mt_ci
+            printf 'translate.sh: no equivalent -- -rename_seg %s renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary\n' "$1" >&2
+            return 1
+        fi
+    done
+    IFS=$mt_ci
+    return 0
+}
+
 mt_tr_fix_macho() {
     # `argc < 3`: program name plus fewer than two arguments.
     [ $# -ge 2 ] || { mt_fm_usage; return 1; }
 
     mt_file=$1; shift
-    mt_lc='' mt_dy='' mt_seg=''
+    mt_lc='' mt_dy='' mt_seg='' mt_segnews=''
 
     while [ $# -gt 0 ]; do
         case $1 in
@@ -324,6 +392,12 @@ mt_tr_fix_macho() {
             # Same 16-byte segname limit fix_macho checks here, before any
             # I/O, in its own words (which differ from rename_segment's).
             [ "${#3}" -le 16 ] || { mt_die "new segment name longer than 16 bytes: $3"; return 1; }
+            # CHAINED RENAMES HAVE NO EQUIVALENT -- refuse. See the block
+            # above mt_fm_chain for the mechanism and for exactly which
+            # shapes are and are not affected.
+            mt_fm_chain "$2" || return 2
+            mt_segnews="$mt_segnews$3
+"
             mt_seg="$mt_seg$(mt_qargs "$2" "$3")
 "
             shift 3 ;;

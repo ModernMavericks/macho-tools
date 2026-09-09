@@ -176,6 +176,28 @@ macho9 segment f __A __B' -- fix_macho f -change A B -strip_build_version -renam
 ok fm-stripbv-twice 'macho9 lc f -delete build-version' \
     -- fix_macho f -strip_build_version -strip_build_version
 
+# CHAINED -rename_seg has no equivalent and must REFUSE. fix_macho gives each
+# segment its FIRST matching pair and never revisits it, so `-rename_seg A B
+# -rename_seg B C` ends at B; two macho9 segment passes chain and end at C --
+# two different binaries from one command line, both exiting 0. Emitting the
+# sequence anyway would be exactly the "plausible-looking command that would do
+# something else" the plan forbids.
+FM_CHAIN_X='translate.sh: no equivalent -- -rename_seg __X renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary'
+FM_CHAIN_P='translate.sh: no equivalent -- -rename_seg __P renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary'
+refuses fm-chain   2 "$FM_CHAIN_X" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
+# A chain of three trips at its first link, not its last.
+refuses fm-chain-3 2 "$FM_CHAIN_P" \
+    -- fix_macho f -rename_seg __DATA __P -rename_seg __P __Q -rename_seg __Q __R
+# ... and it must not OVER-refuse. Each of these three neighbouring shapes was
+# measured against the real fix_macho on tests/fixture.macho and agrees
+# byte-for-byte with its translation, so each must still translate.
+ok fm-same-old 'macho9 segment f __DATA __A
+macho9 segment f __DATA __B' -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
+ok fm-new-eq-earlier-old 'macho9 segment f __DATA __B
+macho9 segment f __TEXT __DATA' -- fix_macho f -rename_seg __DATA __B -rename_seg __TEXT __DATA
+ok fm-independent 'macho9 segment f __DATA __A
+macho9 segment f __TEXT __B' -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
+
 # ---- the four fixed-arity tools -----------------------------------------
 ok avm     'macho9 minos f 10.9'             -- add_version_min f
 ok pm      'macho9 declassify in out'        -- patch_macho in out
@@ -334,6 +356,10 @@ macho9 rpath f -append R'
         printf 'FAIL ksh: translate.sh does not run the same under ksh\n  got: %s\n' "$got" >&2
         fail=$((fail + 1))
     fi
+else
+    # SAY SO. A silently-absent check reads as a passing one: the total just
+    # drops by one and nothing tells you which shell went unexercised.
+    echo "translate_test: SKIP the second-shell cross-check -- /bin/ksh is not present on this host"
 fi
 
 echo "translate_test: $pass passed, $fail failed"

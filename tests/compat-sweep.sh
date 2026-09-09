@@ -85,6 +85,12 @@
 #   improvement    old refused, the new side did the work
 #   no-command     the translation is empty (the old invocation was a no-op)
 #
+# `blocked` splits by WHO said no, in the refuser column: refuser=macho9 is the
+# regression-shaped one; refuser=translate is compat/translate.sh refusing on
+# purpose, because no macho9 command line means what that argv meant (today:
+# fix_macho's chained -rename_seg). Those two must not be read as the same
+# thing, and the generated matrix header says so as well.
+#
 # and any refusing class picks up a "+partial" suffix when the new side had
 # ALREADY written the file before a later command in the sequence failed. That
 # suffix is the split-into-a-sequence cost, measured.
@@ -158,15 +164,21 @@ ABSENT=/nonexistent/compat-sweep/no-such-file
 # reads `f` and writes `o`, and the non-Mach-O arity cases are handed `nm`.
 # Hashing all three together gives one number that changes if the side changed
 # anything at all, and stays equal to the base digest if it changed nothing.
+# No 2>/dev/null: `f` and `nm` are put there by reset_side and `o` is guarded,
+# so nothing here has a reason to write to stderr -- and if something does, it
+# means this function is hashing the wrong thing, which would corrupt every row
+# silently. Let it out.
 digest() {
-    { cat "$1/f"; [ -f "$1/o" ] && cat "$1/o"; cat "$1/nm"; } 2>/dev/null \
+    { cat "$1/f"; [ -f "$1/o" ] && cat "$1/o"; cat "$1/nm"; } \
         | shasum -a 256 | cut -c1-16
 }
 
-# Put a side's directory back to the state every case starts from.
+# Put a side's directory back to the state every case starts from. A failure
+# here is fatal, not something to carry on past: a stale `f` would make the
+# next row a comparison of two files nobody chose.
 reset_side() {
-    cp "$T/base" "$1/f"
-    cp "$T/notmacho" "$1/nm"
+    cp "$T/base" "$1/f" || { echo "compat-sweep: cannot reset $1/f" >&2; exit 1; }
+    cp "$T/notmacho" "$1/nm" || { echo "compat-sweep: cannot reset $1/nm" >&2; exit 1; }
     rm -f "$1/o"
 }
 
@@ -332,7 +344,12 @@ run_case() {
     [ -n "$bmsg" ] || bmsg='-'
     tr_one=$(printf '%s' "$cmds" | tr '\n' ';' | sed 's/;$//')
     [ -n "$tr_one" ] || tr_one='-'
-    argv=$*
+    # SHELL-QUOTED, not space-joined: a row has to be replayable from the
+    # matrix alone once the C sources are gone, and `$*` loses an empty
+    # argument (`rename_segment f __DATA ''`) and any argument with a space in
+    # it. mt_qargs is the translator's own quoter, so the argv column and the
+    # translation column are quoted by the same rule.
+    argv=$(mt_qargs "$@"); argv=${argv# }
     [ -n "$argv" ] || argv='(no arguments)'
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -517,6 +534,13 @@ done
 # The translation runs two separate `macho9 segment` passes, and the second
 # one's input is the first one's output.
 run_case fix_macho f -rename_seg "$SEG_OLD" __X -rename_seg __X __Y
+# ... and the three neighbouring shapes that must NOT be refused: same OLD
+# twice, a later NEW equal to an earlier OLD, and two independent pairs. All
+# three were measured to agree byte-for-byte, so over-refusing them would be a
+# regression of its own.
+run_case fix_macho f -rename_seg "$SEG_OLD" __A -rename_seg "$SEG_OLD" __B
+run_case fix_macho f -rename_seg "$SEG_OLD" __B -rename_seg __TEXT "$SEG_OLD"
+run_case fix_macho f -rename_seg "$SEG_OLD" __A -rename_seg __TEXT __B
 run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
 
 # ---- report -------------------------------------------------------------
@@ -542,10 +566,43 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#                refusal, reproduced), macho9, or '-'"
     echo "#   *_msg        first line of that side's stderr"
     echo "#"
+    echo "# WHAT IS AND IS NOT COMPARED -- read this before drawing a conclusion"
+    echo "# from a class name."
+    echo "#"
+    echo "#   Only the OUTPUT BYTES and the EXIT-CODE SIGN are compared. Stdout is"
+    echo "#   deliberately NOT compared: mr_apply_file prints a header-pad/updated"
+    echo "#   pair per pass, so one old invocation and a sequence of two or three"
+    echo "#   macho9 ones cannot print the same thing, and the plan's Task 0"
+    echo "#   evidence found no caller that parses these tools' stdout as data."
+    echo "#   The first line of each side's stderr is in every row instead."
+    echo "#"
+    echo "#   The class ignores the EXACT exit code, only whether it was zero. Two"
+    echo "#   rows differ there and say so in their columns rather than their class:"
+    echo "#   patch_macho on a non-Mach-O and on an absent file exit 1, where macho9"
+    echo "#   declassify exits 2 (EX_REFUSED). That is deliberate -- cli/macho9.c's"
+    echo "#   cmd_declassify names it as one of FOUR DELIBERATE DIVERGENCES FROM"
+    echo "#   patch_macho -- but it is invisible to anyone grepping by class."
+    echo "#"
+    echo "#   improvement is a MECHANICAL label meaning only \"old refused, the new"
+    echo "#   side did not\". It is not a judgement. rename_segment's exit 2 for"
+    echo "#   \"nothing matched\" lands in it, and a controller ruling says that one"
+    echo "#   must be REPRODUCED by the wrapper, not kept."
+    echo "#"
+    echo "#   blocked with refuser=translate is compat/translate.sh refusing ON"
+    echo "#   PURPOSE -- an argv the old tool accepted that no macho9 command line"
+    echo "#   means the same thing as. It is not a macho9 gap. blocked with"
+    echo "#   refuser=macho9 is the regression-shaped one."
+    echo "#"
+    echo "#   The plan's sixth category, \"crashed -> refuses\", has no class of its"
+    echo "#   own: a signal death and a clean refusal both land in both-refuse,"
+    echo "#   since only the sign of the exit code is read. Nothing crashed in this"
+    echo "#   sweep, so nothing was lost -- but a future run that does crash will"
+    echo "#   not stand out, and the *_rc columns are where to look (128+N)."
+    echo "#"
     echo "# classification"
     printf '#   %-20s %6d  both exited 0, identical output bytes\n' preserved "$n_preserved"
     printf '#   %-20s %6d  both exited 0, DIFFERENT output bytes\n' bytes-differ "$n_bytes"
-    printf '#   %-20s %6d  old exited 0, the new side did not -- REGRESSION-SHAPED\n' blocked "$n_blocked"
+    printf '#   %-20s %6d  old exited 0, the new side did not -- see refuser\n' blocked "$n_blocked"
     printf '#   %-20s %6d  neither exited 0\n' both-refuse "$n_bothref"
     printf '#   %-20s %6d  old refused, the new side did the work\n' improvement "$n_improve"
     printf '#   %-20s %6d  the translation is empty (the old invocation was a no-op)\n' no-command "$n_nocmd"
