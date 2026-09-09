@@ -31,8 +31,9 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # Builds change_dylib from source rather than consuming a CMake target, so this
 # script keeps working standalone (`./change_dylib_test.sh`, clang + otool only).
 # That means it must track what change_dylib includes: macho_grow.h now pulls in
-# src/uleb.h, so the toolkit sources it needs are listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c
+# src/uleb.h, and change_dylib.c itself now includes src/ordinals.h, so the
+# toolkit sources it needs are listed here too.
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
