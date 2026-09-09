@@ -371,7 +371,7 @@ static const char *lc_str_at(const struct load_command *lc, uint32_t offset) {
     return s ? s : "(malformed: offset past cmdsize)";
 }
 
-static void info_cb(const struct load_command *lc, void *ctx_) {
+static int info_cb(const struct load_command *lc, void *ctx_) {
     struct info_ctx *ctx = ctx_;
     const char *name = lc_name(lc->cmd);
     if (name) printf("LC[%d] %s cmdsize=%u\n", ctx->idx, name, lc->cmdsize);
@@ -399,6 +399,7 @@ static void info_cb(const struct load_command *lc, void *ctx_) {
                vc->sdk >> 16, (vc->sdk >> 8) & 0xff, vc->sdk & 0xff);
     }
     ctx->idx++;
+    return 0;   /* prints every command; never needs to stop early */
 }
 
 static int cmd_info(const char *path) {

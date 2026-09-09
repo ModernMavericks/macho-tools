@@ -20,7 +20,7 @@ struct avm_scan {
     int      has_version_min;
 };
 
-static void avm_scan_lc(const struct load_command *lc, void *ctx_) {
+static int avm_scan_lc(const struct load_command *lc, void *ctx_) {
     struct avm_scan *ctx = ctx_;
     if (lc->cmd == LC_SEGMENT_64) {
         const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
@@ -31,6 +31,7 @@ static void avm_scan_lc(const struct load_command *lc, void *ctx_) {
     } else if (lc->cmd == LC_VERSION_MIN_MACOSX) {
         ctx->has_version_min = 1;
     }
+    return 0;   /* nothing here ever needs to stop the walk early */
 }
 
 int main(int argc, char **argv) {

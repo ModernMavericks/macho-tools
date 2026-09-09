@@ -67,21 +67,52 @@ uint8_t *mi_release(mi_image *im);
  * that is only a hint, not enforcement -- the underlying memory is whatever
  * the caller's buffer is (mutable, for an owned or wrapped image opened
  * O_RDWR). A callback MAY write through a cast-away-const `lc` to edit a
- * command's own fixed-size fields (rename_segment.c's rs_rename_lc and
- * retag_swift_classes.c's retag() both do, safely, since neither one is a
- * load command in the sense below). What a callback must NEVER do is change
- * `lc->cmd`, `lc->cmdsize`, or `im->hdr->ncmds` -- mi_each_lc's own loop
- * reads `lc->cmdsize` via this same `lc` right after the callback returns
- * to compute the next command's address, and it uses `im->hdr->ncmds` (read
+ * command's own fixed-size fields, or fields several hops away through the
+ * buffer -- a segment's segname (rename_segment.c's rs_rename_lc), a class
+ * record's tag bits (retag_swift_classes.c's retag()), a fixup pointer's raw
+ * bits (patch_macho.c's pm_collect_lc leaves these alone but a caller could).
+ * The one invariant a callback must NEVER violate, no matter what else it
+ * edits: THE COMMAND-CHAIN SHAPE ITSELF must stay exactly what it was when
+ * the walk started -- concretely, never assign to `lc->cmd`, never assign to
+ * `lc->cmdsize`, and never assign to `im->hdr->ncmds`. mi_each_lc's own loop
+ * reads `lc->cmdsize` via this same `lc` right after the callback returns to
+ * compute the next command's address, and it uses `im->hdr->ncmds` (read
  * once, before the loop starts) to know when to stop. Changing either
  * desyncs that stride from the buffer's real shape -- reading a stale
  * cmdsize as the next command's header, walking past the real end, or
- * stopping short -- silently, since there is no bounds check inside the
- * loop verifying the walk still lines up with what mi_validate proved at
- * open time. Anything else in the command (a segment's name, a class
- * record's tag bits three hops away through the buffer) is fair game. */
-typedef void (*mi_lc_fn)(const struct load_command *lc, void *ctx);
-void mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx);
+ * stopping short -- silently, since there is no bounds check inside the loop
+ * verifying the walk still lines up with what mi_validate proved at open
+ * time. This is a prohibition on those three fields only, not a blanket ban
+ * on writing through `lc` -- everything else in the command, or reachable
+ * from it, is fair game.
+ *
+ * The callback returns int: 0 to continue, non-zero to stop the walk early
+ * (a refusal partway through, e.g. change_dylib.c's build_lcs on a malformed
+ * dylib/rpath name offset -- see its own comment for why it must not keep
+ * calling the callback, and hence writing into the caller's output buffer,
+ * once it has decided to refuse). mi_each_lc itself returns 1 if it visited
+ * every command (the callback never asked to stop) or 0 if a callback's
+ * non-zero return cut the walk short -- so the caller can propagate the
+ * refusal instead of trusting whatever the callback wrote before stopping.
+ *
+ * There is deliberately only ONE walking loop behind this signature (not a
+ * separate void-callback variant kept alongside it) -- this codebase's
+ * recurring bug class is two places independently deciding one thing, and a
+ * second iterator with its own copy of the bounds/stride logic would be
+ * exactly that, for the walk itself. A callback with nothing to abort for
+ * just always returns 0.
+ *
+ * No MUTATING variant exists here either, on purpose: fix_macho.c's
+ * -strip_build_version walk shrinks the chain mid-iteration (memmove's a
+ * later command down over the one being dropped, shrinks ncmds/sizeofcmds,
+ * and revisits the same cursor instead of advancing). That is a genuinely
+ * different contract from "stop early" -- the caller would own recomputing
+ * bounds and deciding whether to advance after every call, i.e. exactly the
+ * stride logic this module exists to centralize, pushed back out to every
+ * such caller. One caller needs that shape; see fix_macho.c's process_macho
+ * for the full reasoning. Revisit if a second one shows up. */
+typedef int (*mi_lc_fn)(const struct load_command *lc, void *ctx);
+int mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx);
 
 /* Find LC_SEGMENT_64 `name` (e.g. "__TEXT"), or NULL. Segment and section names
  * are 16 bytes and need not be NUL-terminated, which is the trap these wrap. */

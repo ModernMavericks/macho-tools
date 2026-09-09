@@ -352,20 +352,55 @@ static void test_wrap_does_not_copy(void) {
 
 struct lc_count { uint32_t seen; uint32_t segments; };
 
-static void count_cb(const struct load_command *lc, void *ctx) {
+static int count_cb(const struct load_command *lc, void *ctx) {
     struct lc_count *c = (struct lc_count *)ctx;
     c->seen++;
     if (lc->cmd == LC_SEGMENT_64) c->segments++;
+    return 0;   /* never asks to stop */
 }
 
 static void test_each_lc_visits_every_command(void) {
     mi_image im;
     if (mi_open(FIXTURE, &im) != 0) { CHECK(0, "each_lc: fixture would not open"); return; }
     struct lc_count c = { 0, 0 };
-    mi_each_lc(&im, count_cb, &c);
+    int completed = mi_each_lc(&im, count_cb, &c);
     CHECK(c.seen == im.hdr->ncmds, "mi_each_lc visits all %u commands (got %u)",
           im.hdr->ncmds, c.seen);
     CHECK(c.segments >= 2, "  and sees at least __PAGEZERO and __TEXT (got %u)", c.segments);
+    CHECK(completed == 1, "  and reports completed==1 when no callback asked to stop");
+    mi_close(&im);
+}
+
+/* stop_after_cb: counts every command visited, same as count_cb, but asks
+ * mi_each_lc to stop once it has seen `stop_at` commands. This is the
+ * mutation-discriminating half of the coverage: a version of mi_each_lc that
+ * ignored the callback's return value (the exact shape of the pre-Task-2a
+ * bug this API replaces -- a caller that decides to stop but the walk keeps
+ * calling it) would visit every command regardless of `stop_at`, and would
+ * return "completed" even though the callback asked to stop. Both are
+ * asserted below. */
+struct lc_stop { uint32_t seen; uint32_t stop_at; };
+
+static int stop_after_cb(const struct load_command *lc, void *ctx) {
+    (void)lc;
+    struct lc_stop *c = (struct lc_stop *)ctx;
+    c->seen++;
+    return c->seen >= c->stop_at;
+}
+
+static void test_each_lc_stops_early(void) {
+    mi_image im;
+    if (mi_open(FIXTURE, &im) != 0) { CHECK(0, "each_lc stop: fixture would not open"); return; }
+    if (im.hdr->ncmds < 2) {
+        CHECK(0, "each_lc stop: fixture needs at least 2 load commands to prove an early stop");
+        mi_close(&im);
+        return;
+    }
+    struct lc_stop c = { 0, 1 };   /* stop after the very first command */
+    int completed = mi_each_lc(&im, stop_after_cb, &c);
+    CHECK(completed == 0, "mi_each_lc reports completed==0 when a callback asks to stop");
+    CHECK(c.seen == 1, "  and visits exactly the commands up to and including the stop "
+                        "(got %u, fixture has %u total)", c.seen, im.hdr->ncmds);
     mi_close(&im);
 }
 
@@ -428,6 +463,7 @@ int main(void) {
     test_wrap_refuses_nsects_disagreeing_with_cmdsize();
     test_wrap_does_not_copy();
     test_each_lc_visits_every_command();
+    test_each_lc_stops_early();
     test_find_segment();
     test_find_section();
     test_text_base_is_the_segment_mapping_the_header();

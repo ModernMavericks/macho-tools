@@ -53,11 +53,11 @@ struct rs_ctx {
  * lc->cmdsize, so it cannot desynchronize mi_each_lc's own `p += lc->cmdsize`
  * stride -- the thing "must not modify the command chain" in image.h's
  * comment is guarding against. */
-static void rs_rename_lc(const struct load_command *lc, void *ctx_) {
+static int rs_rename_lc(const struct load_command *lc, void *ctx_) {
     struct rs_ctx *ctx = ctx_;
-    if (lc->cmd != LC_SEGMENT_64) return;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
     struct segment_command_64 *seg = (struct segment_command_64 *)lc;
-    if (strncmp(seg->segname, ctx->oldname, 16) != 0) return;
+    if (strncmp(seg->segname, ctx->oldname, 16) != 0) return 0;
 
     memset(seg->segname, 0, 16);
     strncpy(seg->segname, ctx->newname, 16);
@@ -69,6 +69,7 @@ static void rs_rename_lc(const struct load_command *lc, void *ctx_) {
         strncpy(sects[s].segname, ctx->newname, 16);
     }
     ctx->renamed++;
+    return 0;   /* renames every match; never needs to stop early */
 }
 
 int main(int argc, char **argv) {

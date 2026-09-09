@@ -127,14 +127,15 @@ uint8_t *mi_release(mi_image *im) {
     return buf;
 }
 
-void mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx) {
+int mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx) {
     /* mi_open has already proved this walk stays in bounds. */
     const uint8_t *p = im->buf + sizeof(struct mach_header_64);
     for (uint32_t i = 0; i < im->hdr->ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)p;
-        cb(lc, ctx);
+        if (cb(lc, ctx)) return 0;   /* callback asked to stop */
         p += lc->cmdsize;
     }
+    return 1;   /* visited every command */
 }
 
 struct segment_command_64 *mi_find_segment(const mi_image *im, const char *name) {

@@ -71,9 +71,9 @@ struct find_section_ctx {
  * every segment's every section, as the original hand-rolled walk did, finds
  * it regardless of which same-named segment it landed in or what order they
  * come in. */
-static void find_section_lc(const struct load_command *lc, void *ctx_) {
+static int find_section_lc(const struct load_command *lc, void *ctx_) {
     struct find_section_ctx *ctx = ctx_;
-    if (lc->cmd != LC_SEGMENT_64) return;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
     const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
     if (*ctx->nsegs < 64) {
         ctx->segs[*ctx->nsegs].vmaddr  = sc->vmaddr;
@@ -90,6 +90,10 @@ static void find_section_lc(const struct load_command *lc, void *ctx_) {
             ctx->found = 1;
         }
     }
+    /* Must keep scanning every segment even after a match: the comment above
+     * explains why the wanted section can legitimately live in a LATER
+     * same-named segment, and segs[] needs every segment regardless. */
+    return 0;
 }
 
 static int find_section(const mi_image *im, const char *want_seg, const char *want_sect,

@@ -50,6 +50,30 @@ static int process_macho(uint8_t *buf, size_t size, struct change_entry *changes
     }
     struct mach_header_64 *hdr = im.hdr;
 
+    /* Left as a hand-rolled walk, deliberately, even with a stop-capable
+     * mi_each_lc now available (src/image.h): the -strip_build_version
+     * branch below MUTATES the chain mid-walk -- memmove's a later command's
+     * bytes down over the one being dropped, memset's the vacated tail,
+     * shrinks hdr->ncmds and hdr->sizeofcmds, and then `continue`s WITHOUT
+     * advancing lcp, so the command that just slid into this position gets
+     * re-examined at the same cursor rather than skipped. That is exactly
+     * the shape mi_each_lc's contract (see image.h) forbids a callback from
+     * producing: it walks by re-reading `im->hdr->ncmds` once before the
+     * loop and unconditionally striding `p += lc->cmdsize` after every call,
+     * so a callback that shrinks ncmds or leaves the cursor where it was
+     * desyncs that stride from the buffer's real shape.
+     *
+     * A mutating variant COULD be built, but its contract would be a
+     * different, harder one -- not "may stop the walk" but "must recompute
+     * ncmds and lcend after every call and know whether to advance the
+     * cursor or retry it," pushing the stride logic this module exists to
+     * centralize back onto every caller of that variant. This file has
+     * exactly one walk that needs it. Building a second iterator shape for
+     * one caller reproduces, for the walk itself, the "two places
+     * independently deciding one thing" bug class this whole conversion
+     * effort exists to retire -- so this walk stays hand-rolled instead.
+     * Revisit only if a second mutating caller shows up and the shared shape
+     * becomes clear from two real examples rather than guessed from one. */
     uint8_t *lcp = buf + sizeof(struct mach_header_64);
     uint8_t *lcend = lcp + hdr->sizeofcmds;
     int modified = 0;
