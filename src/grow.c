@@ -863,7 +863,16 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
 
     /* Locate the donor (__PAGEZERO) and confirm a header-bearing segment
      * (__TEXT) exists, via the same finders every other converted walk in
-     * this toolkit uses instead of a third hand-rolled copy of the search. */
+     * this toolkit uses instead of a third hand-rolled copy of the search.
+     * Documented gap from a review round: mi_find_segment returns the FIRST
+     * "__PAGEZERO"-named segment; the original hand-rolled loop had no
+     * `break` on a pagezero match, so it kept the LAST. mi_text_base (used
+     * just below for `text`) has the identical first-vs-last change --
+     * matches unconditionally return on the first hit, where the original
+     * loop's `else if` also had no `break`. Neither is exercised by any
+     * fixture (none carries more than one __PAGEZERO or more than one
+     * fileoff==0-with-content segment); the commit that made this
+     * conversion documented neither at the time. Recorded here now. */
     mi_image find_im;
     if (mi_wrap(buf, fsize, &find_im) != 0) {
         fprintf(stderr, "macho_grow: internal error -- the header no longer validates\n");
