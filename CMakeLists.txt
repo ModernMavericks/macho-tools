@@ -46,6 +46,18 @@ endif()
 # under -std=c11 and accepts in its default gnu dialect. Verified across all six.
 set(CMAKE_C_STANDARD_REQUIRED OFF)
 
+# The toolkit library the seven rewriters are being converged onto (docs/PROPOSAL.md
+# "Shape"; docs/superpowers/plans/2026-09-08-macho9-toolkit.md). It starts with the
+# smallest shared thing and grows one extraction at a time.
+#
+# Target name is macho9core, not macho9, so Task 4 can add the `macho9` CLI
+# executable without a target-name collision. It is deliberately NOT linked into
+# every tool: only what actually includes a header from src/ links it, so a tool
+# that gains a dependency does so visibly, in this file.
+add_library(macho9core STATIC src/uleb.c)
+target_include_directories(macho9core PUBLIC src)
+target_compile_options(macho9core PRIVATE -O2 -Wall)
+
 set(MACHO_TOOLS
   patch_macho
   change_dylib
@@ -64,6 +76,10 @@ foreach(tool IN LISTS MACHO_TOOLS)
   mavericks_assert_binary_compatible(${tool})
 endforeach()
 
+# change_dylib is the one tool that includes macho_grow.h, which now includes
+# src/uleb.h. The other five reach nothing in src/ yet.
+target_link_libraries(change_dylib PRIVATE macho9core)
+
 install(TARGETS ${MACHO_TOOLS} RUNTIME DESTINATION bin)
 
 enable_testing()
@@ -73,6 +89,7 @@ enable_testing()
 # header exposes helpers this translation unit does not all use.
 add_executable(macho_grow_test macho_grow_test.c)
 target_compile_options(macho_grow_test PRIVATE -O2 -Wno-unused-function)
+target_link_libraries(macho_grow_test PRIVATE macho9core)
 add_test(NAME macho_grow_test COMMAND macho_grow_test)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library

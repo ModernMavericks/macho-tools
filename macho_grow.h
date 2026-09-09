@@ -40,6 +40,14 @@
 #include <stdint.h>
 #include <mach-o/loader.h>
 
+#include "uleb.h"
+
+/* The three ULEB helpers now live in src/uleb.c. These defines keep this commit
+ * to one concern -- a move with no call-site churn -- and go away in the next. */
+#define mg_uleb_decode       mu_decode
+#define mg_uleb_minlen       mu_minlen
+#define mg_uleb_encode_fixed mu_encode_fixed
+
 /* Load-command constants newer than the 10.9 SDK headers. */
 #ifndef LC_DYLD_EXPORTS_TRIE
 #define LC_DYLD_EXPORTS_TRIE        0x80000033
@@ -97,36 +105,6 @@ static void mg_bump(uint32_t *off, uint32_t insert, uint32_t grow) {
  * the blob — and all of __LINKEDIT after it — never moves. (When the widened
  * delta would need more bytes than the original encoding, we refuse rather than
  * resize LINKEDIT; see mg_grow_header.) */
-
-/* Decode one ULEB128 at p (< end). Returns bytes consumed, 0 if malformed
- * (continuation runs past end, or > 10 bytes). *out = value. */
-static int mg_uleb_decode(const uint8_t *p, const uint8_t *end, uint64_t *out) {
-    uint64_t r = 0; int s = 0, n = 0;
-    while (p + n < end && n < 10) {
-        uint8_t b = p[n]; r |= (uint64_t)(b & 0x7f) << s; n++;
-        if (!(b & 0x80)) { *out = r; return n; }
-        s += 7;
-    }
-    return 0;
-}
-
-/* Minimal number of bytes to ULEB-encode v (>= 1). */
-static int mg_uleb_minlen(uint64_t v) {
-    int n = 1; while (v >= 0x80) { v >>= 7; n++; } return n;
-}
-
-/* Encode v into exactly `width` ULEB128 bytes at p, padding non-minimally with
- * continuation groups if width exceeds the minimal length. Returns 1 on success,
- * 0 if v does not fit in `width` bytes. */
-static int mg_uleb_encode_fixed(uint8_t *p, uint64_t v, int width) {
-    if (width < 1 || mg_uleb_minlen(v) > width) return 0;
-    for (int i = 0; i < width; i++) {
-        uint8_t b = (uint8_t)((v >> (7 * i)) & 0x7f);
-        if (i < width - 1) b |= 0x80;   /* keep the stream going through the pad */
-        p[i] = b;
-    }
-    return 1;
-}
 
 /* Re-encode the leading (base-relative) LC_FUNCTION_STARTS delta after lowering
  * the image base by `grow`: delta[0] += grow, keeping the leading delta's byte
