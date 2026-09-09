@@ -17,21 +17,33 @@
  * for, so exercising it against a real, checkable address is the point, not
  * incidental.
  *
- * The last test pins the file's hardest constraint: tests/live_probe.c
+ * The next-to-last test pins the file's hardest constraint: tests/live_probe.c
  * #includes ONLY src/live.h. This test compiles that fixture to a fresh
  * object with a plain `cc -O0 -c` (temp path, unique per run) and runs
- * `nm -u` over the result, asserting no malloc/free/calloc/realloc or stdio
- * symbol shows up undefined. -O0 is deliberate, not a leftover: at -O2 a
- * single unobserved `malloc(16)` call was seen to be optimized away entirely
- * during this test's own development (confirmed by hand — see the task
- * report), which would make the check trivially pass regardless of whether
- * live.h actually stayed allocation-free. -O0 guarantees calls the source
- * actually makes show up in the object, so the check reflects the source,
- * not the optimizer's mood. Reading `nm`'s output here is inspecting this
- * test's own freshly-built object for symbol PRESENCE, not parsing a tool's
+ * `nm -u` over the result, asserting the undefined-symbol list is EMPTY --
+ * an ALLOWLIST of nothing, not a denylist of a few names a reviewer found
+ * missing (errno, pthread_once, getenv, a dyld-locking call, a call into an
+ * unflagged new .c all passed a denylist of ~18 substrings; none can pass
+ * an allowlist of nothing). -O0 is deliberate, not a leftover: at -O2 an
+ * OBSERVED malloc/free pair -- not just an unobserved one -- was confirmed
+ * (by hand, and independently by code review) to be optimized away
+ * entirely, which would make this check pass whether or not live.h actually
+ * stayed allocation-free. -O0 guarantees calls the source actually makes
+ * show up in the object, so the check reflects the source, not the
+ * optimizer's mood. Reading `nm`'s output here is inspecting this test's
+ * own freshly-built object for symbol PRESENCE, not parsing a tool's
  * human-readable text as an oracle for Mach-O structure (tests/README.md's
  * lesson on that is about *.macho fixtures parsed for byte-level facts) —
  * the same distinction live_probe.c's own header comment draws.
+ *
+ * The last test pins live.h's bounds checking: a header-shaped fixture with
+ * a plausible magic, ncmds=4e9 and a first load command whose cmdsize is 0
+ * must be REFUSED on the very first iteration (mlive_each_lc returns -1
+ * immediately), not walked -- an earlier revision with no cmdsize/sizeofcmds
+ * bound was measured, by code review, to spin for 20+ seconds on exactly
+ * this input inside what is supposed to be a signal handler. This is timed,
+ * not just checked for the right return value, so a future regression back
+ * to an unbounded walk fails loudly rather than merely "eventually" passing.
  *
  * Build (standalone):
  *   clang -O2 -Wall -Wextra -I src -o /tmp/livetest tests/live_test.c && /tmp/livetest
@@ -47,8 +59,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
-#include <sys/wait.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -84,6 +96,39 @@ static void test_finds_text_section(void) {
     if (!se) return;
     CHECK(mlive_name_eq(se->sectname, "__text"), "sectname reads back as __text");
     CHECK(se->size > 0, "__text has nonzero size (got %llu)", (unsigned long long)se->size);
+}
+
+/* mlive_find_section walks sg->nsects entries. A mutant off-by-one
+ * (`i + 1 < sg->nsects` instead of `i < sg->nsects`) would still find
+ * __text, since it's virtually always __TEXT's FIRST section -- code
+ * review confirmed exactly this mutant survives testing that stops at
+ * __text alone. So this checks the LAST section instead, found
+ * independently of live.h (direct struct access, not a second call into the
+ * function under test) so the ground truth doesn't depend on the very
+ * code being checked. The name isn't hardcoded -- which section a linker
+ * puts last in __TEXT is toolchain-dependent -- so this reads whatever is
+ * actually there. */
+static void test_finds_last_section_of_text(void) {
+    const struct mach_header_64 *mh =
+        (const struct mach_header_64 *)_dyld_get_image_header(0);
+    const struct segment_command_64 *sg = mlive_find_segment(mh, "__TEXT");
+    if (!sg || sg->nsects == 0) { CHECK(0, "last-section: __TEXT has no sections"); return; }
+
+    const struct section_64 *secs = (const struct section_64 *)(const void *)(sg + 1);
+    const struct section_64 *last = &secs[sg->nsects - 1];
+
+    /* Build a NUL-terminated copy per tests/README.md's lesson nine:
+     * sectname is char[16] and may legally fill all 16 bytes with no room
+     * for a terminator, so memcpy-and-cap, never strcpy/sprintf. */
+    char name[17];
+    memcpy(name, last->sectname, 16);
+    name[16] = '\0';
+
+    const struct section_64 *found = mlive_find_section(mh, "__TEXT", name);
+    CHECK(found == last,
+          "mlive_find_section finds __TEXT's LAST section (\"%.16s\", index %u of %u), "
+          "not just its first",
+          name, sg->nsects - 1, sg->nsects);
 }
 
 /* A real function this test defines, so its address is a fact about the
@@ -162,8 +207,8 @@ static void test_null_header_returns_null_or_zero(void) {
     CHECK(mlive_find_segment(NULL, "__TEXT") == NULL, "mlive_find_segment(NULL, ...) == NULL");
     CHECK(mlive_find_section(NULL, "__TEXT", "__text") == NULL,
           "mlive_find_section(NULL, ...) == NULL");
-    CHECK(mlive_each_lc(NULL, count_segments_cb, NULL) == 0,
-          "mlive_each_lc(NULL, ...) == 0 (refuses rather than walking garbage)");
+    CHECK(mlive_each_lc(NULL, count_segments_cb, NULL) == -1,
+          "mlive_each_lc(NULL, ...) == -1 (refuses rather than walking garbage)");
 }
 
 static void test_bad_magic_is_rejected(void) {
@@ -179,8 +224,41 @@ static void test_bad_magic_is_rejected(void) {
     CHECK(mlive_valid(&fake) == 0, "mlive_valid rejects a bad magic");
     CHECK(mlive_find_segment(&fake, "__TEXT") == NULL,
           "mlive_find_segment refuses a bad-magic header rather than walking it");
-    CHECK(mlive_each_lc(&fake, count_segments_cb, NULL) == 0,
+    CHECK(mlive_each_lc(&fake, count_segments_cb, NULL) == -1,
           "mlive_each_lc refuses a bad-magic header rather than walking it");
+}
+
+/* This is the exact shape code review reported: valid magic, ncmds in the
+ * billions, and a first load command whose cmdsize is 0. Before
+ * mlive_each_lc bounded cmdsize against sizeofcmds, this spun for 20+
+ * seconds (4e9 callback invocations) inside what is supposed to be a
+ * signal handler; a garbage nonzero cmdsize instead walks off the mapped
+ * region and segfaults. With the bound in place it must refuse on the
+ * FIRST iteration -- checked here both by return value and by wall-clock
+ * time, so a regression back to the unbounded walk fails loudly rather
+ * than "eventually" passing. */
+static void test_malformed_sizeofcmds_refuses_fast(void) {
+    struct { struct mach_header_64 hdr; struct load_command first_lc; } fixture;
+    memset(&fixture, 0, sizeof fixture);
+    fixture.hdr.magic       = MH_MAGIC_64;
+    fixture.hdr.ncmds       = 4000000000u;   /* the reviewer's exact repro */
+    fixture.hdr.sizeofcmds  = (uint32_t)sizeof(struct load_command); /* just
+        enough for ONE real command -- so the walk actually dereferences
+        `first_lc` (cmdsize=0, from the zero-fill above) rather than being
+        refused before ever reading memory, matching the reported input
+        precisely rather than a weaker "sizeofcmds also lies" variant. */
+    fixture.first_lc.cmd     = 0;
+    fixture.first_lc.cmdsize = 0;
+
+    clock_t start = clock();
+    int rc = mlive_each_lc((const struct mach_header_64 *)&fixture, count_segments_cb, NULL);
+    clock_t end = clock();
+    double secs = (double)(end - start) / CLOCKS_PER_SEC;
+
+    CHECK(rc == -1, "ncmds=4e9/cmdsize=0 fixture is refused (-1), not walked (got %d)", rc);
+    CHECK(secs < 1.0,
+          "refusal took %.3fs (want < 1s -- a spin back to O(ncmds) would take ~20s here)",
+          secs);
 }
 
 static void test_missing_segment_or_section_returns_null(void) {
@@ -251,36 +329,54 @@ static void test_probe_object_is_allocation_free(void) {
     }
     remove(logpath);
 
-    snprintf(cmd, sizeof cmd, "nm -u %s > %s 2>&1", objpath, nmpath);
+    /* ALLOWLIST, not a denylist: live.h calls no external function at all
+     * (see its own top comment on why even strncmp was removed), so the
+     * permitted set of undefined symbols in this probe object is EMPTY.
+     * A denylist of specific names (the previous shape of this check)
+     * missed errno, pthread_once, getenv, a call to
+     * _dyld_get_image_header, and a call into an unflagged new .c -- all
+     * confirmed by code review to sail through ~18 forbidden substrings.
+     * None of those, or anything else, can produce an undefined symbol
+     * without failing an allowlist of nothing. */
+    /* stderr goes to /dev/null here, deliberately NOT merged with stdout:
+     * under DYLD_INSERT_LIBRARIES=libgmalloc (this test is required to run
+     * clean under it), that env var reaches the `nm` child too and
+     * GuardMalloc prints its own startup banner to ITS stderr -- merging
+     * that into what this check treats as "the undefined-symbol list"
+     * would fail a perfectly clean object for a reason that has nothing to
+     * do with live.h. rc==0 still confirms nm itself ran successfully. */
+    snprintf(cmd, sizeof cmd, "nm -u %s > %s 2>/dev/null", objpath, nmpath);
     rc = system(cmd);
     CHECK(rc == 0, "nm -u on the probe object succeeds (rc=%d)", rc);
 
     char *nm_out = slurp(nmpath);
-    CHECK(nm_out != NULL, "nm output was captured");
+    CHECK(nm_out != NULL, "nm -u output was captured");
     if (nm_out) {
-        static const char *forbidden[] = {
-            "malloc", "free", "calloc", "realloc", "reallocf", "valloc",
-            "printf", "fprintf", "sprintf", "snprintf", "vprintf",
-            "puts", "fputs", "fopen", "fread", "fwrite", "fclose",
-            "pthread_mutex", "pthread_create",
-            NULL
-        };
-        for (int i = 0; forbidden[i]; i++) {
-            CHECK(strstr(nm_out, forbidden[i]) == NULL,
-                  "probe object's undefined symbols do not mention \"%s\" (nm -u said: %s)",
-                  forbidden[i], nm_out);
+        size_t len = strlen(nm_out);
+        while (len > 0 && (nm_out[len-1] == '\n' || nm_out[len-1] == ' ' ||
+                            nm_out[len-1] == '\t' || nm_out[len-1] == '\r')) {
+            nm_out[--len] = '\0';
         }
-        /* A vacuously-clean check (e.g. nm silently failing to run at all)
-         * would pass every CHECK above for the wrong reason. strncmp is the
-         * one external symbol live.h legitimately calls (see live.h's own
-         * top-of-file comment on why it's async-signal-safe), so its
-         * presence is proof nm actually inspected a real, non-empty object
-         * rather than an empty or failed run. */
-        CHECK(strstr(nm_out, "strncmp") != NULL,
-              "sanity: the probe object DOES reference strncmp (proves nm actually ran; got: %s)",
-              nm_out);
+        CHECK(len == 0,
+              "probe object's undefined-symbol list is EMPTY (allowlist of nothing) -- "
+              "got: \"%s\"", nm_out);
     }
     free(nm_out);
+
+    /* A vacuously-clean check (e.g. nm silently failing to run, or being
+     * pointed at an empty/wrong object) would pass the CHECK above for the
+     * wrong reason. Confirm the object is real and non-trivial by looking
+     * for mlp_probe's own DEFINED symbol in a plain (non -u) listing --
+     * proof `nm` actually inspected the object this test just built, not
+     * nothing. */
+    snprintf(cmd, sizeof cmd, "nm %s > %s 2>/dev/null", objpath, nmpath);
+    rc = system(cmd);
+    CHECK(rc == 0, "plain nm on the probe object succeeds (rc=%d)", rc);
+    char *nm_all = slurp(nmpath);
+    CHECK(nm_all != NULL && strstr(nm_all, "_mlp_probe") != NULL,
+          "sanity: the probe object DOES define _mlp_probe (proves nm inspected the real "
+          "object, not an empty one)");
+    free(nm_all);
 
     remove(objpath);
     remove(nmpath);
@@ -290,11 +386,13 @@ int main(void) {
     test_own_image_is_valid_64bit();
     test_finds_text_segment();
     test_finds_text_section();
+    test_finds_last_section_of_text();
     test_text_section_contains_a_known_function();
     test_each_lc_visits_every_segment();
     test_each_lc_stopping_early_is_reported();
     test_null_header_returns_null_or_zero();
     test_bad_magic_is_rejected();
+    test_malformed_sizeofcmds_refuses_fast();
     test_missing_segment_or_section_returns_null();
     test_probe_object_is_allocation_free();
 
