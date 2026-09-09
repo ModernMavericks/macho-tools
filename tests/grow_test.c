@@ -221,6 +221,29 @@ static void test_init_offsets_rebase(void) {
                                * test_grow_refuses_overflowing_section_offset. Uses
                                * the same section slot as MG_T_UNWIND; never combine
                                * the two in one build_image() call. */
+#define MG_T_NOTE 512        /* LC_NOTE: refused outright by mg_classify (its shape
+                               * is not verified against any header on hand -- see
+                               * src/linkedit.h's top comment). Before this option
+                               * existed, mg_classify's LC_NOTE refusal had ZERO test
+                               * coverage: a mutation that moved it from the refusal
+                               * bucket into the inert (accepted) bucket, without
+                               * touching src/linkedit.c's ml_bump_lc to match, made
+                               * every test in this suite pass anyway. See
+                               * test_grow_refuses_note. */
+#define MG_T_ATOM_INFO 1024  /* LC_ATOM_INFO: same story as MG_T_NOTE -- refused,
+                               * previously untested. See test_grow_refuses_atom_info. */
+
+/* note_command isn't in the 10.9 SDK's <mach-o/loader.h> (see
+ * src/mach_compat.h's own comment on LC_NOTE); this is dyld/ld64's publicly
+ * documented layout, defined locally because this test is the only place in
+ * the tree that needs the full struct -- src/grow.c only needs the constant. */
+struct mg_test_note_command {
+    uint32_t cmd;
+    uint32_t cmdsize;
+    char data_owner[16];
+    uint64_t offset;
+    uint64_t size;
+};
 #define FS_OFF 7680
 #define TRIE_OFF    7168
 static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts) {
@@ -390,6 +413,22 @@ static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts)
         ep->entryoff = 0x1000;   /* a plausible in-bounds default; tests poke it */
         ep->stacksize = 0;
         h->ncmds++; h->sizeofcmds += ep->cmdsize; lcend += ep->cmdsize;
+    }
+    if (opts & MG_T_NOTE) {
+        struct mg_test_note_command *nc = (struct mg_test_note_command *)lcend;
+        nc->cmd = LC_NOTE;
+        nc->cmdsize = sizeof *nc;
+        memcpy(nc->data_owner, "com.example.note", 16);   /* 16 bytes, not NUL-terminated */
+        nc->offset = 6656;
+        nc->size = 8;
+        h->ncmds++; h->sizeofcmds += nc->cmdsize; lcend += nc->cmdsize;
+    }
+    if (opts & MG_T_ATOM_INFO) {
+        struct linkedit_data_command *ac = (struct linkedit_data_command *)lcend;
+        ac->cmd = LC_ATOM_INFO;
+        ac->cmdsize = sizeof *ac;
+        ac->dataoff = 6656; ac->datasize = 8;
+        h->ncmds++; h->sizeofcmds += ac->cmdsize; lcend += ac->cmdsize;
     }
     if (opts & MG_T_ODDSECT) sc->flags = 0x7e;   /* unknown SECTION_TYPE */
 
@@ -1061,6 +1100,32 @@ static void test_grow_refuses_unknown_section_type(void) {
     check_refused_unchanged("an unclassified section type", MG_T_ODDSECT);
 }
 
+/* THE COUPLING GAP a whole-branch review's mutation testing found: mg_classify
+ * (src/grow.c) and ml_bump_lc (src/linkedit.c) are two switch statements
+ * deciding one question -- "does growing the header need to touch this load
+ * command's file offset, and does something actually touch it" -- and nothing
+ * couples them. The tables agree today, but before these two tests existed,
+ * moving LC_NOTE from mg_classify's refusal bucket into its inert (accepted)
+ * bucket -- without teaching ml_bump_lc to bump note_command's `offset` field
+ * to match -- left all 10 suites green: mg_classify would accept the grow,
+ * ml_bump_lc's default case would silently leave the note's file offset
+ * unbumped, and the tool would report success on a binary whose LC_NOTE now
+ * points `grow` bytes into the wrong data.
+ *
+ * These two tests close the coverage gap directly: mg_grow_header MUST refuse
+ * an image carrying LC_NOTE or LC_ATOM_INFO. Mutate mg_classify_cb to accept
+ * either (move its case out of the refusal switch arm) and check_refused_unchanged's
+ * `CHECK(r == -1, ...)` fails immediately -- because ml_bump_lc has no matching
+ * case for either cmd, mg_grow_header would otherwise "succeed" while leaving
+ * that load command's file offset silently wrong by `grow` bytes. */
+static void test_grow_refuses_note(void) {
+    check_refused_unchanged("LC_NOTE", MG_T_NOTE);
+}
+
+static void test_grow_refuses_atom_info(void) {
+    check_refused_unchanged("LC_ATOM_INFO", MG_T_ATOM_INFO);
+}
+
 /* ---- 32-bit stays refused, on purpose ----
  * mg_grow_header's image-base trick and every helper it calls (mg_first_sect_off,
  * mg_collect/mg_verify, mg_classify, mg_unwind_walk, mg_init_offsets_pass, and
@@ -1292,6 +1357,8 @@ int main(void) {
     test_grow_refuses_unknown_load_command();
     test_grow_refuses_linker_optimization_hint();
     test_grow_refuses_unknown_section_type();
+    test_grow_refuses_note();
+    test_grow_refuses_atom_info();
     test_grow_refuses_32bit_mach_header();
     test_plausible_accepts_a_well_formed_image();
     test_plausible_rejects_an_offset_that_names_no_function();
