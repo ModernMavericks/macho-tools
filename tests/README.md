@@ -1,12 +1,16 @@
 # tests
 
-Three suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
+Seven suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 
 | test | what it proves |
 |---|---|
 | `macho_grow_test` | hermetic: the grow, every base-relative re-baser, `mg_verify`, `mg_plausible`, against synthetic images |
-| `change_dylib_test` | builds real dylibs, rewrites a real executable, and **runs it** — a wrong library ordinal shows up as a dyld failure, not a silent mis-binding |
+| `image_test` | walks `tests/fixture.macho`, a real 10.9-built executable, against `src/image.c`'s reader — exercised against a binary a linker actually emitted, not one this test invented |
+| `trie_test` | hermetic: `src/trie.c`'s export-trie rebuild (decode, shift, re-serialize) against hand-built and hand-computed trie byte buffers — no fixture file needed, same reasoning as `macho_grow_test` |
+| `change_dylib_test` | builds real dylibs, rewrites a real executable, and **runs it** — a wrong library ordinal shows up as a dyld failure, not a silent mis-binding. Also covers `src/fat.c`'s fat-arch validation (both read-side, via `fix_macho`, and write-side) and `write_atomic`'s symlink/hard-link/ordinary-file handling |
+| `chained_fixups` | `patch_macho`'s chained-fixups conversion, against a fixture only a modern linker can produce. `SKIP`s (exit 77) on a host that can't emit chained fixups — 10.9 included — so it's real coverage on a modern host and an honest no-op on the target |
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
+| `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements |
 
 ## EXPECTED, and what it is for
 
@@ -26,6 +30,83 @@ clang and a 2026 one will never emit matching bytes. Comparing what the tools
 If `characterize` fails, either a tool's behaviour changed (update `EXPECTED`
 deliberately, in the same commit, and say why) or this build is not equivalent
 to the native reference. Do not update `EXPECTED` to make the test pass.
+
+## Writing a test here: lessons from the cross runner
+
+This suite went red on the modern cross runner (CI, or any host newer than
+Mac OS X 10.9) seven separate times over the course of this project. Every
+one of those seven was a bad assumption baked into a TEST, never an actual
+defect in a tool. That track record is worth internalizing before adding a
+new fixture or assertion here, because the same handful of mistakes keeps
+reproducing the failure in new shapes:
+
+- **A fixture built without `-mmacosx-version-min=10.9` asks a different
+  question on a modern host than it does on 10.9.** A modern linker's
+  defaults change the load commands it emits (see the next two points), so
+  a fixture compiled with the host's defaults tests "whatever this host's
+  toolchain happens to do today", not the 10.9 behavior the tool actually
+  targets. Every fixture-building helper in this directory and in
+  `change_dylib_test.sh` passes `-mmacosx-version-min=10.9` for exactly this
+  reason — copy that pattern for any new one rather than reasoning about
+  which particular default would otherwise bite.
+
+- **Never parse `nm`/`otool` human-readable output as an oracle.** Their
+  output format is Apple's to reformat at will, on any OS release, with no
+  compatibility promise to a test script parsing it. When a fact about a
+  binary is needed that a stable tool output (`macho9 info`, `--capabilities`)
+  doesn't already provide, write a tiny throwaway C program that reads the
+  Mach-O structure directly (`ordinal_of.c`, `has_lc.c`, `has_bytes.c`,
+  `mk2fat_overlap.c`, and others in `change_dylib_test.sh`; `cli_test.sh`'s
+  `strip_version_min.c` is the same idiom). It asks the same question on a
+  10.9 host and a 2020s one because it depends only on the file format, not
+  on any tool's text formatting.
+
+- **A 2026 linker emits `LC_BUILD_VERSION` where a 2014 one emits
+  `LC_VERSION_MIN_MACOSX`.** A fixture built to exercise "a binary that has
+  no `LC_VERSION_MIN_MACOSX`" needs to check for the ABSENCE of that specific
+  load command, not assume a normal build lacks it — a modern host's default
+  build already lacks it (it emits `LC_BUILD_VERSION` instead), which makes
+  a naive assertion pass for the wrong reason and silently stop testing what
+  it claims to. See `cli_test.sh`'s `minos` fixture construction for the
+  full story, including the failed first fix below.
+
+- **`-Wl,-no_version_load_command` exists only on 10.9's `ld`.** A first fix
+  for the point above tried this flag to suppress the load command at link
+  time. It linked locally and broke the whole suite on the cross runner
+  (`ld: unknown options: -no_version_load_command`) — trading one host
+  dependency for a worse one, a hard link failure instead of a silently-wrong
+  assertion. The fix that actually holds up on both hosts: build the fixture
+  NORMALLY (portable) and then remove the load command by direct Mach-O
+  structure surgery, with a throwaway C program compiled by plain `$CC`, no
+  special flags. Any linker flag that isn't in this file already is
+  guilty until proven portable — check it against a modern `ld` before
+  relying on it, or avoid needing a special flag at all, as above.
+
+- **Modern macOS SIGKILLs a resized binary** (code-signing enforcement: the
+  signature made at link time no longer matches once the file is modified
+  in place), so **"run the rewritten binary" assertions are 10.9-only.**
+  Do not assume this — probe it. `cli_test.sh` establishes whether the
+  CURRENT host enforces this by perturbing a copy of a binary that never
+  went near macho9 or change_dylib and observing the result (exit 137 means
+  yes) before it ever runs a macho9-modified binary; the grow/lc "still
+  runs" assertions are gated on that probe, not on a Darwin version check,
+  distinguishing "this host's OS policy" from "macho9 broke the binary" —
+  the same symptom (the child doesn't run) would otherwise look identical
+  and either mask a real defect or fail a totally healthy build.
+
+- **Assert the BEHAVIOUR, not which guard fired, because fixture byte sizes
+  vary by toolchain.** Two different checks can both be correct refusals of
+  the same underlying condition — see `change_dylib_test.sh` case 13
+  (the fat-collision test): the read-side check in `mfat_parse` and the
+  write-side check in `process_fat` can both legitimately catch the same
+  malformed layout, and which one fires first depends on exact byte offsets
+  a *different* host's compiler produced for the same source. Case 13 pins
+  the observable outcome instead — refuses, leaves the input untouched,
+  names the overlap in its message — never the specific code path or exact
+  byte count that produced it. Where a fixture is entirely hand-built
+  byte-for-byte (as the fat fixtures in `change_dylib_test.sh` mostly are),
+  pinning an exact size or offset is fine — the risk is only when a
+  compiler's own output feeds the assertion.
 
 ## Known gap
 
