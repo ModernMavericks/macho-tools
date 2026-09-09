@@ -13,7 +13,15 @@
  * module must NOT touch (symbol/relocation counts and indices, datasize
  * fields, and a whole unrelated LC_UUID load command) gets a sentinel value
  * checked byte-for-byte unchanged afterward -- that is the "and that nothing
- * else changed" half of the brief.
+ * else changed" half of the brief. A second, full-coverage fixture
+ * (test_bump_all_every_field_discriminates) puts every one of the 14
+ * bumped fields, and every case label that shares the dataoff bump
+ * (including three commands the first fixture never builds at all), at a
+ * unique value strictly above `insert` -- see that function's own comment
+ * for why the first fixture alone cannot catch a missing bump on five of
+ * its fields. A third case (test_bump_all_refuses_on_overflow) pins that a
+ * field which would overflow a uint32_t after growing is refused, not
+ * silently wrapped.
  *
  * Build: clang -O2 -Wall -Isrc -o /tmp/linkedit_test tests/linkedit_test.c
  *   src/linkedit.c src/image.c && /tmp/linkedit_test
@@ -268,8 +276,164 @@ static void test_bump_all_zero_grow_is_a_no_op(void) {
     free(b.buf);
 }
 
+/* ---- full discrimination: every one of the 14 bumped fields, and every
+ * case label that shares the dataoff bump, gets its own value >= insert ----
+ *
+ * The fixture above is deliberately semantic (below/at/above/absent), which
+ * means five of its fields -- modtaboff, indirectsymoff, rebase_off,
+ * weak_bind_off, export_off -- and the LC_DATA_IN_CODE/LC_CODE_SIGNATURE
+ * case labels sit below `insert` or at the absent value 0, so deleting
+ * THEIR OWN bump call changes nothing observable there (a code review
+ * caught this: deleting each of the 14 ml_bump calls in turn found five
+ * that the fixture above could not detect, plus four case labels --
+ * LC_DATA_IN_CODE, LC_DYLIB_CODE_SIGN_DRS, LC_DYLD_EXPORTS_TRIE, and plain
+ * LC_DYLD_INFO -- that were either never reached with a discriminating
+ * value or never present in the fixture at all). This is the mirror image
+ * of the sentinel bug this file's own commit already fixed once: there,
+ * "never touched" fields sat below insert so a wrongful bump went
+ * unnoticed; here, "must be touched" fields sat below insert so a MISSING
+ * bump goes unnoticed. Same root cause, opposite direction.
+ *
+ * Fix: a second image where EVERY bumped field -- all 14, plus every
+ * linkedit_data_command-family command this module recognizes (including
+ * the three the first fixture never built at all: plain LC_DYLD_INFO,
+ * LC_DYLD_EXPORTS_TRIE, LC_DYLIB_CODE_SIGN_DRS -- and, for full measure,
+ * LC_SEGMENT_SPLIT_INFO/LC_LINKER_OPTIMIZATION_HINT/LC_DYLD_CHAINED_FIXUPS
+ * too, even though the code review did not name them) -- sits strictly
+ * above `insert` with a UNIQUE value, so any one missing bump (or any one
+ * case label quietly falling through to `default`) changes exactly one
+ * assertion and cannot hide behind another field's correct result. */
+struct built2 {
+    uint8_t *buf;
+    struct symtab_command *symtab;
+    struct dysymtab_command *dysymtab;
+    struct dyld_info_command *dyld_info_only;
+    struct dyld_info_command *dyld_info;        /* plain LC_DYLD_INFO */
+    struct linkedit_data_command *funcstarts;
+    struct linkedit_data_command *dice;
+    struct linkedit_data_command *codesig;
+    struct linkedit_data_command *splitinfo;
+    struct linkedit_data_command *codesign_drs;
+    struct linkedit_data_command *loh;
+    struct linkedit_data_command *exports_trie;
+    struct linkedit_data_command *chained_fixups;
+};
+
+static struct built2 build_image_full_coverage(void) {
+    struct built2 b;
+    memset(&b, 0, sizeof b);
+    b.buf = (uint8_t *)calloc(1, IMG_SIZE);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)b.buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->filetype = MH_EXECUTE;
+
+    uint8_t *lcp = b.buf + sizeof(*hdr);
+
+    b.symtab = (struct symtab_command *)append_lc(hdr, &lcp, LC_SYMTAB, sizeof(struct symtab_command));
+    b.symtab->symoff = 0x2001; b.symtab->stroff = 0x2101;
+
+    b.dysymtab = (struct dysymtab_command *)append_lc(hdr, &lcp, LC_DYSYMTAB, sizeof(struct dysymtab_command));
+    b.dysymtab->tocoff = 0x2201; b.dysymtab->modtaboff = 0x2301;
+    b.dysymtab->extrefsymoff = 0x2401; b.dysymtab->indirectsymoff = 0x2501;
+    b.dysymtab->extreloff = 0x2601; b.dysymtab->locreloff = 0x2701;
+
+    b.dyld_info_only = (struct dyld_info_command *)append_lc(hdr, &lcp, LC_DYLD_INFO_ONLY, sizeof(struct dyld_info_command));
+    b.dyld_info_only->rebase_off = 0x2801; b.dyld_info_only->bind_off = 0x2901;
+    b.dyld_info_only->weak_bind_off = 0x2a01; b.dyld_info_only->lazy_bind_off = 0x2b01;
+    b.dyld_info_only->export_off = 0x2c01;
+
+    b.dyld_info = (struct dyld_info_command *)append_lc(hdr, &lcp, LC_DYLD_INFO, sizeof(struct dyld_info_command));
+    b.dyld_info->rebase_off = 0x2d01; b.dyld_info->bind_off = 0x2e01;
+    b.dyld_info->weak_bind_off = 0x2f01; b.dyld_info->lazy_bind_off = 0x3001;
+    b.dyld_info->export_off = 0x3101;
+
+    b.funcstarts     = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_FUNCTION_STARTS, sizeof(struct linkedit_data_command));
+    b.funcstarts->dataoff = 0x3201;
+    b.dice           = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_DATA_IN_CODE, sizeof(struct linkedit_data_command));
+    b.dice->dataoff = 0x3301;
+    b.codesig        = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_CODE_SIGNATURE, sizeof(struct linkedit_data_command));
+    b.codesig->dataoff = 0x3401;
+    b.splitinfo      = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_SEGMENT_SPLIT_INFO, sizeof(struct linkedit_data_command));
+    b.splitinfo->dataoff = 0x3501;
+    b.codesign_drs   = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_DYLIB_CODE_SIGN_DRS, sizeof(struct linkedit_data_command));
+    b.codesign_drs->dataoff = 0x3601;
+    b.loh            = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_LINKER_OPTIMIZATION_HINT, sizeof(struct linkedit_data_command));
+    b.loh->dataoff = 0x3701;
+    b.exports_trie   = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_DYLD_EXPORTS_TRIE, sizeof(struct linkedit_data_command));
+    b.exports_trie->dataoff = 0x3801;
+    b.chained_fixups = (struct linkedit_data_command *)append_lc(hdr, &lcp, LC_DYLD_CHAINED_FIXUPS, sizeof(struct linkedit_data_command));
+    b.chained_fixups->dataoff = 0x3901;
+
+    return b;
+}
+
+static void test_bump_all_every_field_discriminates(void) {
+    struct built2 b = build_image_full_coverage();
+    mi_image im;
+    CHECK(mi_wrap(b.buf, IMG_SIZE, &im) == 0, "full-coverage image validates via mi_wrap");
+
+    int r = ml_bump_all(&im, INSERT, GROW);
+    CHECK(r == 0, "ml_bump_all succeeds on the full-coverage image (got %d)", r);
+
+    CHECK(b.symtab->symoff == 0x2001 + GROW, "symoff bumped (got %#x)", b.symtab->symoff);
+    CHECK(b.symtab->stroff == 0x2101 + GROW, "stroff bumped (got %#x)", b.symtab->stroff);
+
+    CHECK(b.dysymtab->tocoff == 0x2201 + GROW, "tocoff bumped (got %#x)", b.dysymtab->tocoff);
+    CHECK(b.dysymtab->modtaboff == 0x2301 + GROW, "modtaboff bumped (got %#x)", b.dysymtab->modtaboff);
+    CHECK(b.dysymtab->extrefsymoff == 0x2401 + GROW, "extrefsymoff bumped (got %#x)", b.dysymtab->extrefsymoff);
+    CHECK(b.dysymtab->indirectsymoff == 0x2501 + GROW, "indirectsymoff bumped (got %#x)", b.dysymtab->indirectsymoff);
+    CHECK(b.dysymtab->extreloff == 0x2601 + GROW, "extreloff bumped (got %#x)", b.dysymtab->extreloff);
+    CHECK(b.dysymtab->locreloff == 0x2701 + GROW, "locreloff bumped (got %#x)", b.dysymtab->locreloff);
+
+    CHECK(b.dyld_info_only->rebase_off == 0x2801 + GROW, "DYLD_INFO_ONLY rebase_off bumped (got %#x)", b.dyld_info_only->rebase_off);
+    CHECK(b.dyld_info_only->bind_off == 0x2901 + GROW, "DYLD_INFO_ONLY bind_off bumped (got %#x)", b.dyld_info_only->bind_off);
+    CHECK(b.dyld_info_only->weak_bind_off == 0x2a01 + GROW, "DYLD_INFO_ONLY weak_bind_off bumped (got %#x)", b.dyld_info_only->weak_bind_off);
+    CHECK(b.dyld_info_only->lazy_bind_off == 0x2b01 + GROW, "DYLD_INFO_ONLY lazy_bind_off bumped (got %#x)", b.dyld_info_only->lazy_bind_off);
+    CHECK(b.dyld_info_only->export_off == 0x2c01 + GROW, "DYLD_INFO_ONLY export_off bumped (got %#x)", b.dyld_info_only->export_off);
+
+    /* Plain LC_DYLD_INFO (not _ONLY): its own case label, a separate
+     * command from the one above, so this discriminates the label itself,
+     * not just the shared field logic. */
+    CHECK(b.dyld_info->rebase_off == 0x2d01 + GROW, "LC_DYLD_INFO rebase_off bumped (got %#x)", b.dyld_info->rebase_off);
+    CHECK(b.dyld_info->bind_off == 0x2e01 + GROW, "LC_DYLD_INFO bind_off bumped (got %#x)", b.dyld_info->bind_off);
+    CHECK(b.dyld_info->weak_bind_off == 0x2f01 + GROW, "LC_DYLD_INFO weak_bind_off bumped (got %#x)", b.dyld_info->weak_bind_off);
+    CHECK(b.dyld_info->lazy_bind_off == 0x3001 + GROW, "LC_DYLD_INFO lazy_bind_off bumped (got %#x)", b.dyld_info->lazy_bind_off);
+    CHECK(b.dyld_info->export_off == 0x3101 + GROW, "LC_DYLD_INFO export_off bumped (got %#x)", b.dyld_info->export_off);
+
+    /* Every linkedit_data_command-family case label, each its own command
+     * with its own unique expected value, so a case label quietly falling
+     * through to `default` is caught individually. */
+    CHECK(b.funcstarts->dataoff == 0x3201 + GROW, "LC_FUNCTION_STARTS dataoff bumped (got %#x)", b.funcstarts->dataoff);
+    CHECK(b.dice->dataoff == 0x3301 + GROW, "LC_DATA_IN_CODE dataoff bumped (got %#x)", b.dice->dataoff);
+    CHECK(b.codesig->dataoff == 0x3401 + GROW, "LC_CODE_SIGNATURE dataoff bumped (got %#x)", b.codesig->dataoff);
+    CHECK(b.splitinfo->dataoff == 0x3501 + GROW, "LC_SEGMENT_SPLIT_INFO dataoff bumped (got %#x)", b.splitinfo->dataoff);
+    CHECK(b.codesign_drs->dataoff == 0x3601 + GROW, "LC_DYLIB_CODE_SIGN_DRS dataoff bumped (got %#x)", b.codesign_drs->dataoff);
+    CHECK(b.loh->dataoff == 0x3701 + GROW, "LC_LINKER_OPTIMIZATION_HINT dataoff bumped (got %#x)", b.loh->dataoff);
+    CHECK(b.exports_trie->dataoff == 0x3801 + GROW, "LC_DYLD_EXPORTS_TRIE dataoff bumped (got %#x)", b.exports_trie->dataoff);
+    CHECK(b.chained_fixups->dataoff == 0x3901 + GROW, "LC_DYLD_CHAINED_FIXUPS dataoff bumped (got %#x)", b.chained_fixups->dataoff);
+
+    free(b.buf);
+}
+
+/* ---- overflow refusal: ml_bump/ml_bump_all must refuse, not wrap ---- */
+static void test_bump_all_refuses_on_overflow(void) {
+    struct built b = build_image();
+    b.symtab->stroff = 0xfffff000u;   /* + GROW (0x1000) would wrap to 0 */
+    mi_image im;
+    CHECK(mi_wrap(b.buf, IMG_SIZE, &im) == 0, "wrap ok");
+
+    int r = ml_bump_all(&im, INSERT, GROW);
+    CHECK(r == -1, "ml_bump_all refuses an overflowing field (got %d)", r);
+    CHECK(b.symtab->stroff == 0xfffff000u,
+          "the overflowing field itself is left untouched, not wrapped (got %#x)",
+          b.symtab->stroff);
+    free(b.buf);
+}
+
 int main(void) {
     test_bump_all_moves_exactly_the_right_fields();
+    test_bump_all_every_field_discriminates();
+    test_bump_all_refuses_on_overflow();
     test_bump_all_insert_zero_bumps_every_qualifying_field();
     test_bump_all_zero_grow_is_a_no_op();
 

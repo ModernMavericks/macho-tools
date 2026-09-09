@@ -706,9 +706,9 @@ static int mg_classify(const uint8_t *buf, size_t fsize) {
         case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64:
         case LC_VERSION_MIN_MACOSX: case LC_VERSION_MIN_IPHONEOS:
         case LC_SOURCE_VERSION: case LC_BUILD_VERSION: case LC_LINKER_OPTION:
-        case LC_NOTE: case LC_SUB_FRAMEWORK: case LC_SUB_UMBRELLA:
+        case LC_SUB_FRAMEWORK: case LC_SUB_UMBRELLA:
         case LC_SUB_CLIENT: case LC_SUB_LIBRARY: case LC_TWOLEVEL_HINTS:
-        case LC_PREBIND_CKSUM: case LC_ROUTINES_64: case LC_ATOM_INFO:
+        case LC_PREBIND_CKSUM: case LC_ROUTINES_64:
             break;
 
         /* Known to carry base-relative payloads we do NOT re-base. */
@@ -722,6 +722,24 @@ static int mg_classify(const uint8_t *buf, size_t fsize) {
         case LC_DYLD_CHAINED_FIXUPS:
             why = "LC_DYLD_CHAINED_FIXUPS is not supported here; run patch_macho first to "
                   "convert it to LC_DYLD_INFO_ONLY";
+            break;
+        /* LC_NOTE (note_command: a uint64_t offset/size pair, per publicly
+         * documented ld64/dyld source) and LC_ATOM_INFO (reported elsewhere
+         * as a plain linkedit_data_command) each carry a real file offset
+         * that src/linkedit.h's table does NOT bump -- neither struct's
+         * exact layout could be verified against any header available
+         * while that module was written (both postdate the 10.9 SDK and
+         * the modern host SDK on hand). Refuse rather than guess a shape
+         * and silently leave that file offset `grow` bytes low -- the tool
+         * would otherwise report success on a binary that will not load.
+         * See src/linkedit.h's own top comment for the fuller note. */
+        case LC_NOTE:
+            why = "LC_NOTE carries a file offset (note_command.offset) this tool does not "
+                  "verify or re-base";
+            break;
+        case LC_ATOM_INFO:
+            why = "LC_ATOM_INFO carries a file offset (dataoff) this tool does not verify "
+                  "or re-base";
             break;
         default:
             fprintf(stderr, "macho_grow: load command %#x is not classified, so it cannot be "
@@ -1109,10 +1127,26 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         if (mi_wrap(buf, final_size, &im) != 0) {
             fprintf(stderr, "macho_grow: internal error -- the header we just patched "
                             "no longer validates\n");
+            /* mg_new_trie is still live here when mg_trie_needs_rebuild --
+             * it is not freed until the trie-rebasing block below runs.
+             * Every other post-realloc failure path in this function frees
+             * it; this one must too. free(NULL) is a no-op when it wasn't
+             * allocated. */
+            free(mg_new_trie);
             mg_snapshot_free(&snap);
             return -1;
         }
-        ml_bump_all(&im, insert, grow);
+        if (ml_bump_all(&im, insert, grow) != 0) {
+            /* ml_bump/ml_bump_all already printed why (an offset would
+             * overflow a 32-bit field); nothing more to add. Some fields on
+             * commands walked before the one that overflowed are already
+             * bumped in place -- not rolled back, same as every other
+             * internal failure path here: the caller must discard this
+             * buffer rather than write it out. */
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
+        }
     }
 
     /* Re-point the dyld4 initializer offsets: the base dropped by `grow`, the
