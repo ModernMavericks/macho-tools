@@ -125,7 +125,29 @@ gains its first `src/` dependency — so the dependency is visible in
 
 ---
 
-### Task 2: Extract `linkedit` — the offset-bump table
+### Task 2: A stop-capable `mi_each_lc`, then extract `linkedit`
+
+**Task 2a — give `mi_each_lc` a way to stop and a way to mutate.** Task 1's
+review accepted three walks as unconvertible and identified the single change
+that would retire the whole category: `mi_lc_fn` returns `void` and
+`mi_each_lc` has no abort, so a walk with an early `return -1` on malformed
+input (`change_dylib.c:209,251`) cannot be expressed in it — a converted version
+would keep writing after the refusal. And `fix_macho.c:57` mutates the chain
+mid-walk (`memmove`, `ncmds--`, `continue` without advancing), which the
+iterator's contract forbids.
+
+- [ ] Add an `int`-returning callback (non-zero stops the walk) and have
+      `mi_each_lc` return whether it completed, so a refusal propagates.
+- [ ] Decide deliberately whether a mutating variant is worth it, or whether
+      chain-editing walks stay hand-rolled. Either answer is fine; record it.
+- [ ] Fix `src/image.h`'s contract comment: "must not change any `cmd`,
+      `cmdsize`, or `hdr->ncmds`" — the current wording is read by converters
+      as either a prohibition on what `rename_segment` already does, or as
+      blanket permission.
+- [ ] Then convert `change_dylib.c`'s `build_lcs` and `patch_macho.c`'s
+      collecting walk, which the new form makes expressible.
+
+**Task 2b — extract `linkedit`, the offset-bump table**
 
 `macho_grow.h`'s densest internal duplication: symtab, strtab, indirect symbols,
 and the exhaustive list of `__LINKEDIT` file-offset fields that every grow must
