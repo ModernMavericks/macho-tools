@@ -1,3 +1,4 @@
 build-native/
 build-cross/
 /VERSION
+CMakeUserPresets.json
