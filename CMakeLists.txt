@@ -195,3 +195,21 @@ add_test(NAME cli_test
 # what each fixture is shaped to trigger.
 add_test(NAME leaf_tool_crashes
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:add_version_min>")
+
+# src/live.h -- the header-only, malloc-free query surface Task 4 adds for
+# avxemu (docs/PROPOSAL.md's "Shape": "live.h is deliberately a header, not
+# part of the library"). Deliberately NOT linked against macho9core: live.h
+# is standalone by design (see its own top comment), and this test proves
+# that by needing nothing but -I src. Queries run against this test binary's
+# OWN loaded image via _dyld_get_image_header/_dyld_get_image_vmaddr_slide,
+# same reasoning as image_test reading a real linker-built fixture instead
+# of a synthetic one. WORKING_DIRECTORY is the source dir because the test
+# shells out to `cc -c tests/live_probe.c` and `nm` on the result to prove
+# a TU that includes only live.h stays free of malloc/free/stdio -- the
+# constraint pin `tests/README.md` and the task brief both call for, wired
+# into CI rather than left as an unchecked comment.
+add_executable(live_test tests/live_test.c)
+target_compile_options(live_test PRIVATE -O2 -Wall -Wextra)
+target_include_directories(live_test PRIVATE src)
+add_test(NAME live_test COMMAND live_test
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
