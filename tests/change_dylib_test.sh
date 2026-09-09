@@ -542,6 +542,9 @@ EOF
 if ! otool -l "$T/libupd_a.dylib" | grep -q LC_LOAD_UPWARD_DYLIB; then
     bad "upward fixture" "linker did not produce LC_LOAD_UPWARD_DYLIB; skipping case 8"
 else
+    # A pristine copy for case 8b (fix_macho -change) below, taken before
+    # case 8's own change_dylib -delete run mutates libupd_a.dylib in place.
+    cp "$T/libupd_a.dylib" "$T/libupd_a_for_fixmacho.dylib"
     # `|| true`: without it, a genuinely failing ordinal_of (nonzero exit) would
     # trip `set -e` on this bare assignment and abort the WHOLE script right
     # here -- no bad(), no FAIL line, the EXIT trap deletes ordinal_before.err
@@ -593,6 +596,43 @@ else
             bad "-delete upward renumber" "ordinal_of returned no number, not a wrong number: '$after'$( [ -s "$T/ordinal_after.err" ] && echo "; stderr: $(cat "$T/ordinal_after.err")")"
             ;;
     esac
+fi
+
+# --- 8b. fix_macho -change must rewrite an LC_LOAD_UPWARD_DYLIB too ----------
+# Companion to case 8, but for compat/fix_macho.c's own independent dylib-LC
+# set rather than change_dylib's: fix_macho hand-listed {LOAD, WEAK, ID,
+# REEXPORT} for -change and, until this wave, silently omitted
+# LC_LOAD_UPWARD_DYLIB -- so `fix_macho -change` on this exact fixture used to
+# leave libupd_a.dylib's upward dependency untouched and print "No changes
+# needed" (exit 0), while change_dylib (case 8, above) rewrites the identical
+# load command. Two answers to the same question -- reuses case 8's real,
+# linker-produced upward-dylib fixture (a pristine copy taken before case 8's
+# own change_dylib run mutates the original) rather than a fabricated one.
+if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then
+    # Same length as the old path (both 27 bytes): fix_macho -change, unlike
+    # change_dylib -grow, never widens a load command to fit a longer
+    # replacement -- it refuses if the new path doesn't fit the existing
+    # cmdsize slack (see "new path ... too long" in process_macho). A
+    # same-length replacement sidesteps that unrelated refusal so this case
+    # tests only what it means to: whether -change recognizes an
+    # LC_LOAD_UPWARD_DYLIB at all.
+    old_install_name="@loader_path/libupd_b.dylib"
+    new_install_name="@loader_path/libupd_c.dylib"
+    out=$("$FIX_MACHO" "$T/libupd_a_for_fixmacho.dylib" \
+        -change "$old_install_name" "$new_install_name" 2>&1) || bad "fix_macho -change upward" "tool run failed: $out"
+    deps=$(otool -L "$T/libupd_a_for_fixmacho.dylib")
+    if echo "$out" | grep -q "No changes needed"; then
+        bad "fix_macho -change upward" "reported no changes needed -- LC_LOAD_UPWARD_DYLIB not rewritten"
+    elif echo "$deps" | grep -q "$new_install_name"; then
+        ok "fix_macho -change: an LC_LOAD_UPWARD_DYLIB is rewritten like any other dylib LC"
+    else
+        bad "fix_macho -change upward" "new path not found in dependencies: $deps"
+    fi
+    if echo "$deps" | grep -q "$old_install_name"; then
+        bad "fix_macho -change upward" "old path still present: $deps"
+    fi
+else
+    bad "fix_macho -change upward" "pristine copy from case 8 missing; case 8 must have skipped"
 fi
 
 # --- 9. more operations than the option arrays hold must be refused ----------

@@ -114,8 +114,19 @@ static int process_macho(uint8_t *buf, size_t size, struct change_entry *changes
             }
         }
 
-        if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB ||
-            lc->cmd == LC_ID_DYLIB || lc->cmd == LC_REEXPORT_DYLIB) {
+        /* mo_is_ordinal_lc() here (rather than a locally re-listed set) is
+         * what keeps this "which dylib LCs -change can rewrite" set in sync
+         * with change_dylib.c's identical predicate at process_lc (compat/
+         * change_dylib.c) -- they used to disagree about
+         * LC_LOAD_UPWARD_DYLIB: fix_macho hand-listed {LOAD, WEAK, ID,
+         * REEXPORT} and silently left an upward dylib's path unrewritten
+         * (reporting "No changes needed", exit 0) where change_dylib
+         * rewrote it -- two answers to the same question. LC_ID_DYLIB is
+         * added back in for the same reason change_dylib.c adds it: it
+         * names the image itself, so it must be recognized as dylib-shaped
+         * for `dc`/`name` below to be valid, even though nothing in
+         * `changes` is ever meant to match it. */
+        if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
             struct dylib_command *dc = (struct dylib_command *)lcp;
             char *name = (char *)mo_lc_str_at((const struct load_command *)lcp, dc->dylib.name.offset);
             if (!name) {
@@ -126,7 +137,6 @@ static int process_macho(uint8_t *buf, size_t size, struct change_entry *changes
 
             for (int c = 0; c < nchanges; c++) {
                 if (strcmp(name, changes[c].old_path) == 0) {
-                    size_t old_len = strlen(changes[c].old_path);
                     size_t new_len = strlen(changes[c].new_path);
                     /* Check there's room in the existing command */
                     size_t name_off = dc->dylib.name.offset;
@@ -175,6 +185,16 @@ int main(int argc, char **argv) {
             strip_bv = 1;
             i++;
         } else if (strcmp(argv[i], "-rename_seg") == 0 && i + 2 < argc) {
+            /* segname is char[16]; compat/rename_segment.c:81 refuses a
+             * newname longer than that outright. Before this check,
+             * process_macho's strncpy(seg->segname, ..., 16) below silently
+             * truncated instead -- same operation, two disagreeing
+             * implementations. Refuse here too, before any file I/O, same
+             * as rename_segment does. */
+            if (strlen(argv[i+2]) > 16) {
+                fprintf(stderr, "new segment name longer than 16 bytes: %s\n", argv[i+2]);
+                return 1;
+            }
             renames[nrenames].old_name = argv[i+1];
             renames[nrenames].new_name = argv[i+2];
             nrenames++;
@@ -267,6 +287,14 @@ int main(int argc, char **argv) {
         if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); close(fd); return 1; }
         printf("File updated: %s\n", path);
     } else {
+        /* NOTE for the compat-retirement plan: rename_segment.c:125 exits 2
+         * ("nothing to do") when its rename matched no segment; this exits
+         * 0 here for the identical "nothing this run's operations touched"
+         * outcome, covering -change/-strip_build_version/-rename_seg alike.
+         * Left alone deliberately per this wave's scope -- not the LC set
+         * mismatch this wave fixed, just a second, separate exit-code
+         * divergence between the two tools worth resolving when fix_macho
+         * is retired behind macho9. */
         printf("No changes needed: %s\n", path);
     }
 

@@ -193,7 +193,15 @@ static int build_lcs_lc(const struct load_command *lc, void *ctx_) {
      * set -- they used to disagree about LC_LOAD_UPWARD_DYLIB. LC_ID_DYLIB
      * is added back in because it names the image itself: it has to be
      * recognized as dylib-shaped so `dc`/`name` below are valid, but it's
-     * excluded from matching just below, same as before. */
+     * excluded from matching just below, same as before.
+     *
+     * compat/fix_macho.c's `-change` implements this exact same question
+     * ("which dylib LCs can `-change` rewrite?") independently, and until
+     * this wave it hand-listed {LOAD, WEAK, ID, REEXPORT} -- silently
+     * missing LC_LOAD_UPWARD_DYLIB, so `fix_macho -change` reported "No
+     * changes needed" (exit 0) on exactly the input this function rewrites.
+     * fix_macho.c now uses mo_is_ordinal_lc() too, so it cannot drift from
+     * this set again; see its own copy of this comment. */
     if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
         const struct dylib_command *dc = (const struct dylib_command *)lc;
         if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
