@@ -800,11 +800,26 @@ fi
 #
 # Engineered precisely rather than hunted for: slice1 is $T/main at offset
 # 0x1000, forced (by the same 32-add idiom as cases 11/12) to grow by
-# exactly one page, from 8600 to 12696 bytes -- confirmed exactly this size
-# in case 11 above. That makes the post-growth cursor for whatever comes
-# after it (0x1000 + 12696 = 16792, rounded up to its 4096-byte alignment)
-# land at EXACTLY 0x5000 (20480) -- so slice0 is placed there, fixed, from
-# the start, guaranteeing the collision rather than hoping for one.
+# exactly one page, from 8600 to 12696 bytes on THIS host -- confirmed
+# exactly this size in case 11 above. That makes the post-growth cursor for
+# whatever comes after it (0x1000 + 12696 = 16792, rounded up to its
+# 4096-byte alignment) land at EXACTLY 0x5000 (20480) -- so slice0 is placed
+# there, fixed, from the start, guaranteeing a collision rather than hoping
+# for one -- ON THIS HOST.
+#
+# Portability trap (this suite's sixth round of one): $T/main's exact
+# compiled size is the host compiler's to decide, not this script's. On a
+# cross runner it differs, which changes not WHETHER the fixture collides
+# but WHICH of the two overlap guards catches it first: if the differently-
+# sized slices already overlap as DECLARED, mfat_parse's read-side check
+# refuses before the repack ever runs; only if they don't is this the
+# write-side check in process_fat's own reassembly. Both are correct
+# refusals of the exact same condition -- this asserts the observable
+# BEHAVIOUR (refuses, names an overlap, leaves the input untouched), not
+# which of the two call sites produced the message, so it passes either
+# way. Confirmed the write-side path specifically only on THIS (10.9) host;
+# it is not something this test can pin cross-host without controlling the
+# compiler's output, which it does not.
 cat > "$T/mk3fat.c" <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
@@ -879,8 +894,14 @@ if [ $rc -eq 0 ]; then
     # correctly, so a SUCCESSFUL exit here means the collision guard did not
     # run at all, not that a cleverer layout was found.
     bad "fat collision" "tool exited 0 on a layout engineered to collide -- the overlap guard did not fire"
-elif grep -qi 'overlapping offsets' "$T/fat3.err"; then
-    ok "fat collision: refused with a clear overlap message (exit $rc)"
+elif grep -qi 'overlap' "$T/fat3.err"; then
+    # Deliberately a loose substring, not the write-side message's exact
+    # wording ("overlapping offsets"): the read-side guard in mfat_parse
+    # ("...or two slices overlapping each other") is an equally correct
+    # refusal of the same condition, and which of the two fires is a
+    # function of this fixture's host-compiled sizes, not of anything this
+    # test controls. See the comment above for why.
+    ok "fat collision: refused with a diagnostic naming the overlap (exit $rc)"
 else
     bad "fat collision" "refused (exit $rc) but without an overlap diagnostic: $(head -1 "$T/fat3.err")"
 fi
