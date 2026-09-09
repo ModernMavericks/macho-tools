@@ -134,6 +134,17 @@ static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
  * command's name offset is out of bounds for its own cmdsize -- see
  * mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are unspecified on
  * failure; the caller must not use them.
+ *
+ * Left as a hand-rolled walk, not mi_each_lc: this loop threads FOUR mutable
+ * locals through every iteration (new_off, ncmds, mods, placed_inserts),
+ * branches on strip/insert/rename/rpath/delete in ways that change which of
+ * them get touched and in what order, and writes a whole new command table
+ * as it goes -- not a single accumulator like change_growth_bytes just
+ * above. Moving this into a callback plus a context struct would relocate
+ * the same complexity behind an extra indirection rather than remove any of
+ * it -- the "several locals, lateral move" case the toolkit plan says to
+ * leave alone, the same judgement already made for patch_macho's own main
+ * collecting loop.
  */
 static int build_lcs(const uint8_t *buf, const struct change *changes, int nchanges,
                       const char *const *adds, int nadds,
@@ -338,11 +349,54 @@ static int build_lcs(const uint8_t *buf, const struct change *changes, int nchan
     return 0;
 }
 
+struct cgb_ctx {
+    uint32_t growth;
+    const struct change *changes;  int nchanges;
+    const struct change *rchanges; int nrchanges;
+};
+
+static void cgb_lc(const struct load_command *lc, void *ctx_) {
+    struct cgb_ctx *ctx = ctx_;
+    uint32_t cmdsize = lc->cmdsize;
+
+    if (mo_is_ordinal_lc(lc->cmd)) {
+        const struct dylib_command *dc = (const struct dylib_command *)lc;
+        const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+        if (name) {
+            for (int c = 0; c < ctx->nchanges; c++) {
+                if (strcmp(name, ctx->changes[c].old_path) != 0) continue;
+                if (ctx->changes[c].new_path != NULL) {
+                    size_t base = dc->dylib.name.offset;
+                    size_t new_len = strlen(ctx->changes[c].new_path) + 1;
+                    uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+                    if (needed > cmdsize) ctx->growth += needed - cmdsize;
+                }
+                break;
+            }
+        }
+    } else if (lc->cmd == LC_RPATH) {
+        const struct rpath_command *rc = (const struct rpath_command *)lc;
+        const char *rp = mo_lc_str_at(lc, rc->path.offset);
+        if (rp) {
+            for (int c = 0; c < ctx->nrchanges; c++) {
+                if (strcmp(rp, ctx->rchanges[c].old_path) != 0) continue;
+                if (ctx->rchanges[c].new_path != NULL) {
+                    size_t base = rc->path.offset;
+                    size_t new_len = strlen(ctx->rchanges[c].new_path) + 1;
+                    uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+                    if (needed > cmdsize) ctx->growth += needed - cmdsize;
+                }
+                break;
+            }
+        }
+    }
+}
+
 /*
  * Exact (or, in one rare case, safely over-) budget for the extra bytes
  * build_lcs's -change/-change-rpath growth will write beyond each matched
  * command's ORIGINAL cmdsize -- computed by walking the real load commands
- * in `buf` the same way build_lcs's own matching loop does, instead of
+ * in `im` the same way build_lcs's own matching loop does, instead of
  * assuming "one grown command per -change/-change-rpath argument".
  *
  * That assumption was the bug: more than one load command can carry the same
@@ -370,50 +424,18 @@ static int build_lcs(const uint8_t *buf, const struct change *changes, int nchan
  * malformed command as a match -- build_lcs performs the same check and
  * refuses the whole operation before it would ever act on that command, so
  * excluding it here cannot lead to writing past what was budgeted.
+ *
+ * Pure read-only accumulation into one running total, unlike build_lcs's own
+ * walk just below (which writes a whole new load-command table and threads
+ * several more locals through the loop) -- that is what makes this one a
+ * plain mi_each_lc conversion and build_lcs not, see its comment.
  */
-static uint32_t change_growth_bytes(const uint8_t *buf, uint32_t ncmds,
+static uint32_t change_growth_bytes(const mi_image *im,
                                      const struct change *changes, int nchanges,
                                      const struct change *rchanges, int nrchanges) {
-    uint32_t growth = 0;
-    const uint8_t *lcp = buf + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)lcp;
-        uint32_t cmdsize = lc->cmdsize;
-
-        if (mo_is_ordinal_lc(lc->cmd)) {
-            const struct dylib_command *dc = (const struct dylib_command *)lcp;
-            const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
-            if (name) {
-                for (int c = 0; c < nchanges; c++) {
-                    if (strcmp(name, changes[c].old_path) != 0) continue;
-                    if (changes[c].new_path != NULL) {
-                        size_t base = dc->dylib.name.offset;
-                        size_t new_len = strlen(changes[c].new_path) + 1;
-                        uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
-                        if (needed > cmdsize) growth += needed - cmdsize;
-                    }
-                    break;
-                }
-            }
-        } else if (lc->cmd == LC_RPATH) {
-            const struct rpath_command *rc = (const struct rpath_command *)lcp;
-            const char *rp = mo_lc_str_at(lc, rc->path.offset);
-            if (rp) {
-                for (int c = 0; c < nrchanges; c++) {
-                    if (strcmp(rp, rchanges[c].old_path) != 0) continue;
-                    if (rchanges[c].new_path != NULL) {
-                        size_t base = rc->path.offset;
-                        size_t new_len = strlen(rchanges[c].new_path) + 1;
-                        uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
-                        if (needed > cmdsize) growth += needed - cmdsize;
-                    }
-                    break;
-                }
-            }
-        }
-        lcp += cmdsize;
-    }
-    return growth;
+    struct cgb_ctx ctx = { 0, changes, nchanges, rchanges, nrchanges };
+    mi_each_lc(im, cgb_lc, &ctx);
+    return ctx.growth;
 }
 
 /* process_one's return codes. PO_SKIP is not an error: it means `label` is not
@@ -500,7 +522,7 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
      * walking the actual load commands the same way build_lcs's matching
      * loop does -- see its own comment for the one (safe, over- not
      * under-) approximation it still makes. */
-    add_bytes += change_growth_bytes(buf, hdr->ncmds, changes, nchanges, rchanges, nrchanges);
+    add_bytes += change_growth_bytes(&im, changes, nchanges, rchanges, nrchanges);
 
     /* Map each existing 1-based library ordinal to its new value (0 = deleted),
      * built once by mo_map_build so this rewrite and the ordinal renumbering
@@ -956,9 +978,14 @@ int main(int argc, char **argv) {
     /* The O_RDWR fd is opened up front, as before -- that ordering is
      * load-bearing: it is what makes an unwritable file fail immediately
      * instead of after all the analysis has run and printed. It is no
-     * longer HELD for the write-back, though: write_atomic() below replaces
-     * `path` via a temp file + rename rather than writing through this fd
-     * directly, so it is closed as soon as the input has been read. */
+     * longer HELD for the write-back (write_atomic() below replaces `path`
+     * via a temp file + rename rather than writing through this fd
+     * directly), and -- restoring the mi_open/mi_release split this tool
+     * used before it grew fat support (see a41263d) -- it is no longer used
+     * for the THIN read either: only to learn the size/mode and to peek the
+     * magic, since a fat file's magic isn't MH_MAGIC_64 and mi_open (thin
+     * only) would refuse it outright. This is the one place that has to
+     * tell fat from thin apart before choosing how to read the rest. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
 
@@ -969,21 +996,15 @@ int main(int argc, char **argv) {
         close(fd);
         return 1;
     }
-    size_t fsize = (size_t)st.st_size;
-    uint8_t *buf = (uint8_t *)malloc(fsize);
-    if (!buf) { fprintf(stderr, "out of memory\n"); close(fd); return 1; }
-    if (read(fd, buf, fsize) != (ssize_t)fsize) {
-        perror("read"); close(fd); free(buf); return 1;
-    }
     mode_t orig_mode = st.st_mode;
-    close(fd);
 
-    /* Read the raw bytes ourselves (rather than mi_open) because a fat file's
-     * magic isn't MH_MAGIC_64 -- mi_open would refuse it outright, and this
-     * is the one place that has to tell "fat" from "thin" apart before
-     * either mi_wrap (thin, inside process_one) or the fat_header/fat_arch
-     * walk (process_fat) can run. */
-    uint32_t magic = *(uint32_t *)buf;
+    uint32_t magic;
+    if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, &magic, sizeof magic) != (ssize_t)sizeof magic) {
+        perror("read"); close(fd); return 1;
+    }
+
+    uint8_t *buf;
+    size_t fsize;
     int modified = 0;
     int rc;
 
@@ -995,29 +1016,53 @@ int main(int argc, char **argv) {
     if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
         fprintf(stderr, "%s: 64-bit fat Mach-O (fat_arch_64); not supported -- only the "
                         "32-bit-offset fat_arch container is\n", path);
-        free(buf);
+        close(fd);
         return 1;
     }
 
     if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
+        /* Fat: mi_open only understands a thin 64-bit Mach-O, so this is the
+         * one shape it cannot serve -- read the raw bytes ourselves.
+         * mfat_parse (inside process_fat) does this format's own
+         * validation. */
+        fsize = (size_t)st.st_size;
+        buf = (uint8_t *)malloc(fsize);
+        if (!buf) { fprintf(stderr, "out of memory\n"); close(fd); return 1; }
+        if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, buf, fsize) != (ssize_t)fsize) {
+            perror("read"); close(fd); free(buf); return 1;
+        }
+        close(fd);
         rc = process_fat(&buf, &fsize, changes, nchanges, adds, nadds,
                           inserts, ninserts, strip, nstrip, rchanges, nrchanges,
                           radds, nradds, allow_grow, &modified);
     } else {
+        /* Thin (or not a Mach-O at all): mi_open does the actual read and
+         * full validation -- cmdsize bounds/alignment and LC_SEGMENT_64/
+         * nsects agreement, none of which the magic-only peek above looked
+         * at. mi_release hands this function ownership of the buffer,
+         * needed because mg_grow_header (inside process_one, via -grow)
+         * reallocs it -- an mi_image left pointing at the old allocation
+         * would be a dangling pointer waiting for a mi_close that never
+         * comes. */
+        close(fd);
+        mi_image im;
+        if (mi_open(path, &im) != 0) {
+            fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
+            return 1;
+        }
+        fsize = im.size;
+        buf = mi_release(&im);
+
         int po = process_one(&buf, &fsize, path, changes, nchanges, adds, nadds,
                               inserts, ninserts, strip, nstrip, rchanges, nrchanges,
                               radds, nradds, allow_grow, &modified);
         if (po == PO_SKIP) {
-            /* By this point the file has already been open()'d O_RDWR,
-             * fstat'd, and fully read() -- "not READABLE" was never an
-             * accurate description of a PO_SKIP this late, and it collapsed
-             * three genuinely different causes (too short for a header, the
-             * wrong magic, or a magic-valid header whose load commands
-             * mi_wrap's own validation refuses) into one message that named
-             * none of them. Distinguish the three explicitly instead; an
-             * actually-unreadable file already failed earlier, at the
-             * open()/read() calls above, with its own perror()-based
-             * message. */
+            /* mi_open above already validated this exact buffer, so
+             * process_one's own mi_wrap cannot disagree -- PO_SKIP is
+             * unreachable here in practice. Kept for defense (process_one
+             * also serves process_fat's per-slice buffers, which are NOT
+             * pre-validated this way) and to preserve this tool's long-
+             * standing three-way diagnostic. */
             if (fsize < sizeof(struct mach_header_64)) {
                 fprintf(stderr, "%s: too short to be a 64-bit Mach-O (%zu bytes, need at "
                                 "least %zu)\n", path, fsize, sizeof(struct mach_header_64));
