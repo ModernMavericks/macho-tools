@@ -38,6 +38,20 @@ bad()  { echo "FAIL $1: $2"; fails=$((fails + 1)); }
 # omitted -- a silent skip is how coverage rots. Does not touch $fails.
 skip() { echo "SKIP $1: $2"; }
 
+# `set -e` means any bare command that exits nonzero kills the WHOLE script
+# immediately -- which has already happened for real (a helper's exit
+# convention bug took every verb's tests after it down silently, with only
+# a generic CTest error to show for it: twenty-plus assertions never ran,
+# and nothing said so). This does not remove `set -e` -- the fix stays
+# targeted -- but an early death is no longer silent: reached_end is set to
+# 1 only at the very end, right before the summary line, so an EXIT trap
+# firing while it is still 0 means the script did NOT reach its own
+# summary, and says so loudly, with the exit code that killed it.
+reached_end=0
+trap 'rc=$?; if [ "$reached_end" -eq 0 ]; then
+    echo "cli_test: FATAL -- aborted early (a command exited $rc under set -e); the suite did NOT run to completion, and everything after the last PASS/FAIL/SKIP line above never ran" >&2
+fi' EXIT
+
 # --- fixtures --------------------------------------------------------------
 cat > "$T/a.c" <<'EOF'
 int a_sym(void) { return 11; }
@@ -339,7 +353,13 @@ cat > "$T/strip_version_min.c" <<'EOF'
 /* Remove the FIRST LC_VERSION_MIN_MACOSX load command from a Mach-O file,
  * in place: memmove the load commands after it down over it, zero the
  * freed tail bytes (they become header pad), and fix up ncmds/sizeofcmds.
- * Exit 0 = removed, 3 = none present (nothing to do), 2 = error. */
+ *
+ * The GOAL is a fixture that LACKS LC_VERSION_MIN_MACOSX, not "removed one".
+ * A 2026 linker emits LC_BUILD_VERSION instead of LC_VERSION_MIN_MACOSX in
+ * the first place (a 10.9-era linker emits the latter), so on a cross host
+ * there is nothing to strip -- the goal is already met. That is SUCCESS,
+ * not an error: exit 0 either way. Only a genuine failure to remove one
+ * that IS present is exit 2. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -374,7 +394,7 @@ int main(int argc, char **argv) {
         }
         lcp += lc->cmdsize;
     }
-    if (!found_size) { fprintf(stderr, "no LC_VERSION_MIN_MACOSX present\n"); return 3; }
+    if (!found_size) { printf("no LC_VERSION_MIN_MACOSX present; nothing to strip (goal already met)\n"); return 0; }
 
     uint32_t lc_end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
     uint32_t after = found_off + found_size;
@@ -392,16 +412,31 @@ EOF
 "$CC" -O2 -o "$T/strip_version_min" "$T/strip_version_min.c"
 
 build_main "$T/minos_fixture"
-"$T/strip_version_min" "$T/minos_fixture"
-strip_rc=$?
-if [ "$strip_rc" -eq 2 ]; then
-    bad "minos: fixture setup" "strip_version_min failed unexpectedly (exit 2)"
-elif [ "$strip_rc" -ne 0 ] && [ "$strip_rc" -ne 3 ]; then
-    bad "minos: fixture setup" "strip_version_min exited $strip_rc"
+# A BARE invocation here would let `set -e` kill the WHOLE script the
+# instant this ever exits nonzero -- which used to happen legitimately
+# (before the exit-0-on-"already absent" fix above) and took every later
+# verb's tests down with it, silently, with only a generic CTest error to
+# show for it. Wrapped in `if` so a genuine failure is reported as ONE
+# assertion (via bad(), below) and the suite keeps running.
+if "$T/strip_version_min" "$T/minos_fixture" >"$T/strip_version_min.out"; then
+    strip_rc=0
+else
+    strip_rc=$?
 fi
+if [ "$strip_rc" -ne 0 ]; then
+    bad "minos: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
+fi
+# The precondition is specifically "no LC_VERSION_MIN_MACOSX" -- that is the
+# ONE load command macho9 minos adds, and the thing the "present after"
+# assertion below checks for. LC_BUILD_VERSION is a DIFFERENT load command a
+# modern linker emits instead (add_version_min.c only ever looks for
+# LC_VERSION_MIN_MACOSX, so LC_BUILD_VERSION's presence is orthogonal to
+# this test, not a disqualifier) -- asserting its absence too would be
+# asserting something about LC_BUILD_VERSION this test does not need and
+# cannot always get.
 before_minos=$("$MACHO9" info "$T/minos_fixture")
-if echo "$before_minos" | grep -qE "LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION"; then
-    bad "minos: precondition" "fixture still carries a platform/version-min load command"
+if echo "$before_minos" | grep -q "LC_VERSION_MIN_MACOSX"; then
+    bad "minos: precondition" "fixture still carries LC_VERSION_MIN_MACOSX"
 else
     ok "minos: fixture genuinely has no LC_VERSION_MIN_MACOSX before"
 fi
@@ -662,5 +697,6 @@ fi
 grep -qi "not implemented" "$T/rpath_insert.err" && ok "rpath: -insert says why" \
     || bad "rpath: -insert message" "no 'not implemented' on stderr"
 
+reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]
