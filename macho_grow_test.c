@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -705,27 +706,74 @@ static void test_grow_refuses_unknown_section_type(void) {
  * regression-tested fact rather than an accidental side effect of the 64-bit-
  * only design. See docs/prior-art.md for the write-up.
  *
- * Deliberately does NOT reuse build_image/check_refused_unchanged: those build
- * a mach_header_64-shaped image, and the whole point here is a buffer whose
- * FIRST four bytes are the 32-bit MH_MAGIC, not MH_MAGIC_64. */
+ * Reviewed and found tautological in its first form: it built a minimal
+ * ncmds=0 image with a 32-bit magic and checked mg_grow_header returned -1.
+ * Under a mutated magic check (`!= MH_MAGIC_64` -> `!= MH_MAGIC_64 && !=
+ * MH_MAGIC`) it still passed -- ncmds=0 means mg_first_sect_off finds no
+ * sections and refuses on its OWN account, so the test was really pinning
+ * "an image with no sections gets refused somewhere", not "32-bit magic
+ * gets refused at the magic check". First fix attempt: build the fixture from
+ * build_growable_image()'s output -- a genuinely complete, otherwise-valid
+ * image that mg_grow_header actually succeeds on -- and change ONLY its
+ * magic. That still doesn't discriminate THIS check on its own: mg_first_sect_off
+ * calls mi_wrap (src/image.c), which independently re-validates the magic, so
+ * mutating ONLY mg_grow_header's own check leaves mi_wrap's guard catching the
+ * same fixture a few lines later, still returning -1 -- true defense in depth,
+ * but it means the return code alone can't tell which check fired. So this
+ * asserts on the SPECIFIC diagnostic mg_grow_header's own check prints
+ * ("deliberately unsupported format"), not just the return code: mutate away
+ * mg_grow_header's check and mi_wrap's still refuses (r stays -1) but with ITS
+ * message ("fails validation... refusing to guess the header pad boundary"),
+ * which does not contain that phrase -- so the message assertion below is what
+ * flips to FAIL. Confirmed by hand: mutating macho_grow.h's check flips this
+ * exact CHECK, though not `r == -1`. */
+static int stderr_contains_during(int (*call)(uint8_t **, size_t *, uint32_t),
+                                   uint8_t **pbuf, size_t *pfsize, uint32_t grow,
+                                   const char *needle, int *ret_out) {
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = "/tmp";
+    char path[512];
+    snprintf(path, sizeof path, "%s/macho_grow_test_stderr.%d", tmpdir, (int)getpid());
+
+    fflush(stderr);
+    int saved_fd = dup(fileno(stderr));
+    if (!freopen(path, "w", stderr)) { *ret_out = call(pbuf, pfsize, grow); return 0; }
+
+    *ret_out = call(pbuf, pfsize, grow);
+
+    fflush(stderr);
+    dup2(saved_fd, fileno(stderr));   /* restore the real stderr */
+    close(saved_fd);
+    clearerr(stderr);
+
+    int found = 0;
+    FILE *rf = fopen(path, "r");
+    if (rf) {
+        char line[1024];
+        while (fgets(line, sizeof line, rf))
+            if (strstr(line, needle)) { found = 1; break; }
+        fclose(rf);
+    }
+    unlink(path);
+    return found;
+}
+
 static void test_grow_refuses_32bit_mach_header(void) {
-    const size_t fsize = 4096;
-    uint8_t *buf = (uint8_t *)calloc(1, fsize);
-    struct mach_header *h = (struct mach_header *)buf;
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_growable_image(&fsize, &sect_off);
+    struct mach_header *h = (struct mach_header *)buf;   /* same offset as ->magic in _64 */
     h->magic = MH_MAGIC;
-    h->cputype = CPU_TYPE_I386;
-    h->cpusubtype = CPU_SUBTYPE_I386_ALL;
-    h->filetype = MH_EXECUTE;
-    h->ncmds = 0;
-    h->sizeofcmds = 0;
-    h->flags = MH_PIE;
 
     uint8_t *before = (uint8_t *)malloc(fsize);
     memcpy(before, buf, fsize);
 
     size_t got_fsize = fsize;
-    int r = mg_grow_header(&buf, &got_fsize, 0x1000);
+    int r;
+    int mentioned = stderr_contains_during(mg_grow_header, &buf, &got_fsize, 0x1000,
+                                            "deliberately unsupported format", &r);
     CHECK(r == -1, "mg_grow_header refuses a 32-bit Mach-O (got %d)", r);
+    CHECK(mentioned, "refusal is mg_grow_header's OWN 32-bit check, not a downstream "
+                     "guard incidentally catching the same fixture");
     CHECK(got_fsize == fsize, "size unchanged on refusal (got %zu want %zu)", got_fsize, fsize);
     if (got_fsize == fsize)
         CHECK(memcmp(before, buf, fsize) == 0, "buffer byte-identical on refusal");

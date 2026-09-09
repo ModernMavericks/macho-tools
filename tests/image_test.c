@@ -142,9 +142,20 @@ static void test_wrap_refuses_bad_magic(void) {
  * not "junk", it is a real, well-formed format this module deliberately does
  * not support (see image.h's file header -- "32-bit and fat are known gaps,
  * filed as Task 5"). Pinning it by name keeps that refusal from being an
- * accident of the generic magic check ever regressing into something looser. */
+ * accident of the generic magic check ever regressing into something looser.
+ *
+ * Reviewed and found tautological in its first form: a buffer sized to
+ * sizeof(struct mach_header) (28 bytes) is caught by mi_validate's `size <
+ * sizeof(mach_header_64)` (32 bytes) check BEFORE the magic check ever runs,
+ * so the test passed even under a mutation that let 32-bit magic through the
+ * check it claims to pin -- it was testing the size guard, not the magic
+ * one. Fixed by padding the buffer to sizeof(struct mach_header_64): now the
+ * ONLY thing wrong with it is the magic, so weakening the magic check (e.g.
+ * `hdr->magic != MH_MAGIC_64` -> `hdr->magic != MH_MAGIC_64 && hdr->magic !=
+ * MH_MAGIC`) makes mi_wrap accept it and this test fails. Confirmed by hand:
+ * that exact mutation flips this CHECK from pass to fail. */
 static void test_wrap_refuses_32bit_mach_header(void) {
-    uint8_t buf[sizeof(struct mach_header)];
+    uint8_t buf[sizeof(struct mach_header_64)];
     memset(buf, 0, sizeof buf);
     struct mach_header *h = (struct mach_header *)buf;
     h->magic = MH_MAGIC;
