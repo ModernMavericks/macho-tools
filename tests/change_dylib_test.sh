@@ -172,6 +172,35 @@ int main(int argc, char **argv) {
 EOF
 "$CC" -O2 -o "$T/ordinal_of" "$T/ordinal_of.c"
 
+# has_bytes FILE NEEDLE: exit 0 if NEEDLE's bytes appear anywhere in FILE,
+# 1 if not, 2 on error. A plain byte-search (memmem), not grep/otool/nm --
+# built once here so every case below that just needs "is this path string
+# present/absent in the rewritten file" (case 8b's fix_macho -change dylib
+# path, and the long-path case further down) shares one implementation
+# instead of each hand-rolling its own oracle.
+cat > "$T/has_bytes.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file needle\n", argv[0]); return 2; }
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st; fstat(fd, &st);
+    char *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    size_t nlen = strlen(argv[2]);
+    return memmem(buf, (size_t)st.st_size, argv[2], nlen) != NULL ? 0 : 1;
+}
+EOF
+"$CC" -O2 -o "$T/has_bytes" "$T/has_bytes.c"
+
 # makefat/fatcheck: build and inspect a fat (universal) Mach-O without
 # depending on system lipo, whose accepted architecture list is not this
 # suite's to pin -- a hand-crafted fat container is something we control
@@ -620,16 +649,21 @@ if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then
     new_install_name="@loader_path/libupd_c.dylib"
     out=$("$FIX_MACHO" "$T/libupd_a_for_fixmacho.dylib" \
         -change "$old_install_name" "$new_install_name" 2>&1) || bad "fix_macho -change upward" "tool run failed: $out"
-    deps=$(otool -L "$T/libupd_a_for_fixmacho.dylib")
+    # has_bytes (built above, shared with the long-path case further down),
+    # not `otool -L | grep`: the same lesson-two oracle this wave's own
+    # tests/chained-fixups.sh fix removed elsewhere in this diff. otool -L's
+    # dependency-list FORMAT is exactly the kind of thing this project does
+    # not control across OS releases; a raw byte-search over the rewritten
+    # file's own bytes asks the same question regardless.
     if echo "$out" | grep -q "No changes needed"; then
         bad "fix_macho -change upward" "reported no changes needed -- LC_LOAD_UPWARD_DYLIB not rewritten"
-    elif echo "$deps" | grep -q "$new_install_name"; then
+    elif "$T/has_bytes" "$T/libupd_a_for_fixmacho.dylib" "$new_install_name"; then
         ok "fix_macho -change: an LC_LOAD_UPWARD_DYLIB is rewritten like any other dylib LC"
     else
-        bad "fix_macho -change upward" "new path not found in dependencies: $deps"
+        bad "fix_macho -change upward" "new path ($new_install_name) not found in the rewritten file"
     fi
-    if echo "$deps" | grep -q "$old_install_name"; then
-        bad "fix_macho -change upward" "old path still present: $deps"
+    if "$T/has_bytes" "$T/libupd_a_for_fixmacho.dylib" "$old_install_name"; then
+        bad "fix_macho -change upward" "old path ($old_install_name) still present in the rewritten file"
     fi
 else
     bad "fix_macho -change upward" "pristine copy from case 8 missing; case 8 must have skipped"
@@ -1354,33 +1388,13 @@ grep -qi "overlapping" "$T/overlap_fix.out" \
 build_main "$T/longchange_fixture"
 LONG_PATH=$(printf 'Q%.0s' $(seq 1 9000))
 
-# Checked with a tiny C byte-search (memmem), not grep: this host's `grep`
-# (ugrep) reports "out of memory" trying to fixed-string-match a 9000-byte
-# pattern against a binary file -- a grep quirk, not a change_dylib one, but
-# a good reminder that even a non-otool/nm text tool can ask a different
-# question (or none at all) depending on what's on a given host's PATH.
-cat > "$T/has_bytes.c" <<'EOF'
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: %s file needle\n", argv[0]); return 2; }
-    int fd = open(argv[1], O_RDONLY);
-    if (fd < 0) { perror("open"); return 2; }
-    struct stat st; fstat(fd, &st);
-    char *buf = malloc((size_t)st.st_size);
-    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
-        fprintf(stderr, "read failed\n"); return 2;
-    }
-    close(fd);
-    size_t nlen = strlen(argv[2]);
-    return memmem(buf, (size_t)st.st_size, argv[2], nlen) != NULL ? 0 : 1;
-}
-EOF
-"$CC" -O2 -o "$T/has_bytes" "$T/has_bytes.c"
+# has_bytes was already built above (right after ordinal_of), shared with
+# case 8b -- checked with a tiny C byte-search (memmem), not grep: this
+# host's `grep` (ugrep) reports "out of memory" trying to fixed-string-match
+# a 9000-byte pattern against a binary file -- a grep quirk, not a
+# change_dylib one, but a good reminder that even a non-otool/nm text tool
+# can ask a different question (or none at all) depending on what's on a
+# given host's PATH.
 
 # Without -grow: must refuse cleanly (header pad can't possibly hold a
 # 9000-byte path), never crash.
