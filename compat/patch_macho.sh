@@ -172,7 +172,7 @@ if [ ! -e "$mw_out" ]; then
         printf 'create output: cannot create %s\n' "$mw_out" >&2
         exit 1
     fi
-    if ! chmod "$(printf '%o' "$(( 0755 & ~0$mw_umask ))")" "$mw_out"; then
+    if ! chmod "$(printf '%o' "$(( 0755 & ~0$mw_umask ))")" "$mw_out" 2>/dev/null; then
         printf '%s: WARNING: could not chmod %s to %s; leaving it at the more\n' \
             "$0" "$mw_out" "$(printf '%o' "$(( 0755 & ~0$mw_umask ))")" >&2
         printf '%s: restrictive mode the create step used instead\n' "$0" >&2

@@ -91,8 +91,8 @@
 #      travels through that rewriter.
 #
 #      It is the same SHAPE as the mg_plausible gate described below -- an
-#      ordinal-related gate running on an operation set that cannot
-#      renumber -- but a different call site, so it does not fall out of
+#      offset-related gate running on an operation set that cannot move
+#      offsets -- but a different call site, so it does not fall out of
 #      that fix. The smallest fix would be to skip building the ordinal map
 #      when nothing in the operation set can renumber, which is a change to
 #      macho9, not to this wrapper. Reported rather than made.

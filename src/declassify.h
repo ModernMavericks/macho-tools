@@ -85,8 +85,14 @@
  *     roughly 27 bytes for a typical symbol name, so the bind budget is
  *     reached around 40k fixups, not 200k. A binary with more fixups than
  *     its budget allows is MDCL_REFUSED, not a binary whose remaining
- *     pointers silently go unrebased. The bind budget is the one a very
- *     large modern binary reaches first.
+ *     pointers silently go unrebased. Which budget is reached first is not
+ *     fixed -- it depends on the image's rebase:bind ratio, and because a
+ *     bind costs roughly 5x what a rebase does, the bind budget is the one
+ *     reached first only when binds outnumber rebases by more than about
+ *     1:5, which is the opposite of the ratio the one real overflow seen so
+ *     far has: src/declassify.c's opcode-buffer comment measures it as
+ *     rebase-heavy, on the Node binary install.sh fetches and runs this
+ *     conversion over.
  *   2MB of slack past the end of the file, which both finished streams plus
  *     their 8-byte alignment must fit inside -- MDCL_REFUSED otherwise.
  *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY, and a __LINKEDIT

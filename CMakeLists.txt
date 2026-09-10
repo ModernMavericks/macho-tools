@@ -269,8 +269,9 @@ add_test(NAME wrapper_test
 # says it outright -- "A wrapper that passes the test suite but breaks a real
 # caller is a failure" -- and weights the argument sweep as discovery and
 # these replays as decisive. Each pipeline's result is pinned to the SHA-256
-# the pre-Task-2 C binaries produced from tests/fixture.macho on real 10.9,
-# the same device tests/EXPECTED uses.
+# the C binaries built from commit 91b30b3 (the last commit carrying all six
+# compat/*.c files) produced from tests/fixture.macho on real 10.9, the same
+# device tests/EXPECTED uses.
 add_test(NAME known_callers
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/known-callers.sh" "$<TARGET_FILE_DIR:macho9>")
 

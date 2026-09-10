@@ -99,8 +99,10 @@ elif command -v macho9 >/dev/null 2>&1; then
     # refuse: refusing would break that legitimate case outright.
     printf '%s: WARNING: macho9 is not next to me in %s; using whatever\n' "$0" "$MW_DIR" >&2
     printf '%s: "macho9" resolves to on PATH instead, which may not be the\n' "$0" >&2
-    printf '%s: same build (set MACHO9_COMPAT_DIR to silence this by pointing\n' "$0" >&2
-    printf '%s: it at where macho9 actually is)\n' "$0" >&2
+    printf '%s: same build. MACHO9_COMPAT_DIR must name a directory that\n' "$0" >&2
+    printf '%s: already has macho9-compat.sh and macho9-translate.sh in it\n' "$0" >&2
+    printf '%s: (this one does), so silencing this means putting or linking\n' "$0" >&2
+    printf '%s: the macho9 you want right there, not just anywhere on PATH\n' "$0" >&2
 else
     printf '%s: macho9 is not next to me in %s and not on PATH; this tool is a\n' "$0" "$MW_DIR" >&2
     printf '%s: wrapper around it and cannot do anything without it\n' "$0" >&2
