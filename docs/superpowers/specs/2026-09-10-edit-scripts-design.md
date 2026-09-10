@@ -1,4 +1,4 @@
-# `macho9 rewrite` — edit scripts
+# `macho9 edit` — edit scripts
 
 **Status:** design, agreed 2026-09-10. Supersedes the `port` verb sketched in
 `docs/PROPOSAL.md`, including its name.
@@ -132,7 +132,7 @@ did three replacements from argv; the actual job sits on its boundary, and any
 application needing one more framework than Zoom — or an edit script that also deletes
 or re-exports something — exceeds it. **An edit script read from a file has no reason
 to inherit an argv-shaped cap**: the fixed-size arrays exist because
-`compat/change_dylib.c` accumulated into `changes[32]` on the stack. `rewrite`
+`compat/change_dylib.c` accumulated into `changes[32]` on the stack. `edit`
 should size from the parsed edit script. Note the caps must remain for the compat
 wrappers, which reproduce the old tools' refusal exactly — this is a difference
 between the two front-ends, not a lifting of the limit everywhere.
@@ -218,17 +218,149 @@ relinked"*.
 
 ## What this design does
 
-Adds one verb, `macho9 rewrite`, which takes a **edit script**: a flat sequence of
+Adds one verb, `macho9 edit`, which takes an **edit script**: a flat sequence of
 statements applied to one in-memory image, verified, and written once.
 
 ```
-macho9 rewrite FILE SCRIPT                 # rewrite FILE in place
-macho9 rewrite FILE SCRIPT --output OUT    # write elsewhere; FILE untouched
-macho9 rewrite FILE -                      # edit script on stdin
+macho9 edit FILE SCRIPT                 # rewrite FILE in place
+macho9 edit FILE SCRIPT --output OUT    # write elsewhere; FILE untouched
+macho9 edit FILE -                      # edit script on stdin
 ```
 
 `install.sh`'s three writes collapse to one. The mixed-family split disappears,
 and with it the temp-copy dance and its extra 200MB.
+
+## Examples
+
+A script's extension is not enforced; `.edits` is used here for readability.
+
+### The production case — three tools, three writes, become one
+
+Today, from `install.sh`:
+
+```sh
+patch_macho     "$REAL" "$T"
+add_version_min "$T"
+change_dylib    "$T" -strip-lc uuid -strip-lc codesig \
+    -change "/usr/lib/libSystem.B.dylib"  "@loader_path/../S.dylib" \
+    -change "/usr/lib/libicucore.A.dylib" "@loader_path/../I.dylib" \
+    -change "/usr/lib/libc++.1.dylib"     "@loader_path/../c++.1.dylib"
+```
+
+After — `claude.edits`:
+
+```
+# Claude Code -> 10.9
+fixups        lower
+version-min   set      10.9
+load-command  delete   uuid
+load-command  delete   codesig
+dylib         replace  /usr/lib/libSystem.B.dylib   @loader_path/../S.dylib
+dylib         replace  /usr/lib/libicucore.A.dylib  @loader_path/../I.dylib
+dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
+```
+
+```sh
+macho9 edit "$REAL" claude.edits --output "$T"
+```
+
+Three full writes of a 208MB binary become one, and a failure at any statement
+leaves `$REAL` untouched instead of `$T` half-converted.
+
+### Framework substitution — the Zoom and Electron workload
+
+```
+# zoom.edits -- repoint frameworks 10.9 lacks at the stubs beside the binary
+allow-grow
+
+fixups        lower
+version-min   set      10.9
+swift-abi     set      legacy
+segment       rename   __DATA_CONST  __DATA
+
+dylib  replace  /System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation      @loader_path/libAVFoundationWrapper.dylib
+dylib  replace  /System/Library/Frameworks/CoreSpotlight.framework/Versions/A/CoreSpotlight    @loader_path/libCoreSpotlightStub.dylib
+dylib  replace  /System/Library/Frameworks/UserNotifications.framework/Versions/A/UserNotifications  @loader_path/libUserNotificationsStub.dylib
+dylib  replace  /System/Library/Frameworks/Metal.framework/Versions/A/Metal                    @loader_path/libMetalStub.dylib
+dylib  replace  /System/Library/Frameworks/Network.framework/Versions/A/Network                @loader_path/libNetworkStub.dylib
+# ... 27 more, one per framework in frameworks.json
+
+rpath  insert   @loader_path/../Frameworks
+```
+
+Thirty-two of these is a reviewable diff. Thirty-two of these as a command line
+is not — and it would exceed the old 32-operation cap, which is why `edit` sizes
+from the parsed script instead.
+
+### Every CLI verb is sugar for a one-line script
+
+```sh
+macho9 dylib FILE -replace A B          # equivalent to:  dylib replace A B
+macho9 load-command FILE -delete uuid   # equivalent to:  load-command delete uuid
+macho9 minos FILE 10.9                  # equivalent to:  version-min set 10.9
+```
+
+### Generated on the fly, so no temp file
+
+```sh
+macho9 edit "$target" - <<'EOF'
+load-command  delete   uuid
+dylib         replace  /usr/lib/libSystem.B.dylib  @loader_path/../S.dylib
+EOF
+```
+
+### Verbose — including the work you did not ask for by name
+
+```
+$ macho9 edit --verbose /tmp/claude claude.edits
+/tmp/claude: header pad 96 bytes available (LC end=2784, first sect=2880)
+  fixups lower
+      chained fixups -> LC_DYLD_INFO_ONLY
+      94,912 rebases and 3,181 binds emitted (462 KB of opcodes)
+      stripped LC_DYLD_EXPORTS_TRIE, LC_BUILD_VERSION
+      __LINKEDIT extended by 462 KB
+  version-min set 10.9
+      appended LC_VERSION_MIN_MACOSX 10.9.0 (+16 bytes)
+  load-command delete uuid
+      removed LC_UUID (-24 bytes)
+  dylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
+      [56 -> 56 bytes] ordinal 1 unchanged
+/tmp/claude: verified
+/tmp/claude: written (208,526,708 bytes)
+```
+
+And where an operation carries follow-ups, the follow-ups are what the log is
+for — this is the part a user cannot see for themselves:
+
+```
+  dylib delete @loader_path/libspare.dylib
+      removed LC_LOAD_DYLIB (was ordinal 4)
+      renumbered 3 surviving ordinals: 5->4, 6->5, 7->6
+          12 nlist entries updated
+          847 SET_DYLIB_ORDINAL opcodes updated (bind 811, weak 0, lazy 36)
+```
+
+### A refusal, and a dry run
+
+```
+$ macho9 edit /tmp/claude claude.edits
+  dylib delete /usr/lib/libicucore.A.dylib
+      ERROR: a symbol still binds to the dylib being deleted
+macho9 edit: refused at statement 6 of 9; /tmp/claude left unmodified
+$ echo $?
+1
+```
+
+```
+$ macho9 edit --dry-run --verbose /tmp/claude claude.edits
+  ... every statement applied and reported, exactly as above ...
+/tmp/claude: verified
+/tmp/claude: NOT written (--dry-run) -- would be 208,526,708 bytes
+$ echo $?
+0
+```
+
+The dry run is accurate because it is the same run: only the write is skipped.
 
 ## Statements
 
@@ -443,7 +575,7 @@ containing `$( )`, backticks, semicolons, globs, spaces and leading dashes — s
 the generator and the parser cannot drift.
 
 ```
-# port-claude.mes
+# port-claude.edits
 allow-grow
 fixups        lower
 version-min   set      10.9
@@ -481,7 +613,7 @@ data-dependent follow-ups a static explanation could never show. It is the one
 part of this design that is nearly free, and it falls out of applying to an
 in-memory image and writing once.
 
-`rewrite` uses the verbs' existing exit codes, unchanged: `0` on success, `2`
+`edit` uses the verbs' existing exit codes, unchanged: `0` on success, `2`
 where it examined the file and declined on purpose (a refused statement, a
 failed verify, or an unmatched operation under `fatal-warnings`), `1` for an
 operational failure (a syscall, a malloc, an unparseable edit script). An edit script that
@@ -514,7 +646,7 @@ invariant applies when `LC_FUNCTION_STARTS` is present") could not have grown a
 base-of-zero sentinel, because nobody writing the declaration would have written
 one.
 
-This widens the design past the `rewrite` verb: it touches `src/grow.c`'s
+This widens the design past the `edit` verb: it touches `src/grow.c`'s
 verification, which the script language does not otherwise care about. That cost
 is accepted rather than hidden, for two reasons. A mandatory verify gate is only
 worth having if the thing it runs is trustworthy, and this design makes verify
@@ -555,7 +687,7 @@ state and one test to check.
 
 | was | is | why |
 |---|---|---|
-| `port` | `rewrite` | "port" collides with Mach ports, in a Mach-O tool. `rewrite` is this codebase's own word — `src/rewrite.c`, prefix `mr_`, *"rewriting a Mach-O's dylib load commands and LC_RPATHs in place"* — and separates cleanly from `info` and `verify`, the verbs that do not rewrite |
+| `port` | `edit` | "port" collides with Mach ports, in a Mach-O tool, and "apply" is too broad. `edit` names what it does to the binary and matches the artifact it takes — an edit script — and separates cleanly from `info` and `verify`, the verbs that do not change the file |
 | `lc` | `load-command` | matches `otool -l`'s own term and the spec's stated principle that "the family is a subcommand, the operation is a flag, and both are always explicit". Also retires the `-strip-lc` spelling, which invited confusion with binutils' `strip` (symbols and debug info) |
 | `declassify` | `fixups lower` | gives it a family, where it was the one family-less verb. "Lower" is the compiler term for translating to a more primitive representation, which is exactly what it does: chained fixups (macOS 12+) down to `LC_DYLD_INFO_ONLY` (10.6+) |
 | `retag-swift` | `swift-abi set legacy` | it is the same kind of operation as `version-min` — adjusting what the binary claims about its deployment target so an older runtime accepts it — so it is named to match rather than as a one-off verb. See "Why `swift-abi`, not `retag-swift`" |
@@ -711,11 +843,11 @@ condition for raising it, not an oversight.
 
 ## Consumers
 
-`compat/translate.sh` emits a `rewrite` edit script whenever a translated invocation
+`compat/translate.sh` emits an `edit` script whenever a translated invocation
 needs more than one `macho9` command, and the plain verb otherwise. That targets
 exactly the case that measured harm without churning single-command paths.
 
-`compat/patch_macho.sh` can become a `rewrite --output` call, since `--output`
+`compat/patch_macho.sh` can become an `edit --output` call, since `--output`
 subsumes its `IN OUT` shape.
 
 Once both hold, `compat/macho9-compat.sh`'s temp-copy-and-install dance has no
