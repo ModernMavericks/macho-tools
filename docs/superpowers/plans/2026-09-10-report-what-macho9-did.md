@@ -3,11 +3,15 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `macho9` say which requested operations matched nothing — and use
-that to retire `compat/fix_macho.c`, the last C rewriting tool, so `macho9`
+**Goal:** Un-blind the safety gate that has been refusing every dylib for the
+wrong reason; make `macho9` say which requested operations matched nothing; and
+use that to retire `compat/fix_macho.c`, the last C rewriting tool, so `macho9`
 becomes the only Mach-O rewriting binary this repo ships.
 
-**Architecture:** The rewriter already reports what it *did* (`Change [...]`,
+**Architecture:** Task 0 is an unrelated safety fix that jumped this queue: a
+spike found `mg_plausible` refuses every dylib at a precondition that mistakes a
+legitimate image base of 0 for "no segment maps the header", so the check it
+exists to perform never runs. Then: the rewriter already reports what it *did* (`Change [...]`,
 `Delete [...]`, `Insert [...]`). It says nothing about what it was asked to do
 and didn't. Task 1 adds per-operation hit accounting inside `src/rewrite.c` and
 reports unmatched operations on **stderr**, so the five existing wrappers'
@@ -90,6 +94,8 @@ own `tests/change_dylib_test.sh`.
 
 | file | responsibility | task |
 |---|---|---|
+| `src/image.h`, `src/image.c` | **new** `mi_image_base()` — the base a caller can distinguish from "no header-mapping segment" | 0 |
+| `src/grow.c` | two call sites stop treating a legitimate base of 0 as "not found" | 0 |
 | `src/rewrite.c` | hit accounting inside `mr_build_lcs`; unmatched report in `mr_apply_file` | 1, 2 |
 | `src/rewrite.h` | `mr_ops` gains `strict_unmatched`; the layout tripwire's literals move | 2 |
 | `cli/macho9.c` | `--strict` flag on `dylib`/`rpath`/`lc`; `--capabilities` advertises it | 2 |
@@ -101,6 +107,147 @@ own `tests/change_dylib_test.sh`.
 | `tests/translate_test.sh` | chained-rename now translates rather than refusing | 3 |
 | `tests/change_dylib_test.sh` | its `fix_macho` cases move to the wrapper's behaviour | 3 |
 | `CMakeLists.txt` | `fix_macho` moves from `MACHO_TOOLS` to `MACHO_WRAPPERS` | 3 |
+
+---
+
+### Task 0: Un-blind the safety gate on dylibs
+
+**Files:**
+- Modify: `src/image.h`, `src/image.c` (add `mi_image_base`)
+- Modify: `src/grow.c` (`mg_collect` ~`:203-204`, `mg_plausible` ~`:679-680`)
+- Test: `tests/cli_test.sh`, `tests/change_dylib_test.sh`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `int mi_image_base(const mi_image *im, uint64_t *out);` — returns 0
+  and sets `*out` when a segment maps the header (the base may legitimately be
+  0), or -1 when none does. `mi_text_base` is **unchanged** and keeps its third
+  caller; do not reroute it.
+
+**The diagnosis, so you do not have to re-derive it.** `mg_plausible` refuses
+every dylib on this machine — all 26 thin 64-bit dylibs in `/usr/lib` — and the
+reason has nothing to do with plausibility. It bails at its precondition
+`if (!base) return -1`, where `base` comes from `mi_text_base`. **Dylibs are
+linked at image base 0**, and `mi_text_base` uses 0 as its "no segment maps the
+header" sentinel. The `LC_FUNCTION_STARTS` heuristic never runs.
+
+The symptom is visible from outside, which is worth knowing when you write the
+tests:
+
+```
+$ macho9 verify <a thin 64-bit /usr/lib dylib>
+<file>: FAILED (see above)          <- nothing above it: no entry was checked
+$ macho9 info <same>
+<file>: ... filetype=6
+  segname=__TEXT vmaddr=0x0 ...
+$ macho9 verify /bin/ls
+/bin/ls: OK                          <- filetype=2, __TEXT vmaddr=0x100000000
+```
+
+Forcing `__TEXT.vmaddr` to `0x100000000` in a scratch copy makes the
+**unmodified** gate pass all 20 measured samples with zero misses
+(`libc++.1.dylib` alone: 481/481 function-naming entries). The heuristic is
+sound; the precondition is wrong.
+
+**This has been hit before and misdiagnosed.** `tests/change_dylib_test.sh`
+around `:609-615` works around it with `MACHO_NO_VERIFY=1`, explaining that the
+fixture's *"plain `__TEXT` layout doesn't satisfy `mg_plausible`'s
+`LC_FUNCTION_STARTS` heuristic … so it's not something the ordinal fix
+introduces … opts out of that unrelated gate."* Half right: it does fail
+regardless of any rewrite. But the heuristic was never unsatisfied — it never
+ran — and the fixture is a dylib. That workaround is your regression test.
+
+**Blast radius.** `mg_verify` and `mg_snapshot_take` carry the same guard, so
+the grow path's verification is equally blind on every dylib. And because
+`mr_process_thin` gates on `mg_plausible`, `change_dylib` and `macho9
+dylib`/`rpath`/`lc` have been **refusing every dylib outright**, for a reason
+unrelated to safety. It went unnoticed because the production workload is an
+executable.
+
+- [ ] **Step 1: Write the failing tests**
+
+Two, in `tests/cli_test.sh`. Build the dylib fixture with the suite's own
+fixture machinery rather than reaching into `/usr/lib` — a test that scans the
+host for a suitable binary is a test that skips itself away on the cross
+runner, which this repo has been bitten by.
+
+```sh
+# A dylib links at image base 0, and mg_plausible used to read that 0 as
+# mi_text_base's "no segment maps the header" sentinel and refuse before
+# checking anything. The tell was `FAILED (see above)` with nothing above it.
+"$BIN/macho9" verify "$T/fixture.dylib" >"$T/dylibverify.out" 2>&1
+expect_eq "verify: a dylib gets a real verdict" 0 "$?"
+expect_grep "verify: and says OK" "OK" "$T/dylibverify.out"
+expect_not_grep "verify: not the contentless failure" \
+    "FAILED (see above)" "$T/dylibverify.out"
+
+# The gate refusing every dylib meant no dylib could be rewritten at all.
+cp "$T/fixture.dylib" "$T/dylibrw"
+"$BIN/macho9" lc "$T/dylibrw" -delete uuid
+expect_eq "lc -delete: a dylib is rewritable" 0 "$?"
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `sh tests/cli_test.sh <bindir>`
+Expected: FAIL — `verify` reports `FAILED (see above)`, and `lc -delete` is
+refused with "base-relative offsets that name no known function".
+
+- [ ] **Step 3: Add `mi_image_base`**
+
+```c
+/* The image's base vmaddr -- the vmaddr of the segment that maps the header,
+ * which is __TEXT in every image this toolkit handles.
+ *
+ * Separate from mi_text_base because that function returns 0 BOTH for "no
+ * segment maps the header" and for "the base is 0", and a dylib's base
+ * legitimately IS 0: dylibs are linked at zero and slid at load time. Callers
+ * that use the base as a precondition need to tell those apart, and the two
+ * that did not were refusing every dylib on the machine.
+ *
+ * Returns 0 with *out set (which may be 0), or -1 if no segment maps the
+ * header. */
+int mi_image_base(const mi_image *im, uint64_t *out);
+```
+
+- [ ] **Step 4: Use it at exactly two sites**
+
+`src/grow.c`'s `mg_collect` (~`:203-204`) and `mg_plausible` (~`:679-680`).
+**Leave `mi_text_base` and its remaining caller alone** — `src/grow.c:893`
+uses it where a 0 base is genuinely uninteresting, and rerouting it would widen
+this change past what the evidence supports.
+
+- [ ] **Step 5: Run the new tests, then the whole suite**
+
+Run: `cmake --build --preset native-local && ctest --preset native-local`
+Expected: the two new assertions PASS; 13/13 overall.
+
+**Watch for a newly-refused input.** Un-blinding `mg_verify` and
+`mg_snapshot_take` means the grow path now actually checks dylibs. If something
+that used to pass now refuses, that is a **finding to report, not to paper
+over** — it may be the gate doing its job for the first time on that path. Say
+what refused and why before changing anything.
+
+- [ ] **Step 6: Delete the workaround that was the bug's fingerprint**
+
+Remove `MACHO_NO_VERIFY=1` from `tests/change_dylib_test.sh:615` and rewrite the
+comment above it to say what was actually wrong. The case must pass without the
+escape hatch — that is the regression test for this whole task.
+
+- [ ] **Step 7: Confirm the digest and the callers**
+
+Run: `sh tests/characterize.sh <bindir> check` → `ad12bdd7...`;
+`sh tests/known-callers.sh <bindir>`; `sh tests/wrapper_test.sh <bindir>`.
+`tests/fixture.macho` is `filetype=2` at `vmaddr=0x100000000`, so the digest
+should not move. If it does, stop and report.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/image.h src/image.c src/grow.c tests/cli_test.sh \
+        tests/change_dylib_test.sh
+git commit -m "fix: mg_plausible refused every dylib on a base-of-zero sentinel"
+```
 
 ---
 
