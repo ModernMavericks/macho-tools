@@ -148,6 +148,55 @@ Upstream's generator also states the ethic this toolkit shares, in almost the
 same words: *"A missing C function is reported, never invented: a no-op that
 returns the wrong answer is worse than a link error."*
 
+## The boundary: when surgery is the wrong tool
+
+`Wowfunhappy/WebKit`'s `mavericks-backport` branch is an actively-developed port
+of WebKit to 10.9 (near-daily releases; pushed the day this was written). It was
+checked for use of these tools and **uses none of them** — no `insert_dylib`, no
+`change_dylib`, no `patch_macho`. What it does instead defines the boundary of
+this toolkit better than any argument:
+
+- It **builds its own cctools**, because *"`/usr/bin/{otool,lipo,install_name_tool,…}`
+  are 14K xcselect shims … and `/usr/bin/dyldinfo` does not exist at all"*
+  (`MavericksSupport/toolchain/scripts/build_cctools.sh`), then uses that modern
+  `install_name_tool` for `-change`, `-delete_rpath` and `-id`
+  (`scripts/stage-frameworks.sh`).
+- It compiles everything at `-mmacosx-version-min=10.9`, so its linker emits
+  10.9-compatible output in the first place. There is **not one reference to
+  chained fixups anywhere in it** — nothing to lower, because nothing modern was
+  ever emitted.
+- It reserves header padding at link time with
+  `-Wl,-headerpad_max_install_names` (`polyfill/build-polyfill.sh:278`) — the
+  link-time counterpart of this toolkit's `grow` verb and `allow-grow`
+  directive.
+
+So the strategy is decided by one question:
+
+| | with source | without source |
+|---|---|---|
+| target the old OS | `-mmacosx-version-min=10.9`; the linker emits compatible output | the vendor already emitted chained fixups and `LC_BUILD_VERSION`; someone must lower them after the fact |
+| make room for longer paths | `-Wl,-headerpad_max_install_names` at link time | `grow` / `allow-grow`, by lowering the image base of a finished binary |
+| adjust dependencies | a modern `install_name_tool`, on a binary its own linker just wrote | edit in place, never moving a byte, because nothing can relink it |
+
+**WebKit is the source case. This toolkit exists for the other column** — and
+the Zoom and Electron attempts sit squarely in it. That is not a gap in the
+WebKit port; it is two different problems that look similar from a distance.
+
+**One premise this raises, and it is untested.** `docs/PROPOSAL.md`'s "Why not
+just use install_name_tool" measured **10.9's** `install_name_tool` refusing
+these binaries (*"file not in an order that can be processed (dyld_info out of
+place)"*). WebKit's port demonstrates that a **modern** `install_name_tool` is
+obtainable on a 10.9 host — it builds one. Whether a modern one can process a
+vendor-shipped binary like Claude Code has not been measured here. If it can,
+the `-change`/`-add_rpath` part of this toolkit's justification is weaker than
+`docs/PROPOSAL.md` states, and that section should be re-measured rather than
+re-quoted.
+
+What would remain ours either way: lowering chained fixups to
+`LC_DYLD_INFO_ONLY`, ordinal renumbering that refuses rather than corrupts,
+growing the pad of a finished binary, and the never-move-a-byte constraint that
+`install_name_tool` violates by design when it rebuilds `__LINKEDIT`.
+
 ## What this design does
 
 Adds one verb, `macho9 rewrite`, which takes a **recipe**: a flat sequence of
