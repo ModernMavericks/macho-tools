@@ -45,10 +45,19 @@
 # reintroduced in shell.)
 #
 # EXIT CODES. Forwarded unchanged, and no mapping is needed: change_dylib
-# returned mr_apply_file's own 0/1 and so do `dylib`, `rpath` and `lc` past
-# their own argument checks. Those checks are unreachable from here -- the
+# returned mr_apply_file's own 0/1, and `dylib`, `rpath` and `lc` still do
+# too PAST THEIR OWN ARGUMENT CHECKS -- for this wrapper specifically. That
+# stopped being true of `dylib`/`rpath`/`lc` in general the moment macho9
+# grew `--fatal-warnings` (mr_apply_file can now also return MR_REFUSED,
+# which cli/macho9.c forwards as EX_REFUSED=2): it stays true HERE only
+# because this translation never emits that flag -- change_dylib's own
+# grammar has no spelling for it, and never will, since `-change` matching
+# nothing has always exited 0 and that is compat surface. If translate.sh
+# ever grows a --fatal-warnings-shaped flag, this comment is the one to
+# update. Argument checks are unreachable from here regardless -- the
 # translation validates every -strip-lc KIND against the same table
-# (src/lc_kinds.c) before emitting, and never emits a verb with no operation.
+# (src/lc_kinds.c) before emitting, and never emits a verb with no
+# operation.
 #
 # STDOUT. Measured over all 1110 generated change_dylib combinations plus the
 # hand-picked ones (tests/compat-matrix.tsv):

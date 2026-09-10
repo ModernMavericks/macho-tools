@@ -612,14 +612,26 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * indeterminate after assignment.
  *
  * For example -- one instance, not an inventory -- mr_ops is seven
- * (pointer, int n_*) pairs and so has eight four-byte padding holes on this
- * ABI; a new member of four bytes or fewer placed into one of those holes
- * moves neither number and compiles clean. This paragraph has previously
- * gone through several versions, each naming a specific set of edits that
- * get past this check; each was wrong in a new way, because that set is
- * "every edit that preserves both numbers," which is unbounded and cannot be
- * enumerated correctly. This version names one member of it as an example of
- * what "invisible to it" means in practice, and stops there on purpose. */
+ * (pointer, int n_*) pairs and so has seven interior four-byte padding
+ * holes on this ABI; a new member of four bytes or fewer placed into one of
+ * those holes moves neither number and compiles clean. (There used to be an
+ * EIGHTH hole too, trailing after allow_grow to reach the 144-byte aligned
+ * size. fatal_unmatched was deliberately declared BEFORE allow_grow, not
+ * after -- see that field's own comment in rewrite.h -- which put
+ * fatal_unmatched in allow_grow's OLD slot and pushed allow_grow itself
+ * into what used to be that trailing hole, consuming it. Had
+ * fatal_unmatched instead been declared after allow_grow, IT would have
+ * landed in that hole, moving neither sizeof(mr_ops) nor
+ * offsetof(allow_grow), and this typedef would have compiled clean over an
+ * edit it exists to catch. With the trailing hole gone, a future
+ * four-byte-or-smaller member appended AFTER allow_grow would now move
+ * sizeof(mr_ops) and trip this check too; the seven interior holes are what
+ * remains of the blind spot.) This paragraph has previously gone through
+ * several versions, each naming a specific set of edits that get past this
+ * check; each was wrong in a new way, because that set is "every edit that
+ * preserves both numbers," which is unbounded and cannot be enumerated
+ * correctly. This version names one member of it as an example of what
+ * "invisible to it" means in practice, and stops there on purpose. */
 typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
     (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 140) ? 1 : -1];
 
@@ -1364,13 +1376,20 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
          * when the run otherwise succeeded (rc == 0): a failed atomic write
          * (rc already 1, above) is a genuine operational failure and stays
          * one, rather than being overwritten by a DIFFERENT reason to be
-         * unhappy. THE FILE IS STILL WRITTEN when this fires: the rewrite
-         * already happened (or "Updated ..." already printed) by the time
-         * this check runs, so this is a refusal about the fact just
-         * reported, not a rollback of it. MR_REFUSED, not a bare 2, so the
-         * one caller (cli/macho9.c) and this library cannot drift about
-         * what number means "fatal_unmatched fired" -- see MR_REFUSED's own
-         * comment in rewrite.h for why it is safe to forward verbatim. */
+         * unhappy. THIS NEVER ROLLS BACK A WRITE IT MADE: if some other
+         * operation in the same run DID match, that write (or "Updated ..."
+         * line) already happened by the time this check runs, and this is a
+         * refusal about the miss just reported, not a rollback of it. But
+         * `nunmatched > 0` does not by itself mean anything was written --
+         * if EVERY operation matched nothing, `modified` is still 0 (see
+         * mr_process_thin's own "nothing to change" early return, this
+         * file, above) and no write was attempted at all, so there is
+         * nothing here to roll back OR preserve; the file is untouched
+         * either way. MR_REFUSED, not a
+         * bare 2, so the one caller (cli/macho9.c) and this library cannot
+         * drift about what number means "fatal_unmatched fired" -- see
+         * MR_REFUSED's own comment in rewrite.h for why it is safe to
+         * forward verbatim. */
         if (rc == 0 && ops->fatal_unmatched && nunmatched > 0) rc = MR_REFUSED;
     }
 

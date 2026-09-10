@@ -122,12 +122,18 @@ typedef struct {
      * mr_report_unmatched finds that any dylib_changes/rpath_changes/
      * strip_cmds entry matched nothing -- the same report Task 1 already
      * prints on stderr, promoted from an FYI to a refusal, the way `ld` and
-     * `gas`'s own --fatal-warnings promote a warning to an error. The file
-     * is STILL WRITTEN either way: this refuses after the rewrite has
-     * already happened, it does not rewind it. cli/macho9.c's `dylib`,
-     * `rpath` and `lc` verbs are the only ones that ever set this; `segment`
-     * and `retag-swift` don't take a list of operations that could miss, so
-     * they have nothing to parse a --fatal-warnings flag into. Declared
+     * `gas`'s own --fatal-warnings promote a warning to an error. If
+     * anything else DID match, that write is NOT rolled back: this refuses
+     * after the rewrite has already happened. But when EVERY operation
+     * matched nothing, mr_process_thin's own "nothing to change" early
+     * return (src/rewrite.c, `if (modifications == 0)`) never sets
+     * *out_modified in the first place, so mr_apply_file never attempts the
+     * write at all -- there is nothing for this refusal to leave in place,
+     * and the file is untouched, same as any other all-miss run.
+     * cli/macho9.c's `dylib`, `rpath` and `lc` verbs are the only ones that
+     * ever set this; `segment` and `retag-swift` don't take a list of
+     * operations that could miss, so they have nothing to parse a
+     * --fatal-warnings flag into. Declared
      * before allow_grow, not after, so allow_grow stays the LAST field --
      * see the layout tripwire next to mr_is_rename_only in rewrite.c, which
      * checks the last field's offset precisely so that inserting a new

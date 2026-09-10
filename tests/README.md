@@ -59,14 +59,15 @@ in the commit why a row changed.
 
 ## `macho9`'s exit codes
 
-`macho9`'s own verbs (`verify`, `info`, `grow`, `minos`, and `lc`'s KIND
-validation) use three exit codes, also documented machine-readably in
+`macho9` uses three exit codes throughout — `verify`, `info`, `grow`, `minos`
+and `lc`'s KIND validation always have, and `dylib`/`rpath`/`lc` now do too
+when given `--fatal-warnings` — also documented machine-readably in
 `--capabilities`' `exitcodes` line:
 
 | code | meaning |
 |---|---|
 | `0` | success |
-| `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or (`dylib`/`rpath`/`lc` only, and only with `--fatal-warnings`) an operation that matched nothing — the file is still written in that last case; this refuses about a rewrite that already happened, it does not roll it back |
+| `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or (`dylib`/`rpath`/`lc` only, and only with `--fatal-warnings`) an operation that matched nothing. This last case never rolls back a write it made: if some OTHER operation in the same run matched, that write already happened; if every operation matched nothing, there was no write to roll back in the first place, same as any other all-miss run |
 | `1` | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal |
 
 Refusal is load-bearing throughout this codebase (`-grow` refuses rather than

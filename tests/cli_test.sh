@@ -1508,6 +1508,24 @@ build_main "$T/dylib_fw_ok_fixture"
 [ "$dylib_fw_ok_rc" -eq 0 ] && ok "dylib: --fatal-warnings succeeds when nothing is unmatched" \
     || bad "dylib: --fatal-warnings (matched)" "expected 0, got $dylib_fw_ok_rc: $(cat "$T/dylib_fw_ok.err")"
 
+# The brief's own canonical example: EVERY operation matches nothing, not
+# just one of several. mr_process_thin's "nothing to change" early return
+# never sets *out_modified in that case, so mr_apply_file never attempts
+# the write at all -- there is nothing here for --fatal-warnings to have
+# left in place. This is the assertion the mixed-op test above does NOT
+# cover (there, one op DOES match, so the file legitimately changes): only
+# an all-miss run proves the file is untouched, not merely unrolled-back.
+build_main "$T/dylib_fw_allmiss_fixture"
+cp "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before"
+"$MACHO9" dylib "$T/dylib_fw_allmiss_fixture" --fatal-warnings \
+        -replace /nope/absent-fw-allmiss.dylib /also/absent-fw-allmiss.dylib \
+        >/dev/null 2>"$T/dylib_fw_allmiss.err" && dylib_fw_allmiss_rc=0 || dylib_fw_allmiss_rc=$?
+[ "$dylib_fw_allmiss_rc" -eq 2 ] && ok "dylib: --fatal-warnings refuses when EVERY op matched nothing" \
+    || bad "dylib: --fatal-warnings (all miss)" "expected exit 2, got $dylib_fw_allmiss_rc: $(cat "$T/dylib_fw_allmiss.err")"
+cmp -s "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before" \
+    && ok "dylib: --fatal-warnings left the file byte-for-byte untouched when nothing at all matched" \
+    || bad "dylib: --fatal-warnings (all miss)" "the file was modified despite every operation matching nothing"
+
 # segment and retag-swift take no list of operations that could miss, so
 # neither parses --fatal-warnings at all -- passing it lands as an extra
 # positional argument and is refused the same way any wrong argument count

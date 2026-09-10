@@ -217,10 +217,13 @@ static void print_ops_csv(int is_rpath) {
  *         flags=a,b      verb-level flags, e.g. allow-grow. fatal-warnings
  *                        (dylib/rpath/lc) turns "an operation matched
  *                        nothing" from a stderr report into a refusal
- *                        (EX_REFUSED) -- but the file is STILL WRITTEN: this
- *                        refuses about a rewrite that already happened, it
- *                        does not roll it back. Named after `ld`/`gas`'s own
- *                        --fatal-warnings.
+ *                        (EX_REFUSED) -- but it NEVER ROLLS BACK a write it
+ *                        made: if some other operation in the same run DID
+ *                        match, that write already happened by the time
+ *                        this refuses. (If EVERY operation matched nothing,
+ *                        there was no write to roll back in the first
+ *                        place -- same as any other all-miss run.) Named
+ *                        after `ld`/`gas`'s own --fatal-warnings.
  *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`
@@ -540,7 +543,7 @@ static int cmd_lc(int argc, char **argv) {
             strip[nstrip++] = LC_STRIP_KINDS[kk].cmd;
             i += 2;
         } else {
-            fprintf(stderr, "macho9 lc: unknown operation '%s' (only -delete KIND is supported)\n", argv[i]);
+            fprintf(stderr, "macho9 lc: unknown operation '%s' (only -delete KIND and --fatal-warnings are supported)\n", argv[i]);
             return 1;
         }
     }
@@ -580,8 +583,10 @@ static int cmd_lc(int argc, char **argv) {
  * `gas`'s own --fatal-warnings (and GCC's -Werror, the same idea under a
  * different name): "an operation matched nothing" already IS a warning
  * (mr_report_unmatched, src/rewrite.c), and this promotes it to a refusal.
- * The file is still written either way -- this does not roll back a rewrite
- * that already happened, it refuses about it after the fact. See
+ * It never rolls back a write it made -- if some other operation in the
+ * same run DID match, that write already happened by the time this
+ * refuses, and this only refuses about the miss after the fact. (If every
+ * operation matched nothing there was no write to roll back at all.) See
  * mr_ops.fatal_unmatched's own comment in rewrite.h for the full contract.
  */
 static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
