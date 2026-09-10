@@ -298,6 +298,27 @@ run patch_macho f o
     || bad "patch_macho unwritable OUT" "exit $rc, want 1"
 chmod 644 "$T/o"; rm -f "$T/o"
 
+# 5. a fresh OUT the wrapper CANNOT create -- the path that creates it with the
+#    C tool's mode. Checked under ksh as well as sh, because the bug this
+#    guards against was a POSIX SPECIAL BUILTIN rule: a redirection failure on
+#    `:` exits a non-interactive shell on the spot, so under ksh the wrapper's
+#    own message never printed. Asserted as "exactly this one line", which is
+#    what fails if the shell's own diagnostic leaks out beside it.
+fresh
+rm -rf "$T/ro"; mkdir "$T/ro"; chmod 555 "$T/ro"
+for pm_sh in /bin/sh /bin/ksh; do
+    [ -x "$pm_sh" ] || { skip "patch_macho: uncreatable OUT under $pm_sh" "no such shell"; continue; }
+    ( cd "$T" && "$pm_sh" "$BIN/patch_macho" f ro/out ) >"$T/out" 2>"$T/err"
+    rc=$?
+    # The teaching message is two lines; the tool's own diagnostic is the rest.
+    sed '1,2d' "$T/err" > "$T/err.rest"
+    [ "$rc" -eq 1 ] && [ "$(wc -l < "$T/err.rest" | tr -d ' ')" = 1 ] \
+        && grep -qxF 'create output: cannot create ro/out' "$T/err.rest" \
+        && ok "patch_macho: an uncreatable OUT reports once, and only its own words ($pm_sh)" \
+        || bad "patch_macho uncreatable OUT ($pm_sh)" "exit $rc, stderr after the teaching message: $(cat "$T/err.rest")"
+done
+chmod 755 "$T/ro"; rm -rf "$T/ro"
+
 # ---- add_version_min ----------------------------------------------------
 #
 # The one tool with nothing to reshape: both front-ends call

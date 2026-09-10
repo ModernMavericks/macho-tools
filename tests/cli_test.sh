@@ -350,8 +350,9 @@ esac
 # declassify: chained fixups -> LC_DYLD_INFO_ONLY
 #
 # The conversion lives in src/declassify.c (Task 0.6b lifted it out of
-# compat/patch_macho.c's main); this verb and patch_macho are two front-ends
-# over the one copy. What is asserted here is the OBSERVABLE result -- the two
+# compat/patch_macho.c's main, before that file became a shell wrapper); this
+# verb is the only C front-end over it now, and the `patch_macho` name reaches
+# this very verb through compat/patch_macho.sh. What is asserted here is the OBSERVABLE result -- the two
 # quadwords in __DATA the conversion rewrites, which load commands survived,
 # where the new LC_DYLD_INFO_ONLY points, and how far __LINKEDIT now reaches --
 # not "it exited 0".

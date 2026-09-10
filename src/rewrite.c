@@ -538,22 +538,44 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * paragraph above, and decides whether the new field belongs in the
  * conjunction.
  *
- * 144 and 136 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) on the only
- * architecture this project builds (CMakeLists.txt pins
- * CMAKE_OSX_ARCHITECTURES to x86_64), so literals are stable here. They are a
- * tripwire, not a portability claim: on some other target the fix is to
+ * 144 and 136 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) -- the LAST
+ * declared field -- on the only architecture this project builds (CMakeLists.txt
+ * pins CMAKE_OSX_ARCHITECTURES to x86_64), so literals are stable here. They
+ * are a tripwire, not a portability claim: on some other target the fix is to
  * re-derive both numbers AND re-read this function, which is the whole point.
  * Negative-array-size typedef rather than _Static_assert, which is C11 and
  * this project sets no -std=.
  *
- * WHAT IT CATCHES, exactly: any field inserted among the existing ones (the
- * offsetof moves), and any field appended that grows the struct (the sizeof
- * moves) -- which is every pointer, every pointer/count pair, and every
- * member wider than the tail padding. WHAT IT MISSES: a single bare `int`
- * appended immediately after allow_grow, which lands in the 4 bytes of tail
- * padding x86_64 alignment already leaves, changing neither number. That hole
- * is named rather than papered over; an operation added as one lone int and
- * nothing else is the one shape that still needs a human to remember. */
+ * WHAT IT CATCHES, exactly: any change that moves sizeof(mr_ops), or that
+ * moves the offset of the last field. Nothing more -- and the difference
+ * matters, because this struct is seven (pointer, int n_*) pairs and therefore
+ * full of holes.
+ *
+ * WHAT IT MISSES: a member of four bytes or fewer added into any of the EIGHT
+ * four-byte padding holes x86_64 alignment already leaves here, which moves
+ * neither number. Measured from the actual layout rather than assumed: seven
+ * are interior, one after each `n_*` count and before the pointer that follows
+ * it (offsets 12, 28, 44, 60, 76, 92, 108), and the eighth is the tail after
+ * allow_grow (offset 140). Confirmed by compiling a variant with a bare
+ * `int` beside n_dylib_changes: sizeof stayed 144 and offsetof(allow_grow)
+ * stayed 136.
+ *
+ * That blind spot is not exotic, which is exactly why it is stated plainly
+ * instead of being covered by a stronger-sounding mechanism: `int n_foo;`
+ * written next to its sibling `n_*` is the natural way to add a new count or
+ * flag, and it lands in a hole every time. An offsetof assertion PER FIELD
+ * does not help -- a member that fits an existing hole moves no later field
+ * either, so it is blind to the same case -- and a memcmp-against-zero probe
+ * is unreliable, because struct padding is indeterminate after assignment.
+ * There is no clean C mechanism for this. So: this catches the common shapes
+ * (every pointer, every pointer/count pair, every member too wide for a hole,
+ * and every reordering), and a lone four-byte member still needs a human to
+ * come here and read the paragraph above.
+ *
+ * This is the second time a confident sentence about this one predicate has
+ * been wrong -- the first claimed the "everything else is empty" shape had
+ * force C does not give it, the second claimed this tripwire caught every
+ * insertion. An accurate small claim is worth more than a clever one. */
 typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
     (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 136) ? 1 : -1];
 

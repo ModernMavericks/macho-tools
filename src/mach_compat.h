@@ -15,10 +15,12 @@
  * (change_dylib.c, cli/macho9.c, fix_macho.c, patch_macho.c, macho_grow.h --
  * itself carrying two of its own, LC_DYLIB_CODE_SIGN_DRS and
  * S_INIT_FUNC_OFFSETS, in two different places -- and src/ordinals.c,
- * src/lc_kinds.c), at the paths those files had at the time: change_dylib.c,
- * fix_macho.c and patch_macho.c have since moved to compat/ (Task 5, "empty
- * the root"); macho_grow.h no longer exists at all, folded into
- * src/grow.c/src/grow.h (Task 3). Each guarded so a real SDK definition
+ * src/lc_kinds.c), at the paths those files had at the time. Most of those
+ * files are gone now: change_dylib.c and patch_macho.c were replaced by
+ * /bin/sh wrappers around macho9 (compat/*.sh) when the compat tools were
+ * retired, fix_macho.c moved to compat/ and stayed C, and macho_grow.h was
+ * folded into src/grow.c/src/grow.h (Task 3). The list is kept as the record
+ * of how many places one constant was being spelled in. Each guarded so a real SDK definition
  * always wins, but each also a place the VALUE could drift from the others
  * if only one copy were ever fixed. One shared header is the fix: every one
  * of those files now includes this instead of re-declaring its own subset.

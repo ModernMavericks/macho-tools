@@ -4,6 +4,19 @@
 #
 #   sh tests/compat-sweep.sh <bindir> [outfile]
 #
+# <bindir> supplies the OLD side: the six historical binaries. After Task 2
+# five of them exist only in a pre-Task-2 build, so that is what to point it
+# at. The NEW side needs a macho9, and by default takes it from the same
+# directory -- which was right while both families came out of one build, and
+# is wrong now: it would record what the macho9 OF THAT COMMIT did, not what
+# this tree's does. Set
+#
+#   MACHO_SWEEP_NEW_BIN=<current bindir>
+#
+# to point the translated side at the macho9 under test. Both directories are
+# recorded in the matrix header, because a reader cannot otherwise tell which
+# two things a row compares.
+#
 # The deliverable is the matrix it writes (default tests/compat-matrix.tsv),
 # not a pass/fail. Every row says what the OLD tool did and what the
 # compat/translate.sh -> macho9 translation did, so the two can be compared
@@ -16,7 +29,8 @@
 # it drives. Run it by hand, on real 10.9, when the translation changes:
 #
 #   cmake --preset native-local && cmake --build --preset native-local
-#   sh tests/compat-sweep.sh /private/tmp/mm-build/schmonz/macho-tools/native
+#   MACHO_SWEEP_NEW_BIN=/private/tmp/mm-build/schmonz/macho-tools/native \
+#       sh tests/compat-sweep.sh /path/to/a/pre-Task-2/build
 #
 # ---- what "exhaustive" means here ----------------------------------------
 #
@@ -138,10 +152,15 @@ BIN="${1:?usage: compat-sweep.sh <bindir> [outfile]}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 OUT="${2:-$ROOT/tests/compat-matrix.tsv}"
+# The macho9 the TRANSLATED side runs; see the header. Defaults to $BIN so a
+# single-build invocation still works exactly as it did.
+NEWBIN="${MACHO_SWEEP_NEW_BIN:-$BIN}"
 
-for t in macho9 change_dylib add_version_min rename_segment retag_swift_classes patch_macho fix_macho; do
+for t in change_dylib add_version_min rename_segment retag_swift_classes patch_macho fix_macho; do
     [ -x "$BIN/$t" ] || { echo "compat-sweep: $BIN/$t not found or not executable" >&2; exit 1; }
 done
+[ -x "$NEWBIN/macho9" ] || { echo "compat-sweep: $NEWBIN/macho9 not found or not executable" >&2; exit 1; }
+[ -x "$BIN/macho9" ] || { echo "compat-sweep: $BIN/macho9 not found or not executable (needed to prepare the base image)" >&2; exit 1; }
 [ -r "$ROOT/compat/translate.sh" ] || { echo "compat-sweep: compat/translate.sh missing" >&2; exit 1; }
 
 # Source the translator instead of exec'ing it per combination: same code
@@ -173,6 +192,9 @@ mkdir -p "$T/A" "$T/B"
 # bug lived in. The spare has nothing bound to it, so -delete really deletes
 # and really renumbers. The binding refusal is still swept, on libSystem, in
 # EXTRA CASES.
+# Prepared with $BIN's macho9, not $NEWBIN's, deliberately: the base image is
+# the INPUT both sides are handed, so it must not come from the build under
+# test. Its digest is printed into the matrix header either way.
 cp "$ROOT/tests/fixture.macho" "$T/base" || exit 1
 RP_OLD='@loader_path/../lib'
 DY_OLD='@loader_path/spare0.dylib'
@@ -317,7 +339,7 @@ run_case() {
             printf '%s\n' "$cmds" > "$T/cmds"
             # PATH, not an absolute program word, so the translation recorded
             # in the matrix stays the portable text a wrapper would emit.
-            ( cd "$T/B" && PATH="$BIN:$PATH" CMDS="$T/cmds" sh "$T/runner.sh" ) \
+            ( cd "$T/B" && PATH="$NEWBIN:$PATH" CMDS="$T/cmds" sh "$T/runner.sh" ) \
                 >"$T/b.out" 2>"$T/b.err"
             brc=$?
             [ "$brc" -ne 0 ] && refuser=macho9
@@ -598,6 +620,11 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#             (after Task 2 five of the six are shell wrappers; these"
     echo "#              rows are only a record of the C binaries if that bindir"
     echo "#              is a pre-Task-2 build -- see this script's header)"
+    echo "# new side:   $NEWBIN/macho9"
+    echo "#             (the macho9 the TRANSLATED side ran; the two directories"
+    echo "#              differ whenever the C tools and the macho9 under test"
+    echo "#              come from different commits, which after Task 2 is the"
+    echo "#              only way to compare the two families at all)"
     echo "#"
     echo "# columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg  old_out  new_out"
     echo "#   old_argv     the old tool's argv[1..], file named 'f'"

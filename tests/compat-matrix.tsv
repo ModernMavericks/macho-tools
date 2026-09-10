@@ -8,11 +8,16 @@
 # base image: tests/fixture.macho + one appended LC_RPATH (@loader_path/../lib)
 #             + one appended LC_LOAD_DYLIB (@loader_path/spare0.dylib)
 #             sha256[0:16] = cbe6b73481d70434
-# generated:  2026-09-09T21:48:27Z on Darwin 13.4.0 x86_64
+# generated:  2026-09-10T00:21:05Z on Darwin 13.4.0 x86_64
 # old side:   /private/tmp/mm-ref-task2
 #             (after Task 2 five of the six are shell wrappers; these
 #              rows are only a record of the C binaries if that bindir
 #              is a pre-Task-2 build -- see this script's header)
+# new side:   /private/tmp/mm-build/schmonz/macho-tools/native/macho9
+#             (the macho9 the TRANSLATED side ran; the two directories
+#              differ whenever the C tools and the macho9 under test
+#              come from different commits, which after Task 2 is the
+#              only way to compare the two families at all)
 #
 # columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg  old_out  new_out
 #   old_argv     the old tool's argv[1..], file named 'f'

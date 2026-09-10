@@ -146,7 +146,18 @@ fi
 # BEFORE any content goes into it, and only when it does not already exist --
 # an existing OUT keeps its own mode, because open() does not change one.
 if [ ! -e "$mw_out" ]; then
-    if ! : > "$mw_out"; then
+    # printf '' rather than `:` -- `:` is a POSIX SPECIAL BUILTIN, and a
+    # redirection error on one exits a non-interactive shell on the spot.
+    # Under /bin/sh that prints the shell's own diagnostic alongside this one;
+    # under ksh this one never runs at all. printf is a regular builtin, so a
+    # failure comes back here to be reported in this tool's own words.
+    #
+    # `2>/dev/null` BEFORE the create, not after: redirections are applied
+    # left to right, so putting it first means the shell's own "cannot create"
+    # diagnostic for the failing redirection lands there instead of on the
+    # caller's stderr, leaving just this tool's message -- one line, as the C
+    # tool's perror("create output") was. Verified under /bin/sh and /bin/ksh.
+    if ! printf '' 2>/dev/null > "$mw_out"; then
         printf 'create output: cannot create %s\n' "$mw_out" >&2
         exit 1
     fi
