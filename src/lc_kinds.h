@@ -18,4 +18,16 @@ struct lc_kind { const char *name; uint32_t cmd; };
 extern const struct lc_kind LC_STRIP_KINDS[];
 extern const size_t LC_STRIP_KINDS_COUNT;
 
+/* The reverse of the table above: the KIND name a strip_cmds entry (an
+ * LC_* value) came from, for diagnostics that need to name a load-command
+ * kind back to the user in the vocabulary they typed it in (e.g. "no load
+ * command of kind uuid to delete"). Lives here, next to LC_STRIP_KINDS,
+ * for the same reason the table itself does -- one place to edit, so a
+ * name<->LC_* mapping can't drift into a second, hand-rolled switch
+ * somewhere a caller needed it. Returns "unknown" if `cmd` is not one of
+ * LC_STRIP_KINDS's entries; defensive only; every strip_cmds value reaching
+ * this function was itself produced by looking a name up in this same
+ * table. */
+const char *lc_kind_name(uint32_t cmd);
+
 #endif

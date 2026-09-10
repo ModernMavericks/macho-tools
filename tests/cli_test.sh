@@ -1316,6 +1316,38 @@ echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: --allow-grow result
     || bad "dylib: --allow-grow result" "long path not found"
 
 # ============================================================================
+# dylib -replace naming a path the image does not have matched nothing, and
+# the tool used to say so NOWHERE: stdout reported only the -replace that DID
+# fire, and the exit code was 0. Ask for two, get one, no way to tell -- the
+# silent partial success docs/PROPOSAL.md's "verify" section exists to rule
+# out ("Every defect found in this code has been a silent success.").
+#
+# The report has to land on stderr, not stdout: the compat/ wrappers need
+# stdout byte-identical to the tools they replaced (tests/known-callers.sh,
+# tests/wrapper_test.sh), so anything new has to go where those gates don't
+# look.
+# ============================================================================
+build_main "$T/unmatched_fixture"
+unmatched_out=$("$MACHO9" dylib "$T/unmatched_fixture" \
+        -replace /usr/lib/libSystem.B.dylib /tmp/new.dylib \
+        -replace /nope/absent.dylib /also/absent.dylib \
+        2>"$T/unmatched.err") && unmatched_rc=0 || unmatched_rc=$?
+[ "$unmatched_rc" -eq 0 ] && ok "dylib: unmatched -replace still exits 0" \
+    || bad "dylib: unmatched -replace exit" "expected 0, got $unmatched_rc: $(cat "$T/unmatched.err")"
+grep -qF "/nope/absent.dylib" "$T/unmatched.err" && ok "dylib: names the -replace that matched nothing" \
+    || bad "dylib: unmatched -replace" "expected /nope/absent.dylib on stderr, got: $(cat "$T/unmatched.err")"
+grep -q "matched nothing" "$T/unmatched.err" && ok "dylib: says it matched nothing" \
+    || bad "dylib: unmatched -replace message" "expected 'matched nothing' on stderr, got: $(cat "$T/unmatched.err")"
+if echo "$unmatched_out" | grep -q "matched nothing"; then
+    bad "dylib: unmatched -replace" "'matched nothing' leaked onto stdout: $unmatched_out"
+else
+    ok "dylib: the unmatched report is not on stdout"
+fi
+echo "$unmatched_out" | grep -qF "libSystem.B.dylib -> /tmp/new.dylib" \
+    && ok "dylib: the -replace that DID match is still reported" \
+    || bad "dylib: matched -replace" "expected 'libSystem.B.dylib -> /tmp/new.dylib' on stdout, got: $unmatched_out"
+
+# ============================================================================
 # dylib -append / -insert / -delete / -reexport
 #
 # -replace and --allow-grow (above) exercise only two of change_dylib's

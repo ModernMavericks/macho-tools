@@ -15,3 +15,10 @@ const struct lc_kind LC_STRIP_KINDS[] = {
     { "code-sign-drs",  LC_DYLIB_CODE_SIGN_DRS },
 };
 const size_t LC_STRIP_KINDS_COUNT = sizeof(LC_STRIP_KINDS) / sizeof(LC_STRIP_KINDS[0]);
+
+const char *lc_kind_name(uint32_t cmd) {
+    for (size_t i = 0; i < LC_STRIP_KINDS_COUNT; i++)
+        if (LC_STRIP_KINDS[i].cmd == cmd)
+            return LC_STRIP_KINDS[i].name;
+    return "unknown";
+}
