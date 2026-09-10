@@ -1449,7 +1449,23 @@ ins_all=$(rpath_positions "$T/rpath_insert_fixture" | sed 's/^[0-9]* //' | tr '\
 # nothing to be in front of. Combined with an -append in the same run, the
 # inserted one must still come out first -- the case where a naive
 # implementation that emits inserts after appends gets it backwards.
-build_main "$T/rpath_insert_empty"
+#
+# Built with an explicit -headerpad MINIMUM rather than through build_main,
+# because the default pad is a property of the LINKER, not of this test: 10.9's
+# leaves ~3.1KB, while the modern cross runner's leaves 56 bytes, and this case
+# adds two whole LC_RPATHs where the rest of the rpath cases only rewrite
+# existing ones. It failed on the cross runner alone for exactly that reason
+# ("new LCs (1432 bytes) don't fit in header pad (56 avail)"), which is
+# tests/README.md's host-portability lesson arriving in a new place.
+#
+# -headerpad sets a FLOOR, so this is a no-op wherever the default already
+# exceeds it -- measured on this 10.9 host: 0x800 changed nothing, 0x2000 moved
+# the pad from 3128 to 11320. The value is deliberately well clear of what two
+# rpaths need. It must NOT go into FIXTURE_FLAGS: the --allow-grow case below
+# depends on a 3500-character path overflowing whatever pad the linker left, so
+# padding every fixture would silently disarm that refusal.
+"$CC" -O2 $FIXTURE_FLAGS -Wl,-headerpad,0x2000 \
+    "$T/main.c" "$T/liba.dylib" -o "$T/rpath_insert_empty"
 "$MACHO9" info "$T/rpath_insert_empty" | grep -q "^  rpath=" \
     && bad "rpath -insert: empty precondition" "fixture unexpectedly already has an rpath" \
     || ok "rpath -insert: empty-case fixture has no rpath to start with"
