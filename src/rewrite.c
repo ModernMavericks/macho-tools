@@ -796,12 +796,19 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * apart now (src/image.h), and all four named dylibs pass. The corpus
      * count was not re-measured; assume it was the same bug.
      *
-     * The gate does still have real false positives -- tests/mkimplausible.c
-     * builds one deliberately, at a nonzero base -- and the reasoning above
-     * never depended on how common they are: a rename moves no offset, so the
-     * gate cannot catch anything a rename did, only re-decide a property of
-     * the input. That is why the scoping stands unchanged on the corrected
-     * facts.
+     * Do not read a claim about false positives back into this. The only
+     * input in this tree the gate is demonstrated to refuse is
+     * tests/mkimplausible.c's fixture, and that is a TRUE positive: it is
+     * built with an __init_offsets entry at 0x999 when the sole function
+     * start is base + 0x400, which is exactly the un-re-based-offset
+     * signature src/grow.c's check exists to catch. As of this commit NO
+     * false positive of mg_plausible on a real image is demonstrated
+     * anywhere here.
+     *
+     * The scoping below never depended on how common false positives are,
+     * which is why it stands unchanged on the corrected facts: a rename moves
+     * no offset, so the gate cannot catch anything a rename did, only
+     * re-decide a property the input already had.
      *
      * Scoped by mr_is_rename_only, not by an environment variable: an env var
      * would switch the gate off for the whole macho9 invocation, would keep

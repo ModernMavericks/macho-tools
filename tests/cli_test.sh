@@ -1777,10 +1777,12 @@ cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
 # else.
 #
 # The input is tests/mkimplausible.c's committed, hand-built fixture, not a
-# scan of /usr/lib for a real dylib the heuristic gets wrong. An earlier version
-# did scan, and SKIPped when it found nothing -- which passes on 10.9 and covers
-# nothing on the cross runner, where those dylibs live only in the shared cache.
-# The fixture's own header says how it trips the gate.
+# scan of /usr/lib. An earlier version did scan for a dylib the gate refused,
+# and SKIPped when it found nothing -- which passes on 10.9 and covers nothing
+# on the cross runner, where those dylibs live only in the shared cache. Those
+# refusals were also not the heuristic getting real dylibs wrong: it never ran
+# on them (see mkimplausible.c's header), so the scan would come up empty
+# today. The fixture trips the gate on its merits; its header says how.
 "$CC" -O2 -Wall -Wextra -I "$SRC_DIR" -o "$T/mkimplausible" "$SRC_DIR/../tests/mkimplausible.c"
 "$T/mkimplausible" "$T/implausible"
 

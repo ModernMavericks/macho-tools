@@ -790,13 +790,21 @@ static void test_grow_refuses_undersized_pagezero(void) {
 
 /* Unlike the two __PAGEZERO cases above, mutating away mg_grow_header's own
  * `!mi_text_base(&find_im)` check does NOT make this test go blind: mg_collect
- * (called from mg_snapshot_take, further down the same function) makes its
- * OWN independent mi_text_base call and refuses on the identical condition
- * ("could not snapshot the base-relative structures"), confirmed by mutation.
- * So this refusal is doubly guarded -- genuinely redundant, not a gap -- and
+ * (called from mg_snapshot_take, further down the same function) runs its OWN
+ * independent header-mapping-segment search and refuses ("could not snapshot
+ * the base-relative structures"), confirmed by mutation. So this refusal is
+ * doubly guarded -- genuinely redundant, not a gap -- and
  * this test proves the observable BEHAVIOUR (refuses, unchanged) rather than
  * pinning which of the two guards fired, per this suite's own rule (see
- * tests/README.md: assert the behaviour, not which guard fired). */
+ * tests/README.md: assert the behaviour, not which guard fired).
+ *
+ * The two searches are no longer the same CALL: mg_collect uses mi_image_base
+ * (src/grow.c), mg_grow_header still uses mi_text_base. They agree on THIS
+ * fixture, which maps no segment at file offset 0 -- the one input class where
+ * mi_text_base's 0 really does mean "not found". They deliberately disagree on
+ * an image whose base legitimately IS 0, which is the bug mi_image_base exists
+ * to fix; mg_grow_header cannot see one, because it refuses any filetype other
+ * than MH_EXECUTE well above this point. */
 static void test_grow_refuses_no_text_segment(void) {
     check_grow_precondition_refused("no segment maps the header (fileoff 0)",
                                      1, 0x100000000ull, 0x1000);

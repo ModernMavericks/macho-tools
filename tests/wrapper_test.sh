@@ -440,19 +440,23 @@ else
     skip "rename_segment: fat container" "no fat Mach-O found on this host"
 fi
 
-# mg_plausible, from the caller's side. mr_apply_file's last gate rejects some
-# perfectly ordinary images -- a heuristic false positive, not something a
-# rewrite did -- and rename_segment never had such a gate at all. src/rewrite.c
+# mg_plausible, from the caller's side. mr_apply_file's last gate can reject an
+# image for something the rewrite did not do -- it re-decides a property of the
+# INPUT -- and rename_segment never had such a gate at all. src/rewrite.c
 # skips it for a rename-only operation set (tests/cli_test.sh asserts that
 # directly at the verb, and asserts the gate still runs for everything else);
 # this is the same property seen through the wrapper, which is where a caller
 # sees it.
 #
 # The input is tests/mkimplausible.c's committed fixture, built here. It used
-# to be a scan of /usr/lib for a real dylib the heuristic gets wrong, with a
-# SKIP when none turned up -- which passes on 10.9 and covers nothing on the
-# cross runner, leaving the one behavioural change this task made to macho9
-# with no coverage where it is built.
+# to be a scan of /usr/lib for a dylib the gate refused, with a SKIP when none
+# turned up -- which passes on 10.9 and covers nothing on the cross runner,
+# leaving the one behavioural change this task made to macho9 with no coverage
+# where it is built. (Those /usr/lib refusals were not the heuristic getting
+# real dylibs wrong: mg_plausible read a dylib's image base of 0 as
+# mi_text_base's "no segment maps the header" sentinel and bailed before the
+# heuristic ran. mi_image_base fixed that and all 26 now pass -- so the scan
+# would find nothing today either. The fixture is refused on its merits.)
 "$CC" -O2 -Wall -Wextra -I "$ROOT/src" -o "$T/mkimplausible" "$HERE/mkimplausible.c"
 "$T/mkimplausible" "$T/imp"
 

@@ -445,6 +445,77 @@ static void test_text_base_is_the_segment_mapping_the_header(void) {
     mi_close(&im);
 }
 
+/* mi_image_base answers the same question mi_text_base does, but reports
+ * FOUND separately from the VALUE. The whole reason it exists is the middle
+ * case below: mi_text_base returns 0 both for "no segment maps the header"
+ * and for "the base is 0", every dylib is linked at base 0, and two callers
+ * in src/grow.c read that 0 as the sentinel and refused every dylib on the
+ * machine before checking anything.
+ *
+ * All three input classes are exercised against the REAL fixture, mutated in
+ * a private copy -- the same idiom test_wrap_* uses -- rather than against a
+ * synthetic header, so what is being read is a layout a linker really emits.
+ * mi_text_base's own return is asserted alongside each one: it must be
+ * bit-identical to what it has always produced, since its callers were
+ * deliberately left alone. */
+static void test_image_base_separates_not_found_from_a_base_of_zero(void) {
+    mi_image src;
+    if (mi_open(FIXTURE, &src) != 0) { CHECK(0, "image_base: fixture would not open"); return; }
+    size_t size = src.size;
+    uint8_t *buf = mi_release(&src);
+
+    mi_image im;
+    struct segment_command_64 *text;
+    uint64_t out;
+
+    /* 1. Unmutated: found, and the value agrees with mi_text_base. */
+    if (mi_wrap(buf, size, &im) == 0) {
+        out = 0xdeadbeef;
+        CHECK(mi_image_base(&im, &out) == 0, "mi_image_base(fixture) == 0 (found)");
+        CHECK(out == 0x100000000ULL, "  *out == 0x100000000 (got 0x%llx)",
+              (unsigned long long)out);
+        CHECK(mi_text_base(&im) == out, "  and mi_text_base agrees");
+        mi_close(&im);
+    } else CHECK(0, "image_base: unmutated fixture would not wrap");
+
+    /* 2. A base that legitimately IS 0 -- what a dylib looks like. FOUND,
+     *    with *out == 0. mi_text_base cannot say this: its 0 is ambiguous,
+     *    and asserting that ambiguity here is what pins WHY the split
+     *    exists, so a future edit cannot quietly collapse the two again. */
+    if (mi_wrap(buf, size, &im) == 0) {
+        text = mi_find_segment(&im, "__TEXT");
+        if (text) {
+            text->vmaddr = 0;
+            out = 0xdeadbeef;
+            CHECK(mi_image_base(&im, &out) == 0,
+                  "mi_image_base(base 0) == 0 -- a base of 0 is FOUND, not 'no such segment'");
+            CHECK(out == 0, "  *out == 0 (got 0x%llx)", (unsigned long long)out);
+            CHECK(mi_text_base(&im) == 0,
+                  "  mi_text_base still returns its ambiguous 0 here (unchanged on purpose)");
+            text->vmaddr = 0x100000000ULL;   /* restore for the next arm */
+        } else CHECK(0, "image_base: no __TEXT in the fixture");
+        mi_close(&im);
+    } else CHECK(0, "image_base: base-0 fixture would not wrap");
+
+    /* 3. No segment maps the header at all: __TEXT keeps fileoff 0 but stops
+     *    having content, and __PAGEZERO's filesize was already 0. -1. */
+    if (mi_wrap(buf, size, &im) == 0) {
+        text = mi_find_segment(&im, "__TEXT");
+        if (text) {
+            uint64_t saved = text->filesize;
+            text->filesize = 0;
+            out = 0xdeadbeef;
+            CHECK(mi_image_base(&im, &out) == -1,
+                  "mi_image_base(no header-mapping segment) == -1");
+            CHECK(mi_text_base(&im) == 0, "  and mi_text_base returns 0, as it always did");
+            text->filesize = saved;
+        } else CHECK(0, "image_base: no __TEXT in the fixture");
+        mi_close(&im);
+    } else CHECK(0, "image_base: no-content fixture would not wrap");
+
+    free(buf);
+}
+
 int main(void) {
     test_open_accepts_a_real_macho();
     test_open_reports_its_capacity();
@@ -467,6 +538,7 @@ int main(void) {
     test_find_segment();
     test_find_section();
     test_text_base_is_the_segment_mapping_the_header();
+    test_image_base_separates_not_found_from_a_base_of_zero();
 
     if (fails == 0) { printf("image_test: all cases pass\n"); return 0; }
     printf("image_test: %d FAILED\n", fails);

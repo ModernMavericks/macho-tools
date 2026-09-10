@@ -682,9 +682,19 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
      * legitimate answer rather than the "not found" sentinel. Reading it as
      * the sentinel is what made this gate bail at its precondition on every
      * dylib on the machine, so the LC_FUNCTION_STARTS heuristic below never
-     * ran and `verify` printed a verdict it had not reached. */
+     * ran and `verify` printed a verdict it had not reached.
+     *
+     * This path says so on stderr because the caller that matters prints
+     * "FAILED (see above)" (cli/macho9.c's cmd_verify) and a silent -1 here
+     * is what made that line contentless -- the exact fingerprint this bug
+     * was finally identified by. The refusal is correct and now rare; it
+     * should still be legible when it happens. */
     uint64_t base;
-    if (mi_image_base(&im, &base) != 0) return -1;
+    if (mi_image_base(&im, &base) != 0) {
+        fprintf(stderr, "macho_grow: implausible -- no segment maps the header, so there "
+                        "is no image base to resolve base-relative entries against\n");
+        return -1;
+    }
 
     struct mg_plausible_find_ctx fctx = { 0, 0 };
     mi_each_lc(&im, mg_plausible_find_cb, &fctx);

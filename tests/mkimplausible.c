@@ -8,9 +8,17 @@
  * tests/wrapper_test.sh through the `rename_segment` wrapper. Both need an
  * input the gate rejects.
  *
- * They used to find one by scanning /usr/lib for a real dylib whose
- * LC_FUNCTION_STARTS heuristic mg_plausible gets wrong -- 26 of the 26 thin
- * 64-bit dylibs there qualify on 10.9 -- and SKIP if none turned up. That
+ * They used to find one by scanning /usr/lib for a dylib mg_plausible
+ * refused -- all 26 thin 64-bit dylibs there did on 10.9 -- and SKIP if none
+ * turned up. That count is NOT evidence the LC_FUNCTION_STARTS heuristic gets
+ * real dylibs wrong, and this comment used to say it was. The heuristic never
+ * ran on any of them: mg_plausible took its image base from mi_text_base,
+ * whose 0 return means BOTH "no segment maps the header" and "the base is 0",
+ * and a dylib is linked at base 0 -- so it bailed at the precondition. Since
+ * mi_image_base separated those two answers (src/image.h) all 26 pass, and
+ * the scan this fixture replaced would now find nothing to use on ANY host.
+ * That is a second, independent reason to build the input rather than look
+ * for one -- and the original reason still stands on its own: a scan
  * passes on the target and silently covers NOTHING on the cross/CI runner,
  * where those dylibs live only in the dyld shared cache: the one behavioural
  * change this repo made to macho9 would have shipped with no coverage at all
