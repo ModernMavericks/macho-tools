@@ -17,8 +17,12 @@ it is more real than expected.** Nobody, anywhere, has moved a newer Apple `dyld
 onto an older macOS; every project that touches dyld's source either keeps it on its
 own OS (`DiegoMagdaleno/dyld`, `PureDarwin/dyld`) or moves it sideways to Linux
 (`darling-dyld`), and modern dyld is an Xcode-project-only, C++20-and-Swift,
-internal-SDK build that additionally expects an OS-matched shared cache and a
-`libobjc` contract 10.9's objc4-551 predates. What *is* real, and what I did not
+internal-SDK build that additionally expects an OS-matched shared cache and syscalls
+above 10.9's ceiling. The cleanest single killer is Objective-C: dyld swapped
+`dyld_register_image_state_change_handler` for `_dyld_objc_notify_register` in
+**dyld-421.2 (macOS 10.12)** and kept **no** compatibility stub, so a modern dyld on
+10.9 would die with `Symbol not found` in every process before `main` — verified from
+both ends. What *is* real, and what I did not
 expect, is that **10.9 sits inside a closed window in which the XNU kernel honours an
 arbitrary `LC_LOAD_DYLINKER` path.** The kernel check that pins the dynamic linker to
 `/usr/lib/dyld` was added in 10.11 and is absent from 10.9 and 10.10. I verified this
@@ -198,12 +202,38 @@ supported cacheless path, and whether it would reject a `dyld_v1  x86_64` cache
 outright, I did not determine.** This is the single obstacle I am least sure about and
 it is potentially decisive.
 
-### Objective-C runtime coupling — **hard block for anything touching ObjC**
+### Objective-C runtime coupling — **hard block. Verified, and it is a clean cut.**
 
-Modern dyld drives `libobjc` through `_dyld_objc_notify_register` and does class and
-selector pre-optimisation; 10.9 ships objc4-551, which predates that contract. Any
-modern-dyld-on-10.9 plan would have to run against 10.9's `libobjc` and would find the
-interface it expects absent. **Exact signature-by-version comparison: unverified.**
+This is not a gradual drift; it is a single-release swap, and 10.9 is on the far side.
+
+`dyld_register_image_state_change_handler` — the interface 10.9's `libobjc` uses —
+is present in dyld 239.3, 239.4, 353.2.1 and 360.22, **and in no release after**.
+`_dyld_objc_notify_register`, the modern one, appears **first in dyld-421.2 (macOS
+10.12)**. The same release removes one and adds the other. **No compatibility stub was
+kept**: the old symbol is absent from `dyld/dyld.exp` and `libdyld/libdyldGlue.cpp`
+entirely. The contrast is what makes that conclusive — `_dyld_objc_notify_register`
+*is* retained in modern `libdyldGlue.cpp` as a live exported entry point that merely
+`halt()`s, which is what a deliberately-kept-but-dead symbol looks like in this
+codebase. 10.9's symbol is not kept at all.
+
+Confirmed from the 10.9 side on this box (verified):
+
+```
+$ nm -gU /usr/lib/system/libdyld.dylib | grep -i "image_state_change|objc_notify"
+00000000000028a4 T _dyld_register_image_state_change_handler
+```
+
+— the old symbol, and only the old symbol. So a modern dyld on 10.9 would fail with
+`Symbol not found: _dyld_register_image_state_change_handler` in **every** process,
+before `main`.
+
+The escape hatch of "port a modern `libobjc` too" is narrower than it looks: the
+registration struct has its own version ladder, and *only v4 works* — v1 lived
+dyld-1042.1→1125.5, v2 and v3 are still declared in the public `dyld_priv.h` but are
+dead at runtime (`libdyldGlue.cpp` does no version translation, so a non-v4 struct
+falls into the halt chain), and **v4 was born in dyld-1235.2**. So the ported `libobjc`
+would have to come from **macOS 15 or later**.
+
 Note that `macho-tools` already has *two* verbs (`segment`, `retag-swift`) whose whole
 job is placating 10.9's `libobjc` — that coupling is real and is not a dyld problem.
 
@@ -233,12 +263,29 @@ layout 10.9's debugger, `libproc`, `dtrace` and crash reporter expect, or those 
 break. That is a constraint on a shim, not a blocker — but it is one that E5's 8 KB toy
 does not satisfy and a real shim would have to.
 
-### Syscall / kernel ABI — **not determined**
+### Syscall / kernel ABI — **a real block, only partly characterised**
 
-Modern dyld reaches the kernel through `libsystem_kernel` internals. I did **not**
-enumerate which modern traps and `mach_vm_*`/`task_info`/`os_unfair_lock`/page-in-linking
-facilities xnu-2422 lacks. Assume it is substantial and assume it is work rather than a
-clean block, but **treat this as unverified**.
+Modern dyld reaches the kernel through `libsystem_kernel` internals and calls syscalls
+that simply do not exist on this kernel. 10.9's ceiling is low and easy to check
+(verified locally):
+
+```
+$ grep SYS_MAXSYSCALL /usr/include/sys/syscall.h
+#define	SYS_MAXSYSCALL	456
+```
+
+**Any syscall numbered 456 or above is absent on 10.9 by construction.** A second
+research pass identified syscalls **536 and 550** as ones modern dyld needs; both are
+far above 10.9's ceiling. I did **not** verify which calls those numbers name, and I
+did **not** enumerate the full set of modern traps, `mach_vm_*`, `task_info`,
+`os_unfair_lock` or page-in-linking facilities xnu-2422 lacks. Treat the specific
+numbers as second-hand; treat "the syscall surface is materially different and some of
+what modern dyld needs is simply not there" as established.
+
+That same pass classified **comm-page, AMFI, `csr`, sandbox and lockdown** differences
+as *merely work* rather than blocks, and confirmed that `dyld_all_image_infos` stays
+readable — consistent with what I found independently (see below and Q3's debugger
+section).
 
 ---
 
@@ -337,6 +384,15 @@ Darling's `mldr` (map the image, load the real linker, hand off). A 10.9 version
 4. map `/usr/lib/dyld`'s segments itself, apply its slide, reconstruct the entry stack,
    and jump to its `_dyld_start`.
 
+**How big is the chained-fixups part?** Smaller than the rest. Apple's runtime applier
+landed in **dyld-732.8 (macOS 10.15.0)** — verified: `include/mach-o/fixup-chains.h` is
+absent at dyld-655.1.1 (10.14) and present at dyld-732.8 — and a second research pass
+sizes the applier itself at roughly **230–315 lines**, with Frida's
+[`fixupchainprocessor.c`](https://github.com/frida/frida-gum) as a readable reference
+implementation. That is encouraging for step 3 and irrelevant to steps 1, 2 and 4,
+which are where the risk lives. It is also, note, the same work `declassify` already
+does — on disk, where it is easier and testable.
+
 Steps 3 and 4 are each substantial, and step 3 is strictly harder in memory than on
 disk: the opcode streams `declassify` appends have to live *somewhere a segment
 covers*, which on disk means extending `__LINKEDIT` and in memory means allocating and
@@ -407,11 +463,14 @@ Stated explicitly, because a confident wrong answer here is worse than a gap.
    cache's magic and saw that the repo carries a `cache_builder/`; I did not read the
    runtime's cache-validation path. **This is the biggest gap and it may be decisive.**
 2. **Which modern syscalls, Mach traps and kernel facilities modern dyld needs that
-   xnu-2422 lacks.** Not enumerated at all.
+   xnu-2422 lacks.** *Partly closed:* 10.9's `SYS_MAXSYSCALL` is 456 (verified), and a
+   second research pass names syscalls 536 and 550 as needed. The full set is still not
+   enumerated, and I did not verify what 536 and 550 are.
 3. **Which parts of modern dyld require Swift**, and therefore how much of it is
    categorically unbuildable for 10.9 rather than merely laborious.
-4. **The exact `_dyld_objc_notify_register` signature drift** between dyld-239 and
-   modern dyld, version by version.
+4. ~~**The exact `_dyld_objc_notify_register` signature drift.**~~ **Closed** — see
+   Q3's ObjC section. Clean cut at dyld-421.2 / macOS 10.12, no compat stub, confirmed
+   from both ends.
 5. **Whether `dynld` or `compatra` handle `LC_DYLD_CHAINED_FIXUPS`.** Neither README
    says.
 6. **Whether 10.9 imposes any code-signing constraint on the dylinker vnode beyond
