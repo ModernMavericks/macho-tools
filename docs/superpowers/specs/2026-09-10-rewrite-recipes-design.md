@@ -107,6 +107,48 @@ currently bind to which dylib — so it cannot be written as a static expansion.
 A language that offered `--explain` and then could not explain its three most
 consequential statements would claim more than it delivers.
 
+## Relations — where the vocabulary split actually comes from
+
+A binary is a graph that has been flattened, and the hard part of editing one is
+never the edit: it is the cross-references. Offsets, counts, indices, addresses,
+some absolute and some derived. Nearly every defect this codebase records is the
+same shape — an edit changed the flattened form without updating something that
+pointed into it. Of the four defects `docs/PROPOSAL.md` lists, three are that
+(the fourth was an array bounds bug).
+
+So the physical/logical split above is a shadow of something more basic.
+**Physical means nothing points at what you are touching. Logical means
+something does.** We did not invent that boundary; we found it, which is what
+you would expect of a property that belongs to the format rather than to our
+taste.
+
+This design names the relations as **data in one place**, rather than leaving
+them as knowledge distributed across whichever functions happen to maintain
+them:
+
+| relation | referent | maintained today by | historical defect |
+|---|---|---|---|
+| library ordinal | the subsequence of ordinal-carrying load commands | `mo_map_build`/`mo_map_apply` (`src/ordinals.c`), consumed by `nlist.n_desc` and the `SET_DYLIB_ORDINAL*` opcodes in the bind/weak/lazy streams | PROPOSAL #2: `-delete` left ordinals stale, `dyld: library ordinal (4) too big` |
+| base-relative values | the image base | `src/grow.c`'s re-base pass over `__init_offsets`, function starts, and the export trie | PROPOSAL #1 and #4 — and #4 was *two* correct implementations of #1 both running, so entries gained `2*grow` |
+| file-offset fields | `__LINKEDIT`'s blobs | `src/grow.c`'s offset-bump table, `src/linkedit.c` | — |
+| initializer and unwind targets | `LC_FUNCTION_STARTS` | `mg_plausible` — checked, never repaired | the base-of-zero precondition bug (Task 0 of the reporting plan) |
+| `sizeofcmds` | the header pad, i.e. the first section's file offset | `mr_build_lcs`, `mg_grow_header` | — |
+
+Two things follow, and both are requirements of this design rather than
+observations about it:
+
+**The vocabulary split is derived, not hardcoded.** A statement is logical
+exactly when the structure it edits is the referent of some relation in that
+table. `dylib delete` and `dylib insert` reorder the ordinal-carrying
+subsequence; `fixups lower` rewrites the blobs that file-offset fields name.
+Everything else touches nothing anyone points at. If a relation is added, the
+split moves with it — nobody has to remember to update a second list.
+
+**PROPOSAL's own argument for this is defect #4.** Two correct functions,
+written months apart against different predicates, met in a merge and silently
+composed. Its conclusion was *"only one place to put the knowledge does"* —
+which this applies one level up, to the knowledge of what points at what.
+
 ## Directives
 
 Properties of the run, not steps in it, so they read as declarations:
@@ -198,6 +240,23 @@ wrapper during the compat-tool retirement, on the grounds that a
 disabled-safety-check shaped hole in a shipped artifact is worse than the false
 positives it hides. Reintroducing one at a higher level would undo that.
 
+**Verify reads the relation table.** Checking an invariant and repairing it are
+the same declaration read in opposite directions, so they are written once.
+Today they are not: `mg_verify`, `mg_snapshot_take` and `mg_plausible` each
+hand-roll their own version of "is this still consistent", each with its own
+hand-rolled applicability condition — and one of those conditions is the bug
+Task 0 fixes. A relation declared with its applicability ("the initializer
+invariant applies when `LC_FUNCTION_STARTS` is present") could not have grown a
+base-of-zero sentinel, because nobody writing the declaration would have written
+one.
+
+This widens the design past the `rewrite` verb: it touches `src/grow.c`'s
+verification, which the recipe language does not otherwise care about. That cost
+is accepted rather than hidden, for two reasons. A mandatory verify gate is only
+worth having if the thing it runs is trustworthy, and this design makes verify
+mandatory. And the deriving of the vocabulary split above needs the same table,
+so it is paid for twice over.
+
 ## The recipe is the plan
 
 `docs/PROPOSAL.md` says `port` *"can plan across families"*, implying the tool
@@ -252,6 +311,38 @@ this uses it for *deliberate refusal*. It is documented in `--capabilities` and
 relied on by the compat wrappers, so changing it now would be a compatibility
 break. It will surprise someone; this is where it is written down.
 
+## Who this is for
+
+Worth stating plainly, because it sets the design pressure and an earlier draft
+of this reasoning got it wrong.
+
+**Today's callers are few**: `mavericksforever.com/claude/install.sh`, one
+local script in `mavericks-claude-ongoing`, and this repo's own suites. That was
+established from evidence, not assumption.
+
+**The intended population is the ModernMavericks family**, which is roughly
+thirty repos — `golang`, `clang`, `nodejs`, `rust`, `openssh`, `tailscale`,
+`signal-desktop`, `swift-toolchain` and the rest. Many of those ship binaries
+built by toolchains fifteen years newer than the OS they must run on, and
+getting them to load at all is exactly the surgery this toolkit performs. One
+Claude binary is the first customer, not the market.
+
+That changes what a recipe *is*. Not a way to spell a one-off command line, but
+**an artifact worth committing**: one recipe per ported application, living
+beside that application's packaging, reviewable in a diff, and re-runnable when
+its upstream cuts a new version. A port's surgery becomes a file someone can
+read and reason about, rather than a shell incantation reconstructed from an
+install script each time.
+
+It also raises the value of the relation table above. A single known binary can
+be handled by knowledge distributed across the functions that happen to need it.
+Thirty applications of varying shape — different linkers, different eras,
+different `__LINKEDIT` layouts — is where "only one place to put the knowledge"
+stops being tidiness and starts being the thing that keeps the toolkit correct.
+
+What it does **not** change: this is still one binary format and one target OS.
+See below.
+
 ## Out of scope
 
 - Conditionals, variables, includes. The operations are already safe no-ops on
@@ -264,6 +355,43 @@ break. It will surprise someone; this is where it is written down.
   exposes no symbol verbs.
 - `--explain` / expansion of logical statements into physical ones. See "Why the
   levels are marked rather than composed".
+
+### A format-description engine — the road not taken
+
+Zooming out, the general version of this is a language where a **format
+description declares the relations** and the engine derives repair from them:
+you would say "this index is one-based into the subsequence matching this
+predicate" once, and every edit that reorders that subsequence would renumber
+correctly by construction, for any format. Four levels rather than two — bytes,
+structure, relation-preserving, intent — with each statement's level explicit,
+because the level is what the engine is promising.
+
+**We are deliberately not building that**, and this section exists so the next
+person does not reopen it without new information.
+
+The reasons are not "one binary" — see "Who this is for". They are:
+
+- **One format.** Mach-O, on one target OS. The generality buys nothing until
+  there is a second format, and there is no plan for one.
+- **The deepest fork is already decided against the general case.** A
+  format-driven engine naturally *rebuilds* a binary from its parsed model.
+  This toolkit must not: "the tools must never move a byte." That constraint is
+  the reason it exists — 10.9's `install_name_tool` refuses these binaries
+  outright ("file not in an order that can be processed") precisely because it
+  rebuilds `__LINKEDIT` and expects a 2013-era ordering. Repair-in-place is
+  much harder than rebuild, and it is the whole product.
+- **Nobody has built it.** GNU poke is the closest — a real language for
+  describing and editing binary structures — and it stops at the structure
+  level: it will let you assign to a field and has no notion of repairing what
+  the assignment invalidated. Kaitai Struct is read-mostly. LIEF derives repair
+  but rebuilds. That is either a gap or a signal, and finding out which is not
+  this project's job.
+
+**The limit this accepts, stated plainly:** the statement set is a hardcoded
+enumeration of the relations we happen to know, so adding an edit — or a format
+— means editing C, not data. The relation table centralises that knowledge but
+does not make it extensible by configuration. That is a deliberate ceiling, not
+an oversight.
 
 ## Consumers
 
