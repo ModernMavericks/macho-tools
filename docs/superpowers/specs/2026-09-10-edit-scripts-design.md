@@ -251,7 +251,7 @@ After — `claude.edits`:
 
 ```
 # Claude Code -> 10.9
-fixups        lower
+fixups        set      classic
 version-min   set      10.9
 load-command  delete   uuid
 load-command  delete   codesig
@@ -273,7 +273,7 @@ leaves `$REAL` untouched instead of `$T` half-converted.
 # zoom.edits -- repoint frameworks 10.9 lacks at the stubs beside the binary
 allow-grow
 
-fixups        lower
+fixups        set      classic
 version-min   set      10.9
 swift-abi     set      legacy
 segment       rename   __DATA_CONST  __DATA
@@ -314,7 +314,7 @@ EOF
 ```
 $ macho9 edit --verbose /tmp/claude claude.edits
 /tmp/claude: header pad 96 bytes available (LC end=2784, first sect=2880)
-  fixups lower
+  fixups set classic
       chained fixups -> LC_DYLD_INFO_ONLY
       94,912 rebases and 3,181 binds emitted (462 KB of opcodes)
       stripped LC_DYLD_EXPORTS_TRIE, LC_BUILD_VERSION
@@ -370,7 +370,7 @@ load-command  delete    KIND        uuid | codesig | source-version
 segment       rename    OLD NEW
 version-min   set       10.9
 swift-abi     set       legacy
-fixups        lower
+fixups        set      classic
 dylib         replace   OLD NEW
 dylib         append    PATH
 dylib         insert    PATH
@@ -405,7 +405,7 @@ that work as part of itself:**
   streams — and refuses outright if any symbol still binds to what you asked to
   remove.
 - `dylib insert` renumbers every dylib after the one it inserts.
-- `fixups lower` rebuilds `__LINKEDIT`'s bind and rebase streams wholesale.
+- `fixups set classic` rebuilds `__LINKEDIT`'s bind and rebase streams wholesale.
 
 The caller writes one line and gets the whole consequence. That is the point:
 the alternative is doing the edit and finding out later that something else
@@ -527,7 +527,7 @@ observations about it:
 **Which operations carry follow-ups is derived, not hardcoded.** An operation
 needs follow-up work exactly when the structure it edits is the referent of some
 relation in that table. `dylib delete` and `dylib insert` reorder the ordinal-carrying
-subsequence; `fixups lower` rewrites the blobs that file-offset fields name.
+subsequence; `fixups set classic` rewrites the blobs that file-offset fields name.
 Everything else touches nothing anyone points at. If a relation is added, the
 set moves with it — nobody has to remember to update a second list.
 
@@ -577,7 +577,7 @@ the generator and the parser cannot drift.
 ```
 # port-claude.edits
 allow-grow
-fixups        lower
+fixups        set      classic
 version-min   set      10.9
 load-command  delete   uuid
 load-command  delete   codesig
@@ -597,7 +597,7 @@ dylib         replace  /usr/lib/libc++.1.dylib     @loader_path/../c++.1.dylib
 5. **Write once** — atomically to `FILE`, or to `--output`.
 
 Sequential rather than collapsing the edit script into one operation set, because
-`fixups lower` cannot batch with anything (later statements must see the lowered
+`fixups set classic` cannot batch with anything (later statements must see the lowered
 image), and because "run in sequence" is what a reader will assume. The cost is
 rebuilding the load-command table once per statement; on a 200MB binary that
 table is a few KB and the expensive part is I/O, which happens once either way.
@@ -689,7 +689,7 @@ state and one test to check.
 |---|---|---|
 | `port` | `edit` | "port" collides with Mach ports, in a Mach-O tool, and "apply" is too broad. `edit` names what it does to the binary and matches the artifact it takes — an edit script — and separates cleanly from `info` and `verify`, the verbs that do not change the file |
 | `lc` | `load-command` | matches `otool -l`'s own term and the spec's stated principle that "the family is a subcommand, the operation is a flag, and both are always explicit". Also retires the `-strip-lc` spelling, which invited confusion with binutils' `strip` (symbols and debug info) |
-| `declassify` | `fixups lower` | gives it a family, where it was the one family-less verb. "Lower" is the compiler term for translating to a more primitive representation, which is exactly what it does: chained fixups (macOS 12+) down to `LC_DYLD_INFO_ONLY` (10.6+) |
+| `declassify` | `fixups set classic` | gives it a family, where it was the one family-less verb. "Lower" is the compiler term for translating to a more primitive representation, which is exactly what it does: chained fixups (macOS 12+) down to `LC_DYLD_INFO_ONLY` (10.6+) |
 | `retag-swift` | `swift-abi set legacy` | it is the same kind of operation as `version-min` — adjusting what the binary claims about its deployment target so an older runtime accepts it — so it is named to match rather than as a one-off verb. See "Why `swift-abi`, not `retag-swift`" |
 | `--for 10.9` | dropped | `version-min set 10.9` says it plainly, and `--for` was the only justification "port" had left |
 
@@ -741,7 +741,7 @@ them rather than assuming.
 ## Out of scope
 
 - Conditionals, variables, includes. The operations are already safe no-ops on
-  inapplicable input — `fixups lower` passes an already-lowered binary through
+  inapplicable input — `fixups set classic` passes an already-classic binary through
   unchanged, and a `replace` that matches nothing does nothing — so a predicate
   buys almost nothing for a real parser's cost.
 - Per-slice targeting of fat containers. See "Reserved" above.
