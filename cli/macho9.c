@@ -672,12 +672,12 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  * rename_segment has always done, in the same place, via the same
  * mseg_name_fits.
  *
- * THREE DELIBERATE DIVERGENCES FROM rename_segment, all of which a wrapper
+ * FOUR DELIBERATE DIVERGENCES FROM rename_segment, all of which a wrapper
  * author has to know about, because reproducing rename_segment's observable
  * behaviour on top of this verb means accounting for each. Each is closed (or
  * knowingly not closed) in compat/rename_segment.sh, whose header says which
- * and why -- and which names a FOURTH, found while writing it: this verb
- * handles a fat container, and rename_segment never did.
+ * and why. A fifth USED TO belong on this list -- mg_plausible -- and no
+ * longer does; see the note below the bullets.
  *
  *   - EXIT CODE WHEN NOTHING MATCHED. mr_apply_file reports "nothing to
  *     change" and exits 0; rename_segment exits 2. This verb hands back the
@@ -685,19 +685,33 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  *     prints `macho9 segment: renamed=<N>`, so a wrapper can tell the two
  *     apart exactly rather than by inference. See the count's own comment in
  *     cmd_segment below.
- *   - mg_plausible. mr_process_thin runs it over the finished image before
- *     writing (src/rewrite.c, "Last gate before the bytes reach disk") and
- *     refuses if it fails; rename_segment has no such gate. So this verb can
- *     REFUSE a binary rename_segment would happily rename -- not because the
- *     rename is unsafe, but because the image was already implausible before
- *     anything touched it. That is the right default for a shared rewriter
- *     and MACHO_NO_VERIFY=1 opts out, but it is a real behavioural
- *     difference, not a wording one.
  *   - STDOUT. mr_process_thin prints its own "header pad N bytes available"
  *     and "updated (sizeofcmds=...)" lines, and mr_apply_file its "Updated
  *     ..." line; rename_segment prints exactly one line, "%s: renamed %d
  *     segment(s) %s -> %s". A wrapper that passes this verb's stdout through
- *     will not look like rename_segment. */
+ *     will not look like rename_segment.
+ *   - FAT CONTAINERS. This verb reaches mr_apply_file, which handles a
+ *     classic fat container by rewriting each slice it understands and
+ *     reassembling; rename_segment ran mi_open, which is thin-only and fails
+ *     outright on a fat file. So this verb can rename inside a fat binary
+ *     that rename_segment refused to touch at all.
+ *   - LC_LAZY_LOAD_DYLIB. mr_apply_file builds the library-ordinal map
+ *     (mo_map_build, src/ordinals.c) before it looks at what the operations
+ *     are, and that builder refuses any image carrying an
+ *     LC_LAZY_LOAD_DYLIB. A segment rename touches no ordinal, so the
+ *     refusal cannot be protecting anything here, but it is real: this verb
+ *     can REFUSE a binary rename_segment -- which never built an ordinal
+ *     map -- happily renamed. Not closed by this verb; compat/rename_segment.sh
+ *     reports it rather than working around it.
+ *
+ * mg_plausible USED TO BE a fifth divergence and no longer is. mr_process_thin
+ * (src/rewrite.c) skips that gate for a rename-only operation set -- scoped by
+ * mr_is_rename_only, not by an environment variable -- because the gate asks
+ * an OFFSET question and a segment rename moves no offset. So this verb no
+ * longer refuses anything rename_segment would have renamed on that account;
+ * MACHO_NO_VERIFY is not part of this verb's or its wrapper's story at all
+ * (compat/rename_segment.sh sets no environment variable). Every operation
+ * that CAN move an offset still meets the gate exactly as before. */
 static int cmd_segment(const char *path, const char *oldname, const char *newname) {
     if (!mseg_name_fits(newname)) {
         fprintf(stderr, "macho9 segment: new segment name '%s' is longer than the %d bytes "

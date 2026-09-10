@@ -188,6 +188,17 @@ refuses fm-chain   2 "$FM_CHAIN_X" -- fix_macho f -rename_seg __DATA __X -rename
 # A chain of three trips at its first link, not its last.
 refuses fm-chain-3 2 "$FM_CHAIN_P" \
     -- fix_macho f -rename_seg __DATA __P -rename_seg __P __Q -rename_seg __Q __R
+# The empty string is a legal NEW -- fix_macho truncates any name to the
+# 16-byte field width, and 0 bytes is a valid truncation -- so a chain through
+# an empty NEW must refuse exactly like a chain through any other name.
+# Regression test for the hole where mt_fm_chain's newline field-splitting
+# silently dropped an earlier EMPTY stored NEW (newline is IFS white space,
+# so an empty field between two newlines vanishes rather than surviving as an
+# iteration of the `for` loop) and so failed to recognize the second pair's
+# OLD as chaining off it.
+FM_CHAIN_EMPTY='translate.sh: no equivalent -- -rename_seg  renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary'
+refuses fm-chain-empty 2 "$FM_CHAIN_EMPTY" \
+    -- fix_macho f -rename_seg __DATA '' -rename_seg '' __Y
 # ... and it must not OVER-refuse. Each of these three neighbouring shapes was
 # measured against the real fix_macho on tests/fixture.macho and agrees
 # byte-for-byte with its translation, so each must still translate.

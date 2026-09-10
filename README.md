@@ -118,9 +118,12 @@ Two independent checks back that up:
 - **`mg_plausible`** asks a different question of the finished file — do
   initializers and unwind entries still land on an address `LC_FUNCTION_STARTS`
   lists? It needs no "before" image, so the shared rewriter (`change_dylib` and
-  `macho9 dylib`/`rpath`/`lc` alike) runs it immediately before writing and
-  refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1`
-  opts out.
+  `macho9 dylib`/`rpath`/`lc`/`segment` alike) runs it immediately before
+  writing and refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1`
+  opts out — except for `macho9 segment`'s rename-only case, which skips the
+  gate outright rather than offering an opt-out: a rename moves no offset, so
+  the gate can only re-decide a property the input already had (`src/rewrite.c`
+  has the reasoning and the measurement).
 
 That gate exists because every defect ever found in this code has been a silent
 success: the tool reported OK and the binary died in the loader — or worse,

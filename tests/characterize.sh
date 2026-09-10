@@ -23,7 +23,12 @@ cp "$HERE/fixture.macho" "$T/in"
 "$BIN/add_version_min" "$T/out"         >/dev/null
 "$BIN/change_dylib"    "$T/out" -strip-lc uuid -strip-lc codesig \
     -change "/usr/lib/libSystem.B.dylib" "@loader_path/../S.dylib" >/dev/null
-"$BIN/rename_segment"  "$T/out" >/dev/null 2>&1 || true
+# NOT "$BIN/rename_segment" here: a one-argument call the tool needs three to
+# do anything with, swallowed by `|| true`, so it has never once exercised
+# rename_segment -- dead weight, not coverage. Not fixed into a real
+# three-argument call either, because that WOULD change $T/out and move this
+# digest, and tests/EXPECTED is a characterization reference that is never
+# edited (see this file's own header).
 
 DIGEST=$(shasum -a 256 < "$T/out" | cut -d' ' -f1)
 if [ "$MODE" = check ]; then

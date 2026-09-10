@@ -157,12 +157,26 @@ if [ ! -e "$mw_out" ]; then
     # diagnostic for the failing redirection lands there instead of on the
     # caller's stderr, leaving just this tool's message -- one line, as the C
     # tool's perror("create output") was. Verified under /bin/sh and /bin/ksh.
-    if ! printf '' 2>/dev/null > "$mw_out"; then
+    # umask 077 for the CREATE only, not the eventual mode: a plain `>`
+    # redirect requests mode 0666, which umask can only NARROW, never widen
+    # -- it can never produce the execute bits 0755 needs, so a chmod after
+    # the fact is unavoidable in plain /bin/sh. Forcing the strictest
+    # possible umask for JUST the create means the window between create and
+    # chmod is 0600 (nothing for group/other) rather than "0666 & ~the
+    # caller's real umask", which for a permissive umask (0, say) would leave
+    # OUT briefly world-WRITABLE -- more permissive than open(..., 0755)
+    # ever produces. The real umask, captured below before this subshell can
+    # touch it, is what decides the FINAL mode; this only protects the gap.
+    mw_umask=$(umask)
+    if ! ( umask 077; printf '' 2>/dev/null > "$mw_out" ); then
         printf 'create output: cannot create %s\n' "$mw_out" >&2
         exit 1
     fi
-    mw_umask=$(umask)
-    chmod "$(printf '%o' "$(( 0755 & ~0$mw_umask ))")" "$mw_out" 2>/dev/null
+    if ! chmod "$(printf '%o' "$(( 0755 & ~0$mw_umask ))")" "$mw_out"; then
+        printf '%s: WARNING: could not chmod %s to %s; leaving it at the more\n' \
+            "$0" "$mw_out" "$(printf '%o' "$(( 0755 & ~0$mw_umask ))")" >&2
+        printf '%s: restrictive mode the create step used instead\n' "$0" >&2
+    fi
 fi
 
 # Install through the path: inode, mode, hard links and xattrs all survive,

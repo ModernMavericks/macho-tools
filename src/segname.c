@@ -8,7 +8,6 @@
 #include <mach-o/loader.h>
 
 #include "segname.h"
-#include "image.h"
 
 int mseg_name_fits(const char *name) {
     return strlen(name) <= MSEG_NAME_MAX;
@@ -34,25 +33,4 @@ int mseg_rename_lc(struct load_command *lc, const char *oldname, const char *new
         strncpy(sects[s].segname, newname, MSEG_NAME_MAX);
     }
     return 1;
-}
-
-struct mseg_ctx {
-    const char *oldname;
-    const char *newname;
-    int renamed;
-};
-
-static int mseg_rename_cb(const struct load_command *lc, void *ctx_) {
-    struct mseg_ctx *ctx = ctx_;
-    /* Casting away const to write through `lc` is exactly what image.h's
-     * mi_each_lc comment sanctions (it names this very rename as the
-     * example), and mseg_rename_lc touches neither cmd nor cmdsize. */
-    ctx->renamed += mseg_rename_lc((struct load_command *)lc, ctx->oldname, ctx->newname);
-    return 0;   /* renames every match; never needs to stop early */
-}
-
-int mseg_rename_image(const mi_image *im, const char *oldname, const char *newname) {
-    struct mseg_ctx ctx = { oldname, newname, 0 };
-    mi_each_lc(im, mseg_rename_cb, &ctx);
-    return ctx.renamed;
 }

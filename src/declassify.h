@@ -77,10 +77,16 @@
  *   32 LC_SEGMENT_64 commands, and 16 strippable ones
  *     (LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION together)
  *     -- more of either is MDCL_REFUSED.
- *   1MB of rebase opcodes and 1MB of bind opcodes, about 200k fixups each
- *     (roughly 5 bytes per fixup). A binary with more fixups than that is
- *     MDCL_REFUSED, not a binary whose remaining pointers silently go
- *     unrebased. This is the limit a very large modern binary reaches first.
+ *   1MB of rebase opcodes and 1MB of bind opcodes. A rebase costs about 5
+ *     bytes (SET_SEGMENT_AND_OFFSET_ULEB + DO_REBASE_IMM_TIMES), so the
+ *     rebase budget is roughly 200k fixups; a bind costs far more --
+ *     SET_DYLIB_ORDINAL(_IMM or _ULEB), SET_SYMBOL_TRAILING_FLAGS_IMM, the
+ *     symbol name plus its NUL, SET_SEGMENT_AND_OFFSET_ULEB, and DO_BIND --
+ *     roughly 27 bytes for a typical symbol name, so the bind budget is
+ *     reached around 40k fixups, not 200k. A binary with more fixups than
+ *     its budget allows is MDCL_REFUSED, not a binary whose remaining
+ *     pointers silently go unrebased. The bind budget is the one a very
+ *     large modern binary reaches first.
  *   2MB of slack past the end of the file, which both finished streams plus
  *     their 8-byte alignment must fit inside -- MDCL_REFUSED otherwise.
  *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY, and a __LINKEDIT

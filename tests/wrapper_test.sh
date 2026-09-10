@@ -17,9 +17,11 @@
 #                             where macho9 and the C tool disagreed. Each
 #                             assertion below names the divergence it closes.
 #
-# Every expected value here was measured against the pre-Task-2 C binaries on
-# real 10.9 (Darwin 13.4), the same provenance tests/known-callers.sh's
-# digests have. The divergences themselves are documented at their sites: the
+# Every expected value here was measured against the C binaries built from
+# commit 91b30b3 (the last commit carrying all six compat/*.c files) on real
+# 10.9 (Darwin 13.4), the same provenance tests/known-callers.sh's digests
+# have (tests/README.md's "Not run by ctest" section has the full account).
+# The divergences themselves are documented at their sites: the
 # list at the top of compat/translate.sh, and the "DELIBERATE DIVERGENCES
 # FROM <tool>" blocks in cli/macho9.c's cmd_segment, cmd_retag_swift and
 # cmd_declassify.

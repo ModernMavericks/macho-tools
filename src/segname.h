@@ -42,8 +42,6 @@
  */
 #include <mach-o/loader.h>
 
-#include "image.h"
-
 /* Bytes a segname/sectname field holds. They are NOT NUL-terminated when they
  * use all 16, which is the trap every comparison and copy here wraps. */
 #define MSEG_NAME_MAX 16
@@ -66,15 +64,5 @@ int mseg_name_fits(const char *name);
  *
  * `lc` is non-const on purpose: this writes through it. */
 int mseg_rename_lc(struct load_command *lc, const char *oldname, const char *newname);
-
-/* Rename EVERY matching segment in `im`, in place in its buffer; returns how
- * many were renamed.
- *
- * Every match, not just the first -- a binary that has already been through
- * this rename once (or has duplicate segment names for any other reason) can
- * legitimately have more than one, and each one's sections need the same
- * rename. That is what rules out mi_find_segment, which only ever returns the
- * first match. */
-int mseg_rename_image(const mi_image *im, const char *oldname, const char *newname);
 
 #endif /* MACHO9_SEGNAME_H */

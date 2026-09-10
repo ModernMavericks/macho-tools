@@ -90,7 +90,18 @@ MW_DIR=$(cd "$MW_DIR" 2>/dev/null && pwd) || {
 if [ -x "$MW_DIR/macho9" ]; then
     PATH="$MW_DIR:$PATH"
     export PATH
-elif ! command -v macho9 >/dev/null 2>&1; then
+elif command -v macho9 >/dev/null 2>&1; then
+    # NOT the same hard failure as a missing macho9-translate.sh above,
+    # because a caller may legitimately have installed macho9 elsewhere on
+    # PATH -- but it is NOT the macho9 the header comment above promises
+    # ("the one that ships alongside this wrapper"), so a version mismatch
+    # here would be silent without this line. Warn and proceed rather than
+    # refuse: refusing would break that legitimate case outright.
+    printf '%s: WARNING: macho9 is not next to me in %s; using whatever\n' "$0" "$MW_DIR" >&2
+    printf '%s: "macho9" resolves to on PATH instead, which may not be the\n' "$0" >&2
+    printf '%s: same build (set MACHO9_COMPAT_DIR to silence this by pointing\n' "$0" >&2
+    printf '%s: it at where macho9 actually is)\n' "$0" >&2
+else
     printf '%s: macho9 is not next to me in %s and not on PATH; this tool is a\n' "$0" "$MW_DIR" >&2
     printf '%s: wrapper around it and cannot do anything without it\n' "$0" >&2
     exit 1

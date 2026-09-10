@@ -15,7 +15,7 @@ Thirteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally |
 | `translate_test` | `compat/translate.sh`, the old-grammar-to-`macho9` translator Task 2's wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every verb/op/KIND the translator can emit against `macho9 --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
 | `wrapper_test` | the five `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment` and `retag_swift_classes`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `macho9` returns `EX_REFUSED`; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/macho9.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
-| `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **pre-Task-2 C binaries** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. The retirement plan says it outright: "a wrapper that passes the test suite but breaks a real caller is a failure" |
+| `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from commit `91b30b3`** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. The retirement plan says it outright: "a wrapper that passes the test suite but breaks a real caller is a failure" |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
 ## Not run by `ctest`: the two by-hand sweeps
@@ -38,9 +38,16 @@ hardware, with their results committed:
   flag (1110 combinations for `change_dylib`, 39 for `fix_macho`), plus every
   arity the four flagless tools distinguish, plus hand-picked cases the fixed
   vocabulary cannot reach (the capacity caps, `install.sh`'s production line,
-  the chained `-rename_seg`). **Point its `<bindir>` at a pre-Task-2 build**:
-  five of the six are shell wrappers around `macho9` now, so a current build
-  makes the "old side" a wrapper and the comparison close to tautological.
+  the chained `-rename_seg`). **Point its `<bindir>` at a build of commit
+  `91b30b3`** (`compat: refuse chained -rename_seg, and make the matrix
+  replayable`), the last commit carrying all six `.c` files: five of the six
+  are shell wrappers around `macho9` now, so a current build makes the "old
+  side" a wrapper and the comparison close to tautological. (`f500021`
+  -- `tests: add the real elision detector, aimed at the case that can elide`
+  -- is the last commit carrying the *pre-extraction* originals, from before
+  change_dylib.c/rename_segment.c/etc. became thin argv-parsers over the
+  shared `src/` library; it is not what `known_callers`' pinned digests were
+  measured against and is named here only so both landmarks are on record.)
   The bindir it ran against is recorded in the matrix header.
 
 `compat-matrix.tsv` is a **committed artifact, not a report**: Task 2 of the

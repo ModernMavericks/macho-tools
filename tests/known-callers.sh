@@ -34,10 +34,14 @@
 # and leaf_tool_crashes.
 #
 # HOW "OUTPUT COMPARED" WORKS NOW THAT THE C TOOLS ARE GONE. Each pipeline's
-# result is pinned to the SHA-256 the pre-Task-2 C binaries produced from
+# result is pinned to the SHA-256 the C binaries built from commit 91b30b3
+# (the last commit carrying all six compat/*.c files) produced from
 # tests/fixture.macho, measured on real 10.9 hardware (Darwin 13.4, x86_64)
-# by building the last commit that still had compat/*.c and running these
-# exact command lines. That is the same device tests/EXPECTED uses, and for
+# by building that commit and running these exact command lines. tests/
+# README.md's "Not run by ctest" section has the full account, including
+# f500021, an earlier landmark (the last pre-extraction originals) that is
+# NOT what these digests were measured against. That is the same device
+# tests/EXPECTED uses, and for
 # the same reason: the binaries that produced the reference cannot be kept,
 # but what they produced can.
 #

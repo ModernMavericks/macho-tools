@@ -65,13 +65,50 @@ its own.
 
 ## What "drop-in" means here, precisely
 
-The rewritten file's bytes and the exit codes are identical to the C tools',
-with **one known exception**: `rename_segment` on a binary carrying
-`LC_LAZY_LOAD_DYLIB` refuses where the C tool renamed, because the shared
-rewriter builds its library-ordinal map before it looks at whether any
-operation could renumber. `compat/rename_segment.sh`'s header has the
-measurement. It is one file out of 300 in `tests/differential.sh`'s corpus,
-and closing it means changing `macho9`.
+The exit codes are identical to the C tools', and the rewritten file's bytes
+are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
+check them, with three known exceptions, each argued unreachable in practice
+and each measured at its own site:
+
+  * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
+    the C tool renamed, because the shared rewriter builds its
+    library-ordinal map before it looks at whether any operation could
+    renumber. `compat/rename_segment.sh`'s header has the measurement. It is
+    one file out of 300 in `tests/differential.sh`'s corpus, and closing it
+    means changing `macho9`.
+  * `retag_swift_classes` on a file that changed under it mid-run
+    (`MSWIFT_RACED`) exits 1 where the C tool exited 0, because reporting
+    success for a write that did not happen is the silent-success shape this
+    codebase refuses. `compat/retag_swift_classes.sh`'s header has the
+    measurement; a race is not something a test can stage.
+  * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
+    before any analysis exactly as the C tool's `open(O_RDWR)` did) can
+    disagree with the real open at the edges -- it consults the real uid and
+    does not see ACLs. It agrees on the two cases that actually reach a
+    caller (absent, and mode-denied); `compat/rename_segment.sh`'s header has
+    the detail.
+
+There is a fourth gap this list used to omit entirely: no argument
+combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
+`mg_grow_header` (`grep -c "grew header pad" tests/compat-matrix.tsv` is 0)
+-- `tests/fixture.macho`'s header pad is large enough, and the sweep's
+argument vocabulary short enough, that nothing in it ever needs to grow. 72
+of those rows DO emit two `--allow-grow` macho9 invocations for one old
+mixed-family `-grow` (compat/change_dylib.c issued one grow call for the
+whole operation set; the emitted sequence issues one dylib-family call and
+one rpath-family call, each capable of growing on its own), and no row forces
+either of those to actually grow. `tests/change_dylib_test.sh`'s "mixed-family
+double grow" case closes that gap directly (not through the sweep) with
+inputs sized to force a real double grow, and compares the result byte-for-
+byte against a single combined `mr_apply_file` call built the way
+`compat/change_dylib.c` used to build one. On that case the two routes are
+byte-identical: `mg_grow_header` grows by the excess over whatever pad it
+sees at the moment, rounded up to a whole page, so growing twice in sequence
+composes losslessly with growing once for the summed delta (a page-aligned
+grow does not change what the next `ceil` rounds to). That is a property of
+the growth algorithm, not a coincidence of one fixture, but it is verified
+here only for two sequential grows on one image, not for three or more mixed
+families, a fat container, or every possible order.
 
 Stdout is identical everywhere a caller or an in-repo test can see it, and
 each wrapper's own header **enumerates** the places where it is not, with the

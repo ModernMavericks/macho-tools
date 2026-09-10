@@ -5,9 +5,13 @@
 #
 # WHAT THIS REPLACED. compat/rename_segment.c was this tool's argument
 # grammar, a thin-only mi_open + lseek/write driver, its exit 2 when nothing
-# matched, and its one message, over mseg_rename_image (src/segname.h) -- the
-# same function `macho9 segment` reaches through mr_apply_file. The rename
-# itself is therefore the same code either way.
+# matched, and its one message, over its own mi_each_lc loop calling
+# mseg_rename_lc (src/segname.h) on every matching command -- the same
+# per-command function `macho9 segment` calls, once per command, from inside
+# mr_apply_file's own load-command walk. (rename_segment.c's own image-wide
+# loop, mseg_rename_image, was deleted along with rename_segment.c itself:
+# nothing else ever called it.) The rename itself is therefore the same code
+# either way.
 #
 # Why the tool exists at all (10.9's libobjc looks for __objc_* sections in
 # __DATA, and Xcode 10+ linkers put them in __DATA_CONST) is written down in
@@ -18,8 +22,9 @@
 # both refused before any I/O, by compat/translate.sh, in rename_segment's own
 # words.
 #
-# cli/macho9.c's cmd_segment lists THREE DELIBERATE DIVERGENCES a wrapper has
-# to account for.
+# cli/macho9.c's cmd_segment lists FOUR DELIBERATE DIVERGENCES a wrapper has
+# to account for, plus a note on a fifth that used to be on that list and no
+# longer is (mg_plausible, below).
 #
 #   1. EXIT 2 WHEN NOTHING MATCHED, and 2. THE ONE-LINE MESSAGE. Both need the
 #      same number: how many LC_SEGMENT_64s the rename actually matched.
@@ -47,62 +52,64 @@
 #      That was tests/README.md's second lesson -- never parse human-readable
 #      output as an oracle -- applied to `macho9 info` instead of to `otool`.
 #      The count now comes from the code that did the matching.
-#   3. mg_plausible. mr_apply_file used to run it before writing, on every
-#      operation, and refuse if it failed; rename_segment had no such gate.
-#      NOT reproduced HERE, because it is no longer a divergence: src/rewrite.c
-#      now skips that gate for a rename-only operation set, and says at the
-#      site why that is a statement about what mg_plausible checks (an OFFSET
-#      question) rather than a concession. A rename writes characters into
-#      segname/sectname and moves nothing, so the gate could only ever
-#      re-decide a property the input already had -- which it got wrong on 14
-#      of the 16 thin binaries in a 120-file /usr/lib corpus.
+#   3. THIN ONLY. rename_segment ran mi_open, which fails on a fat container,
+#      and printed "%s: not a readable 64-bit Mach-O" (exit 1). `macho9
+#      segment` goes through mr_apply_file, which HANDLES fat containers --
+#      so it would rename inside a fat file that rename_segment refused
+#      outright. `macho9 info` is thin-only in exactly rename_segment's sense
+#      (it is a bare mi_open), so gating on its EXIT STATUS reproduces the
+#      old refusal. Its output is not read: the exit status is the whole
+#      signal, which is the difference between using a machine-readable
+#      result and parsing a human-readable one. This matters in practice:
+#      most binaries under /System/Library/Frameworks are fat, so without the
+#      gate tests/differential.sh would show this wrapper rewriting files the
+#      C tool would not have.
 #
-#      This wrapper therefore sets NO environment variable and switches
-#      nothing off. Every operation that can move an offset still meets the
-#      gate, including every one compat/change_dylib.sh can reach.
+#   4. LC_LAZY_LOAD_DYLIB, NOT CLOSED, and the one real gap this wrapper
+#      ships with. mr_apply_file builds the library-ordinal map
+#      (mo_map_build, src/ordinals.c) up front, before it looks at what the
+#      operations actually are, and that builder REFUSES any image carrying
+#      an LC_LAZY_LOAD_DYLIB -- "it carries an ordinal like LC_LOAD_DYLIB
+#      does, but this codebase has never exercised renumbering it". A
+#      segment rename touches no ordinal at all, so the refusal cannot be
+#      protecting anything here; it is simply on the path. rename_segment,
+#      which never went near mr_apply_file at all, renamed such a binary
+#      happily.
 #
-# A FOURTH DIVERGENCE, not in that list, found by this task: THIN ONLY.
-# rename_segment ran mi_open, which fails on a fat container, and printed
-# "%s: not a readable 64-bit Mach-O" (exit 1). `macho9 segment` goes through
-# mr_apply_file, which HANDLES fat containers -- so it would rename inside a
-# fat file that rename_segment refused outright. `macho9 info` is thin-only in
-# exactly rename_segment's sense (it is a bare mi_open), so gating on its EXIT
-# STATUS reproduces the old refusal. Its output is not read: the exit status is
-# the whole signal, which is the difference between using a machine-readable
-# result and parsing a human-readable one. This matters in practice: most
-# binaries under /System/Library/Frameworks are fat, so without the gate
-# tests/differential.sh would show this wrapper rewriting files the C tool
-# would not have.
+#      MEASURED, on /usr/lib/libxcselect.dylib -- the one file in
+#      tests/differential.sh's corpus that carries one:
 #
-# A FIFTH DIVERGENCE, NOT CLOSED, and the one real gap this wrapper ships
-# with: LC_LAZY_LOAD_DYLIB. mr_apply_file builds the library-ordinal map
-# (mo_map_build, src/ordinals.c) up front, before it looks at what the
-# operations actually are, and that builder REFUSES any image carrying an
-# LC_LAZY_LOAD_DYLIB -- "it carries an ordinal like LC_LOAD_DYLIB does, but
-# this codebase has never exercised renumbering it". A segment rename touches
-# no ordinal at all, so the refusal cannot be protecting anything here; it is
-# simply on the path. rename_segment, which never went near mr_apply_file at
-# all, renamed such a binary happily.
+#        compat/rename_segment.c (pre-wrapper)  renamed it, exit 0
+#        macho9 segment                         refuses, exit 1
+#        macho9 lc -delete uuid                 refuses too, with the SAME message
+#        change_dylib (pre-wrapper)             refuses too, with the SAME message
 #
-# MEASURED, on /usr/lib/libxcselect.dylib -- the one file in
-# tests/differential.sh's corpus that carries one:
+#      The last two lines are the point: this is NOT rename-specific and NOT
+#      something these wrappers introduced. mo_map_build has refused this
+#      file for every operation, through every front-end, for as long as the
+#      shared rewriter has existed. What changed is only that the rename now
+#      travels through that rewriter.
 #
-#   compat/rename_segment.c (pre-wrapper)  renamed it, exit 0
-#   macho9 segment                         refuses, exit 1
-#   macho9 lc -delete uuid                 refuses too, with the SAME message
-#   change_dylib (pre-wrapper)             refuses too, with the SAME message
+#      It is the same SHAPE as the mg_plausible gate described below -- an
+#      ordinal-related gate running on an operation set that cannot
+#      renumber -- but a different call site, so it does not fall out of
+#      that fix. The smallest fix would be to skip building the ordinal map
+#      when nothing in the operation set can renumber, which is a change to
+#      macho9, not to this wrapper. Reported rather than made.
 #
-# The last two lines are the point: this is NOT rename-specific and NOT
-# something these wrappers introduced. mo_map_build has refused this file for
-# every operation, through every front-end, for as long as the shared rewriter
-# has existed. What changed is only that the rename now travels through that
-# rewriter.
+# mg_plausible USED TO BE a fifth divergence and no longer is: mr_apply_file
+# used to run it before writing, on every operation, and refuse if it failed;
+# rename_segment had no such gate. NOT reproduced HERE, because it is no
+# longer a divergence: src/rewrite.c now skips that gate for a rename-only
+# operation set, and says at the site why that is a statement about what
+# mg_plausible checks (an OFFSET question) rather than a concession. A rename
+# writes characters into segname/sectname and moves nothing, so the gate
+# could only ever re-decide a property the input already had -- which it got
+# wrong on 14 of the 16 thin binaries in a 120-file /usr/lib corpus.
 #
-# It is the same SHAPE as divergence 3 -- an ordinal-related gate running on
-# an operation set that cannot renumber -- but a different call site, so it
-# does not fall out of that fix. The smallest fix would be to skip building
-# the ordinal map when nothing in the operation set can renumber, which is a
-# change to macho9, not to this wrapper. Reported rather than made.
+# This wrapper therefore sets NO environment variable and switches nothing
+# off. Every operation that can move an offset still meets the gate,
+# including every one compat/change_dylib.sh can reach.
 #
 # EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else -- the three
 # rename_segment had. Every nonzero from `macho9 segment` is mapped to 1: its

@@ -127,8 +127,14 @@
 #     (mr_apply_file's "nothing to change."). The emitted line CANNOT carry
 #     that distinction -- reproducing it needs an out-of-band check, which is
 #     Task 2's decision, not this file's.
-#   macho9 segment additionally runs mg_plausible and prints header-pad
-#     chatter that rename_segment has neither of.
+#   macho9 segment prints header-pad chatter that rename_segment has neither
+#     of, handles a fat container that rename_segment refused outright, and
+#     -- like every mr_apply_file caller -- refuses a binary carrying
+#     LC_LAZY_LOAD_DYLIB that rename_segment, which never built an ordinal
+#     map, renamed without complaint. It does NOT additionally run
+#     mg_plausible: src/rewrite.c skips that gate for a rename-only operation
+#     set, so it is no longer one of this verb's divergences from
+#     rename_segment.
 #   macho9 retag-swift refuses (exit 2) a non-Mach-O argument that
 #     retag_swift_classes skipped silently, and exits 1 on the raced path
 #     where retag_swift_classes exited 0.
@@ -350,12 +356,25 @@ mt_fm_usage() {
 #
 # mt_fm_chain OLD -- returns 1, having reported, if OLD is a name some earlier
 # -rename_seg in this same invocation produced.
+#
+# mt_segnews holds one entry per earlier NEW, each prefixed with "=" and
+# newline-separated (see the append site below). The "=" is load-bearing, not
+# decoration: newline is IFS WHITE SPACE even when IFS is set to nothing but
+# a newline (POSIX classifies space/tab/newline together), so field-splitting
+# collapses an EMPTY field -- an earlier `-rename_seg X ''` -- into nothing,
+# and the `for` below would silently never see it. A later `-rename_seg '' Y`
+# would then not be recognized as chaining off it, which is exactly the hole
+# this function exists to close (empty is a legal NEW: fix_macho truncates
+# any name to the field width, and 0 bytes is a valid truncation). Prefixing
+# every stored entry with "=" makes even the empty-NEW entry a non-empty
+# field, so it survives the split; the same prefix on the needle keeps the
+# comparison exact.
 mt_fm_chain() {
     mt_ci=$IFS
     IFS='
 '
     for mt_cn in $mt_segnews; do
-        if [ "$1" = "$mt_cn" ]; then
+        if [ "=$1" = "$mt_cn" ]; then
             IFS=$mt_ci
             printf 'translate.sh: no equivalent -- -rename_seg %s renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary\n' "$1" >&2
             return 1
@@ -396,7 +415,7 @@ mt_tr_fix_macho() {
             # above mt_fm_chain for the mechanism and for exactly which
             # shapes are and are not affected.
             mt_fm_chain "$2" || return 2
-            mt_segnews="$mt_segnews$3
+            mt_segnews="$mt_segnews=$3
 "
             mt_seg="$mt_seg$(mt_qargs "$2" "$3")
 "

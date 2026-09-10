@@ -90,6 +90,7 @@ if [ $# -eq 0 ]; then
     chmod +x "$T/bin/change_dylib"
     CHANGE_DYLIB="$T/bin/change_dylib"
     FIX_MACHO="$T/bin/fix_macho"
+    MACHO9="$T/bin/macho9"
 else
     BIN="$1"
     if [ ! -x "$BIN/change_dylib" ] || [ ! -x "$BIN/fix_macho" ]; then
@@ -99,6 +100,7 @@ else
     echo "change_dylib_test: using the CMake-built binaries in $BIN"
     CHANGE_DYLIB="$BIN/change_dylib"
     FIX_MACHO="$BIN/fix_macho"
+    MACHO9="$BIN/macho9"
 fi
 fails=0
 ok()   { echo "PASS $1"; }
@@ -1664,6 +1666,136 @@ grep -qi "malformed LC_RPATH" "$T/bad_rpath.err" \
 [ "$before_md5" = "$after_md5" ] \
     && ok "bad-rpath-offset: input left completely untouched on refusal" \
     || bad "bad-rpath-offset" "input was modified despite the refusal"
+
+# --- 20. THE MIXED-FAMILY DOUBLE GROW: does two macho9 calls cost what one --
+#     used to? compat/README.md claimed the rewritten bytes are identical to
+#     the C tools' with ONE known exception (LC_LAZY_LOAD_DYLIB). Review found
+#     a second, structural gap that claim did not cover: a MIXED-FAMILY old
+#     invocation with -grow -- one that touches both the dylib table and the
+#     rpath table -- becomes TWO macho9 invocations (compat/translate.sh
+#     emits a `dylib --allow-grow` line and a `rpath --allow-grow` line, in
+#     that order), where compat/change_dylib.c used to build ONE mr_ops
+#     carrying both families and call mr_apply_file ONCE. mg_grow_header
+#     rounds each request up to a whole page, so growing twice for deltas a
+#     and b can cost ceil(a/P) + ceil(b/P) pages where growing once for the
+#     summed delta would have cost only ceil((a+b)/P) -- the two differ
+#     whenever a's and b's within-page remainders sum past P.
+#
+# compat/change_dylib.c is gone, so "what would one pass have produced" is
+# answered here by a harness that does exactly what that C tool's main() used
+# to: parse everything into one mr_ops and call the shared rewriter (the same
+# mr_apply_file this build's macho9 calls) exactly once. That is the fair
+# baseline, not a stand-in for it -- both routes below run the identical
+# rewrite code, just a different number of times.
+cat > "$T/one_pass.c" <<'EOF'
+#include <string.h>
+#include "rewrite.h"
+/* one_pass FILE OLD-DYLIB NEW-DYLIB NEW-RPATH -- one mr_apply_file call
+ * carrying both a dylib change and an rpath append, exactly what
+ * compat/change_dylib.c's main() used to build from
+ * `-change OLD NEW -add-rpath NEW-RPATH -grow`. */
+int main(int argc, char **argv) {
+    if (argc != 5) return 2;
+    mr_change ch;
+    ch.old_path = argv[2]; ch.new_path = argv[3]; ch.reexport = 0;
+    const char *radd[1];
+    radd[0] = argv[4];
+    mr_ops ops;
+    memset(&ops, 0, sizeof ops);
+    ops.dylib_changes = &ch;  ops.n_dylib_changes = 1;
+    ops.rpath_appends = radd; ops.n_rpath_appends = 1;
+    ops.allow_grow = 1;
+    return mr_apply_file(argv[1], &ops);
+}
+EOF
+"$CC" -O2 -Wall -I "$SRC_DIR" -o "$T/one_pass" "$T/one_pass.c" "$SRC_DIR"/*.c \
+    2>"$T/one_pass_build.err" \
+    || bad "mixed-family double grow" "one_pass helper failed to build: $(cat "$T/one_pass_build.err")"
+
+# 3000 bytes is already proven (case 17 above, DUP_LONG_PATH) enough to force
+# this fixture's dylib table past its header pad and into ONE page-grow. That
+# one grow leaves several kB of fresh pad behind it (mg_grow_header rounds up
+# to a whole page), so the rpath addition has to ask for MORE than that
+# leftover to force a SECOND grow rather than just fitting in the first one's
+# slack -- 9000 bytes is already proven (LONG_PATH, above) to force a grow
+# from a bare fixture, which this leftover pad is smaller than.
+GROW_DYLIB=$(printf 'D%.0s' $(seq 1 3000))
+GROW_RPATH=$(printf 'R%.0s' $(seq 1 9000))
+
+build_main "$T/g_two"
+cp "$T/g_two" "$T/g_one"
+
+# Route A: the SHIPPED sequence -- the real compat/change_dylib.sh wrapper,
+# exactly as a caller invokes it. This is not a simulation of what
+# compat/translate.sh emits; it is that emission, run.
+rc=0
+"$CHANGE_DYLIB" "$T/g_two" -grow -change "@loader_path/liba.dylib" "$GROW_DYLIB" -add-rpath "$GROW_RPATH" \
+    >"$T/g_two.out" 2>"$T/g_two.err" || rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "mixed-family double grow: the shipped two-call route succeeds" \
+    || bad "mixed-family double grow" "the shipped two-call route failed (exit $rc): $(cat "$T/g_two.err")"
+two_grows=$(grep -c "grew header pad" "$T/g_two.out")
+[ "$two_grows" -eq 2 ] \
+    && ok "mixed-family double grow: the shipped route grows the header TWICE (measured, not assumed)" \
+    || bad "mixed-family double grow" "expected 2 \"grew header pad\" lines from the shipped route, saw $two_grows: $(cat "$T/g_two.out")"
+
+# Route B: ONE mr_apply_file call carrying both families -- growing once for
+# the summed delta, the pre-wrapper C tool's shape.
+rc=0
+"$T/one_pass" "$T/g_one" "@loader_path/liba.dylib" "$GROW_DYLIB" "$GROW_RPATH" \
+    >"$T/g_one.out" 2>"$T/g_one.err" || rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "mixed-family double grow: the one-call route succeeds" \
+    || bad "mixed-family double grow" "the one-call route failed (exit $rc): $(cat "$T/g_one.err")"
+one_grows=$(grep -c "grew header pad" "$T/g_one.out")
+[ "$one_grows" -eq 1 ] \
+    && ok "mixed-family double grow: the one-call route grows the header ONCE" \
+    || bad "mixed-family double grow" "expected 1 \"grew header pad\" line from the one-call route, saw $one_grows: $(cat "$T/g_one.out")"
+
+# Growing twice is a SIZE question, not a correctness one -- both results
+# still have to be images macho9 itself accepts, and both have to actually
+# carry what was asked for.
+"$MACHO9" verify "$T/g_two" >/dev/null 2>"$T/g_two_verify.err" \
+    && ok "mixed-family double grow: the two-call route's result still verifies" \
+    || bad "mixed-family double grow" "the two-call route's result failed macho9 verify: $(cat "$T/g_two_verify.err")"
+"$MACHO9" verify "$T/g_one" >/dev/null 2>"$T/g_one_verify.err" \
+    && ok "mixed-family double grow: the one-call route's result still verifies" \
+    || bad "mixed-family double grow" "the one-call route's result failed macho9 verify: $(cat "$T/g_one_verify.err")"
+"$T/has_bytes" "$T/g_two" "$GROW_RPATH" && "$T/has_bytes" "$T/g_two" "$GROW_DYLIB" \
+    && ok "mixed-family double grow: the two-call route's result carries both new strings" \
+    || bad "mixed-family double grow" "the two-call route's result is missing the new dylib path and/or rpath"
+"$T/has_bytes" "$T/g_one" "$GROW_RPATH" && "$T/has_bytes" "$T/g_one" "$GROW_DYLIB" \
+    && ok "mixed-family double grow: the one-call route's result carries both new strings" \
+    || bad "mixed-family double grow" "the one-call route's result is missing the new dylib path and/or rpath"
+
+# THE QUESTION ITSELF: does growing twice cost, and produce, what growing
+# once would have? Recorded either way -- neither answer would be a bug in
+# this branch, since no macho9 CLI invocation can combine both families into
+# one call today (that is what compat/README.md now says instead of
+# "identical bytes"). Full byte comparison, not just size: mg_grow_header
+# grows by the EXCESS over the pad IT SEES AT THAT MOMENT, rounded up to a
+# whole page ("load commands need N more bytes than the M-byte pad" above),
+# not by a fixed page count computed from the operation's own delta alone.
+# Because a grow always leaves behind a whole number of pages, the leftover
+# it hands to the NEXT call composes losslessly with that call's own excess:
+# ceil(e1/P)*P, then ceil(e2 - leftover/P)*P from there, lands on the exact
+# same page count as ceil((e1+e2)/P)*P computed once -- ceil distributes over
+# an already-page-aligned addend. That is a property of this growth
+# algorithm, not a coincidence of this fixture, but it is verified here only
+# for this one case (two ops, dylib then rpath, both needing to grow); it is
+# not a claim about three or more mixed families, a fat container, or either
+# order producing byte-IDENTICAL results.
+two_size=$(wc -c < "$T/g_two" | tr -d ' ')
+one_size=$(wc -c < "$T/g_one" | tr -d ' ')
+if cmp -s "$T/g_two" "$T/g_one"; then
+    ok "mixed-family double grow: RESULT -- byte-identical to the one-call route ($two_size bytes) on this fixture; growing twice cost exactly what growing once would have"
+elif [ "$two_size" -eq "$one_size" ]; then
+    bad "mixed-family double grow" "same size ($two_size bytes) but the bytes differ -- same total growth, different layout"
+elif [ "$two_size" -gt "$one_size" ]; then
+    ok "mixed-family double grow: RESULT -- the two-call route is $((two_size - one_size)) bytes LARGER ($two_size vs $one_size); growing twice cost a whole extra page here, the ceil(a/P)+ceil(b/P) > ceil((a+b)/P) case made concrete rather than theoretical"
+else
+    bad "mixed-family double grow" "the two-call route ($two_size bytes) is SMALLER than the one-call route ($one_size bytes) -- growing twice should never cost less than growing once for the same total delta"
+fi
 
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }

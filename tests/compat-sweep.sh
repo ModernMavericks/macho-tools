@@ -5,8 +5,10 @@
 #   sh tests/compat-sweep.sh <bindir> [outfile]
 #
 # <bindir> supplies the OLD side: the six historical binaries. After Task 2
-# five of them exist only in a pre-Task-2 build, so that is what to point it
-# at. The NEW side needs a macho9, and by default takes it from the same
+# five of them exist only in a build of commit 91b30b3 (the last commit
+# carrying all six compat/*.c files; tests/README.md's "Not run by ctest"
+# section has the full account), so that is what to point it at. The NEW
+# side needs a macho9, and by default takes it from the same
 # directory -- which was right while both families came out of one build, and
 # is wrong now: it would record what the macho9 OF THAT COMMIT did, not what
 # this tree's does. Set
@@ -30,7 +32,7 @@
 #
 #   cmake --preset native-local && cmake --build --preset native-local
 #   MACHO_SWEEP_NEW_BIN=/private/tmp/mm-build/schmonz/macho-tools/native \
-#       sh tests/compat-sweep.sh /path/to/a/pre-Task-2/build
+#       sh tests/compat-sweep.sh /path/to/a/build-of-91b30b3
 #
 # ---- what "exhaustive" means here ----------------------------------------
 #
@@ -619,7 +621,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "# old side:   $BIN"
     echo "#             (after Task 2 five of the six are shell wrappers; these"
     echo "#              rows are only a record of the C binaries if that bindir"
-    echo "#              is a pre-Task-2 build -- see this script's header)"
+    echo "#              is a build of commit 91b30b3 -- see this script's header)"
     echo "# new side:   $NEWBIN/macho9"
     echo "#             (the macho9 the TRANSLATED side ran; the two directories"
     echo "#              differ whenever the C tools and the macho9 under test"

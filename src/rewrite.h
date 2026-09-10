@@ -121,11 +121,28 @@ typedef struct {
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
 } mr_ops;
 
-/* How many times one operation may repeat in a single run. Both front-ends
- * accumulate into fixed-size arrays and both refuse at the same point, so
- * `change_dylib -delete ... x33` and `macho9 dylib -delete ... x33` agree
- * about being too many -- each in its own vocabulary, since the two grammars
- * spell the operations differently. */
+/* How many times one operation may repeat in a single run. THREE call sites
+ * accumulate into fixed-size arrays sized from these two macros and all
+ * three refuse at the same point -- `change_dylib -delete ... x33`,
+ * `fix_macho -change ... x33` and `macho9 dylib -delete ... x33` all agree
+ * about being too many -- each in its own wording, since none of the three
+ * grammars spell the operations the same way:
+ *
+ *   cli/macho9.c's own dylib/rpath parser checks the count inline and prints
+ *     "macho9 <verb>: too many <flag> operations (max N)", naming ITS OWN
+ *     flag spelling (`-append`, not change_dylib's `-add`) -- see the
+ *     comment at that call site for why the wording is deliberately not
+ *     shared with the other two.
+ *   compat/fix_macho.c's FM_ROOM macro (which reuses this MR_MAX_OPS rather
+ *     than spelling out a second 32) prints "too many <flag> (max N)", in
+ *     fix_macho's own words -- this is still C, so this is still a fixed
+ *     array a C parser fills.
+ *   compat/translate.sh's mt_room -- change_dylib.c's CD_ROOM survives only
+ *     here now, since that file became a /bin/sh wrapper -- accumulates the
+ *     OLD grammar's argv into a shell variable rather than a C array, but
+ *     refuses at the identical count, in change_dylib's own historical
+ *     words ("too many <flag> (max N)"), before ever emitting a `macho9`
+ *     command line. */
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 
