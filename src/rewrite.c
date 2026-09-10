@@ -567,15 +567,25 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * does not help -- a member that fits an existing hole moves no later field
  * either, so it is blind to the same case -- and a memcmp-against-zero probe
  * is unreliable, because struct padding is indeterminate after assignment.
- * There is no clean C mechanism for this. So: this catches the common shapes
- * (every pointer, every pointer/count pair, every member too wide for a hole,
- * and every reordering), and a lone four-byte member still needs a human to
- * come here and read the paragraph above.
+ * There is no clean C mechanism for this. So: anything that cannot fit a
+ * four-byte hole -- a pointer, a pointer/count pair, any member wider than
+ * four bytes -- trips it wherever it is put, and so does a four-byte member
+ * put anywhere OTHER than a hole, because that shifts allow_grow. What escapes
+ * is a member of four bytes or fewer landing in one of the eight holes. That
+ * needs a human to come here and read the paragraph above -- and so does one
+ * other case, swapping a pointer and its `int` WITHIN a pair, which moves both
+ * members' own offsets while leaving sizeof and allow_grow at 144/136
+ * (checked). That one is inert, since the members are the same ones, but it is
+ * exactly what a phrase like "and every reordering" would have wrongly
+ * promised, and this paragraph carried that phrase until it was disproved.
  *
- * This is the second time a confident sentence about this one predicate has
- * been wrong -- the first claimed the "everything else is empty" shape had
- * force C does not give it, the second claimed this tripwire caught every
- * insertion. An accurate small claim is worth more than a clever one. */
+ * Which is why it is now worded this carefully. THREE confident sentences
+ * about this one predicate have now been wrong: that the
+ * "everything else is empty" shape had force C does not give it; that this
+ * tripwire caught every insertion; and that it caught every reordering. The
+ * formal claim above -- moves sizeof, or moves the offset of the last field,
+ * nothing more -- is the whole of what the mechanism gives, and anything
+ * added here that sounds stronger than that is wrong by construction. */
 typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
     (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 136) ? 1 : -1];
 
