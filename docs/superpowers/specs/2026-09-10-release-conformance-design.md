@@ -122,31 +122,50 @@ product it updates. This is the largest single piece and the one most reasonably
 split into its own increment; everything above can land first and produce a
 GitHub Release of the binaries.
 
-## Two things to resolve with the family, not unilaterally
+## Settled against the live shipyard checkout
 
-**The concurrency group.** Commit `07b2811` deliberately keyed non-PR runs on
-`github.run_id`, reasoning that `cancel-in-progress: false` protects the *running*
-job and not the *queued* one — GitHub keeps only the newest pending run per group
-and cancels the rest, so a shared group discards runs silently. The commit cites a
-real observed loss in `mavericks-golang`.
+Checked 2026-09-10 against `../mavericks-shipyard` at `836e9fc`, which is **ahead
+of the plugin cache** an agent loads (`modernmavericks@0.1.1`). Four questions,
+all answered there.
 
-The conventions describe the opposite shape and state that
-`check-family-conventions.sh` **fails** a `run_id`-keyed group, because a
-dispatch lock keyed per run is no lock at all.
+**The concurrency group is already the family doctrine — this repo is
+conformant, and the old shape is what would now fail.** Shipyard's own
+`release.yml` uses the `run_id` shape, and `check-family-conventions.sh` **check
+1b requires it**: it fails a group *not* keyed on `github.run_id`. The doctrine
+text now reads *"a run that can publish is alone in its group and is cancelled by
+nothing"*, and records the same `mavericks-golang` loss commit `07b2811` cites,
+plus a deliberate probe: two same-SHA dispatches merely queue, and the *third*
+cancels the queued one while `cancel-in-progress` evaluates to `false`. Change
+nothing here.
 
-Both are right about different failures. **The conventions gate currently passes
-on this repo**, so either the check is not in `@v1` yet or it is narrower than the
-prose. Do not quietly change this to match the doc: the reasoning in `07b2811` is
-evidence the family shape has a hole, and the resolution belongs in shipyard
-where every repo gets it. Note that dropping `local_release` (above) removes the
-dispatch-collision case the family shape exists to prevent, which makes this
-repo's variant *more* defensible, not less.
+**Semver is sanctioned, but the artifact check does not know it yet.** SKILL.md
+lists three self-upstream shapes — date-based `YYYYMMDD.N`, **semver `vX.Y.Z`**,
+or `v0.0.YYYYMMDD.N` — so choosing semver is *within* convention, not a
+deviation from it. But `check-artifact-conformance.sh` hard-requires
+`*-mavericks.[0-9]*` and fails anything else, with no self-upstream exemption. So
+the choice must be **declared as a scoped conformance deviation**, which is the
+mechanism the conventions provide for exactly this. In `INGREDIENTS.md`:
 
-**Whether a developer-tools repo wants a Sparkle updater at all.** The conventions
-say every product ships one, and `mavericks-golang` — also a toolchain rather than
-an app — does. Following the family is the default and deviating needs a written
-reason. Raised because it is the kind of thing worth asking once rather than
-assuming twice.
+```markdown
+## Conformance deviations
+
+- scheme:*: this repo is its own upstream (no external thing to repackage), so it
+  versions itself directly as X.Y.Z per the self-upstream rule, and there is no
+  -mavericks.N axis to carry
+```
+
+**The release model is tag-only, and the family already says so.** SKILL.md's
+"Which repo is which" table lists `macho-tools` in the *"publishes only from a
+tag or a dispatch"* column. That matches dropping `local_release`: publish from a
+tag, and nothing else.
+
+**Sparkle updater: yes**, confirmed with the repo owner. It must not link the
+product it updates.
+
+**Worth knowing:** shipyard's own doctrine already classifies this repo as
+self-upstream — *"every repo that is its own upstream (porthole, macho-tools,
+shipyard)"*. The `CMakeLists.txt` comment this spec opens by correcting is out of
+step with the family's own list, not just with the general rule.
 
 ## Sequencing note
 
