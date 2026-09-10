@@ -218,14 +218,7 @@ mw_translate fix_macho "$@" || exit $?
 
 mw_file=$1
 
-if [ ! -e "$mw_file" ]; then
-    printf 'open: No such file or directory\n' >&2
-    exit 1
-fi
-if [ ! -w "$mw_file" ]; then
-    printf 'open: Permission denied\n' >&2
-    exit 1
-fi
+mw_require_writable "$mw_file" || exit $?
 
 mw_run_atomic fix_macho "$@"
 mw_frc=$?

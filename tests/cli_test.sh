@@ -942,7 +942,12 @@ if "$MACHO9" verify "$T/verify_ok" >"$T/verify_ok.out"; then
 else
     bad "verify: real binary" "refused: $(cat "$T/verify_ok.out")"
 fi
-grep -q "OK" "$T/verify_ok.out" && ok "verify: reports OK" || bad "verify: OK text" "missing"
+# `: OK` and not `OK`: cmd_verify's verdict line is "<path>: OK", and a bare
+# two-character substring would also be satisfied by a path, a diagnostic or a
+# future line that happens to contain them. Paired with the exit-status check
+# above it could not silently pass today, but the tighter pattern costs
+# nothing and is what every other verify assertion in this file uses.
+grep -q ': OK' "$T/verify_ok.out" && ok "verify: reports OK" || bad "verify: OK text" "missing"
 
 echo 'not a mach-o' > "$T/verify_bad"
 if "$MACHO9" verify "$T/verify_bad" >/dev/null 2>&1; then
@@ -967,7 +972,7 @@ if "$MACHO9" verify "$T/fixture.dylib" >"$T/dylibverify.out" 2>&1; then
 else
     bad "verify: a dylib gets a real verdict" "refused: $(cat "$T/dylibverify.out")"
 fi
-grep -q "OK" "$T/dylibverify.out" && ok "verify: and says OK" \
+grep -q ': OK' "$T/dylibverify.out" && ok "verify: and says OK" \
     || bad "verify: and says OK" "missing: $(cat "$T/dylibverify.out")"
 if grep -q "FAILED (see above)" "$T/dylibverify.out"; then
     bad "verify: not the contentless failure" \
@@ -1814,8 +1819,15 @@ cat > "$T/segread.c" <<'EOF'
  *
  *   segs  FILE          print "SEG <segname>" and "SECT <segname>/<sectname>"
  *                       for every LC_SEGMENT_64, in load order
- *   wrap  OUT THIN BLOB build a classic (32-bit fat_arch) fat container:
- *                       slice 0 = THIN, slice 1 = BLOB (not a Mach-O)
+ *   wrap  OUT THIN BLOB [CT1]
+ *                       build a classic (32-bit fat_arch) fat container:
+ *                       slice 0 = THIN, slice 1 = BLOB. CT1 is slice 1's
+ *                       cputype and defaults to 7 (CPU_TYPE_X86). It does
+ *                       NOT decide whether the rewriter skips the slice --
+ *                       the slice's own bytes do -- it decides the
+ *                       "arch N (cputype 0x...)" label the refusal names,
+ *                       so pass 16777223 (CPU_TYPE_X86_64) when BLOB really
+ *                       is a 64-bit Mach-O and the label should say so.
  *   dump  FILE IDX OUT  write fat slice IDX to OUT
  *
  * Names are char[16] and need not be NUL-terminated; printed with %.16s and
@@ -1875,7 +1887,8 @@ int main(int argc, char **argv) {
     }
 
     if (strcmp(argv[1], "wrap") == 0) {
-        if (argc != 5) { fprintf(stderr, "usage: segread wrap OUT THIN BLOB\n"); return 2; }
+        if (argc != 5 && argc != 6) { fprintf(stderr, "usage: segread wrap OUT THIN BLOB [CT1]\n"); return 2; }
+        uint32_t ct1 = (argc == 6) ? (uint32_t)strtoul(argv[5], NULL, 0) : 7u;
         size_t tn, bn;
         uint8_t *tb = slurp(argv[3], &tn), *bb = slurp(argv[4], &bn);
         const struct mach_header_64 *h = (const struct mach_header_64 *)tb;
@@ -1893,7 +1906,7 @@ int main(int argc, char **argv) {
         ar[0].cputype = be32((uint32_t)h->cputype);
         ar[0].cpusubtype = be32((uint32_t)h->cpusubtype);
         ar[0].offset = be32(off0); ar[0].size = be32((uint32_t)tn); ar[0].align = be32(align);
-        ar[1].cputype = be32(7);   /* CPU_TYPE_X86, a slice this rewriter skips */
+        ar[1].cputype = be32(ct1); /* default CPU_TYPE_X86: a slice this rewriter skips */
         ar[1].cpusubtype = be32(3);
         ar[1].offset = be32(off1); ar[1].size = be32((uint32_t)bn); ar[1].align = be32(align);
         memcpy(out + off0, tb, tn);
@@ -2078,6 +2091,43 @@ fi
     && ok "segment: that refusal left the input untouched" \
     || bad "segment: mg_plausible scope" "the refused input was modified"
 
+# ---- an EMPTY LC_FUNCTION_STARTS is "nothing to check", not a refusal ------
+#
+# The same fixture with three bytes changed: its 8-byte LC_FUNCTION_STARTS
+# blob is all zeros, so it declares no function starts. That is the shape a
+# stock 10.9 system dylib with no functions has (libswiftObjectiveC.dylib),
+# and it is the same fact about an image as carrying no LC_FUNCTION_STARTS at
+# all, which mg_plausible has always accepted. It folded the two apart for a
+# while -- ns == 0 fell into a composite `ns <= 0 ||` refusal -- which refused
+# that dylib with a contentless `FAILED (see above)` from verify and, through
+# the rewrite path, with a message about base-relative offsets naming no known
+# function when the image had no function starts for anything to name.
+"$T/mkimplausible" "$T/emptystarts" -empty-starts
+if "$MACHO9" verify "$T/emptystarts" >"$T/es_verify.out" 2>&1; then
+    ok "verify: an image declaring no function starts is accepted"
+else
+    bad "verify: empty LC_FUNCTION_STARTS" \
+        "refused an image with nothing to check against: $(cat "$T/es_verify.out")"
+fi
+grep -q ': OK' "$T/es_verify.out" && ok "verify: and says OK about it" \
+    || bad "verify: empty LC_FUNCTION_STARTS" "no OK verdict: $(cat "$T/es_verify.out")"
+
+# ...and it is rewritable, which is the half the rewrite path got wrong: the
+# gate sits in mr_process_thin, so a refusal here refused the operation too.
+cp "$T/emptystarts" "$T/es_lc"
+if "$MACHO9" lc "$T/es_lc" -delete uuid >/dev/null 2>"$T/es_lc.err"; then
+    ok "lc -delete: an image declaring no function starts is rewritable"
+else
+    bad "lc -delete: empty LC_FUNCTION_STARTS" "refused: $(cat "$T/es_lc.err")"
+fi
+
+# ...while its twin, differing only in those three bytes, is still refused --
+# so the acceptance above is about declaring no function starts, not about the
+# gate having stopped asking.
+cmp -s "$T/implausible" "$T/emptystarts" \
+    && bad "verify: empty LC_FUNCTION_STARTS" "the two fixtures are identical; the flag did nothing" \
+    || ok "verify: the accepted and refused fixtures really are different files"
+
 # ...and a rename of the very same file goes through, and really renames.
 cp "$T/implausible" "$T/imp_seg"
 if "$MACHO9" segment "$T/imp_seg" __DATA __DATA_R9 >/dev/null 2>"$T/imp_seg.err"; then
@@ -2090,6 +2140,61 @@ if "$MACHO9" segment "$T/imp_seg" __DATA __DATA_R9 >/dev/null 2>"$T/imp_seg.err"
         || ok "segment: and renames that binary's section segnames too"
 else
     bad "segment: mg_plausible scope" "refused the fixture: $(cat "$T/imp_seg.err")"
+fi
+
+# ---- MR_ERROR: one bad slice refuses the WHOLE fat file --------------------
+#
+# mr_process_fat (src/rewrite.c) splits per-slice failure in two: MR_SKIP for
+# a slice that is not a 64-bit Mach-O -- left alone, other slices still
+# rewritten, exit 0 -- and MR_ERROR for a slice that IS one and whose edit was
+# refused, which aborts the whole file. Only MR_ERROR is a divergence from the
+# tool this replaced (compat/fix_macho.sh's divergence 4, where it is stated
+# most emphatically: fix_macho printed "Skipping arch %u" for BOTH and exited
+# 0, having shipped a partially converted universal binary as a success).
+#
+# The asymmetry used to run the wrong way: MR_SKIP had an assertion (through
+# the fat wrap just above and through fix_macho in wrapper_test.sh) and
+# MR_ERROR had none, because building a hermetic bad slice looked like it
+# needed a scan of the host. It does not: it needs a slice that IS a 64-bit
+# Mach-O and whose edit mg_plausible refuses, which is exactly what
+# tests/mkimplausible.c already builds, wrapped at CPU_TYPE_X86_64 so
+# mr_process_thin reaches it instead of skipping it.
+"$T/segread" wrap "$T/mrerr_fat" "$T/segment_fat_slice" "$T/implausible" 16777223
+mrerr_before=$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)
+if "$MACHO9" lc "$T/mrerr_fat" -delete uuid >"$T/mrerr.out" 2>"$T/mrerr.err"; then
+    bad "lc: MR_ERROR fat slice" "exited 0; a partial rewrite was reported as success"
+else
+    ok "lc: a fat slice whose edit is refused refuses the whole file (nonzero exit)"
+fi
+grep -q 'refusing the whole fat file -- a partial rewrite would leave its slices inconsistent' \
+    "$T/mrerr.err" \
+    && ok "lc: and says so, naming the partial-rewrite reason" \
+    || bad "lc: MR_ERROR message" "expected mr_process_fat's refusal, got: $(cat "$T/mrerr.err")"
+grep -q 'arch 1 (cputype 0x1000007)' "$T/mrerr.err" \
+    && ok "lc: and names which slice it was" \
+    || bad "lc: MR_ERROR slice label" "expected 'arch 1 (cputype 0x1000007)', got: $(cat "$T/mrerr.err")"
+grep -q 'no known function' "$T/mrerr.err" \
+    && ok "lc: and the underlying per-slice refusal is still on stderr too" \
+    || bad "lc: MR_ERROR per-slice reason" "the slice's own refusal was swallowed: $(cat "$T/mrerr.err")"
+# The whole point of refusing: slice 0 WAS editable, so an abort that wrote
+# anything would leave exactly the inconsistent file the message names.
+[ "$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)" = "$mrerr_before" ] \
+    && ok "lc: and left the fat file byte-for-byte unchanged, slice 0 included" \
+    || bad "lc: MR_ERROR atomicity" "the refused fat file was modified"
+# MEASURED WHILE WRITING THIS, and worth pinning: the fat table's cputype is
+# NOT what decides MR_SKIP vs MR_ERROR. Wrap the very same bad slice at
+# CPU_TYPE_X86 and it is still MR_ERROR -- mr_process_thin asks the slice's
+# own bytes whether they are a 64-bit Mach-O, and the cputype only supplies
+# the "arch N (cputype 0x...)" label. So the MR_SKIP assertions (the fat wrap
+# above, and fix_macho's in wrapper_test.sh) cover a slice that really is not
+# a Mach-O, which is the only thing that reaches that path.
+"$T/segread" wrap "$T/mrskip_fat" "$T/segment_fat_slice" "$T/implausible" 7
+if "$MACHO9" lc "$T/mrskip_fat" -delete uuid >"$T/mrskip.out" 2>"$T/mrskip.err"; then
+    bad "lc: MR_SKIP/MR_ERROR split" "a Mach-O slice at cputype 0x7 was skipped, not refused"
+else
+    grep -q 'arch 1 (cputype 0x7): refusing the whole fat file' "$T/mrskip.err" \
+        && ok "lc: the slice's own bytes decide MR_ERROR, not the fat table's cputype" \
+        || bad "lc: MR_SKIP/MR_ERROR split" "refused for another reason: $(cat "$T/mrskip.err")"
 fi
 
 # ============================================================================

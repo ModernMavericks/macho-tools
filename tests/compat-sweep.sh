@@ -83,8 +83,9 @@
 #   new side   compat/translate.sh, then each line it printed, in order,
 #              stopping at the first nonzero exit
 #
-# AFTER TASK 2, POINT <bindir> AT A PRE-TASK-2 BUILD. Five of the six tools
-# are /bin/sh wrappers around macho9 now, so running this against a current
+# AFTER TASK 2, POINT <bindir> AT A PRE-TASK-2 BUILD. All six tools
+# are /bin/sh wrappers around macho9 now (Task 2 converted five; fix_macho
+# followed once its divergences were ruled adopted rather than closed), so running this against a current
 # build makes the "old side" a wrapper and the comparison close to
 # tautological. The bindir is recorded in the matrix header for exactly that
 # reason -- a reader has to be able to tell which of the two the rows
@@ -628,7 +629,8 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#             sha256[0:16] = $BASESHA"
     echo "# generated:  $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(uname -srm)"
     echo "# old side:   $BIN"
-    echo "#             (after Task 2 five of the six are shell wrappers; these"
+    echo "#             (all six are shell wrappers now -- Task 2 converted five"
+    echo "#              and fix_macho followed; these"
     echo "#              rows are only a record of the C binaries if that bindir"
     echo "#              is a build of commit 91b30b3 -- see this script's header)"
     echo "# new side:   $NEWBIN/macho9"

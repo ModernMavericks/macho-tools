@@ -676,7 +676,11 @@ static int mg_plausible_find_cb(const struct load_command *lc, void *ctx_) {
 
 int mg_plausible(const uint8_t *buf, size_t fsize) {
     mi_image im;
-    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        fprintf(stderr, "macho_grow: implausible -- not a 64-bit Mach-O with a load-command "
+                        "chain this can walk\n");
+        return -1;
+    }
     /* image base: the first segment mapping the header (fileoff 0 with
      * content). Via mi_image_base so a base of 0 -- every dylib -- is a
      * legitimate answer rather than the "not found" sentinel. Reading it as
@@ -688,7 +692,12 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
      * "FAILED (see above)" (cli/macho9.c's cmd_verify) and a silent -1 here
      * is what made that line contentless -- the exact fingerprint this bug
      * was finally identified by. The refusal is correct and now rare; it
-     * should still be legible when it happens. */
+     * should still be legible when it happens.
+     *
+     * That now holds for EVERY refusal this function can return: each -1
+     * below is preceded by its own stderr line naming the fact that caused
+     * it. Adding a refusal path here without one reintroduces the
+     * contentless "FAILED (see above)". */
     uint64_t base;
     if (mi_image_base(&im, &base) != 0) {
         fprintf(stderr, "macho_grow: implausible -- no segment maps the header, so there "
@@ -700,17 +709,55 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
     mi_each_lc(&im, mg_plausible_find_cb, &fctx);
     uint32_t fsoff = fctx.fsoff, fssize = fctx.fssize;
     if (!fsoff || !fssize) return 0;                 /* nothing to check against */
-    if ((uint64_t)fsoff + fssize > fsize) return -1;
+    if ((uint64_t)fsoff + fssize > fsize) {
+        fprintf(stderr, "macho_grow: implausible -- LC_FUNCTION_STARTS claims %u bytes at "
+                        "offset %u, which runs past the end of the %llu-byte file\n",
+                fssize, fsoff, (unsigned long long)fsize);
+        return -1;
+    }
 
     uint64_t *starts = (uint64_t *)malloc((size_t)fssize * sizeof(uint64_t));
     uint64_t *addr   = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     uint8_t  *kinds  = (uint8_t  *)malloc(MG_SNAP_MAX);
-    if (!starts || !addr || !kinds) { free(starts); free(addr); free(kinds); return -1; }
+    if (!starts || !addr || !kinds) {
+        fprintf(stderr, "macho_grow: cannot check plausibility -- out of memory\n");
+        free(starts); free(addr); free(kinds); return -1;
+    }
 
+    /* Three unrelated outcomes, three answers. `ns <= 0 || mg_collect(...)`
+     * used to fold all of them into one silent -1, and the one that is not a
+     * refusal at all was the one that bit: a stock 10.9 system dylib with an
+     * empty function-starts list (/usr/lib/swift/libswiftObjectiveC.dylib --
+     * __text size 0, LC_FUNCTION_STARTS datasize=8, all eight bytes zero)
+     * decodes to ns == 0 and was refused, contentlessly through `verify` and
+     * with a message about "offsets that name no known function" through the
+     * rewrite path, when the image has no function starts to name anything.
+     *
+     * mg_funcstarts_decode's contract (above): -1 ONLY when mu_decode fails,
+     * i.e. a malformed ULEB. Any n >= 0 means the blob decoded. */
     int ns = mg_funcstarts_decode(buf + fsoff, fssize, base, starts, (int)fssize);
     uint32_t n = 0;
     int rc = 0;
-    if (ns <= 0 || mg_collect(buf, fsize, addr, kinds, MG_SNAP_MAX, &n) != 0) {
+    if (ns < 0) {
+        /* the blob would not decode: a ULEB128 entry runs off its end. */
+        fprintf(stderr, "macho_grow: implausible -- the %u-byte LC_FUNCTION_STARTS blob at "
+                        "offset %u does not decode: a ULEB128 entry runs off its end\n",
+                fssize, fsoff);
+        rc = -1;
+    } else if (ns == 0) {
+        /* The blob decoded and declares no function starts -- the terminator
+         * is the first thing in it. That is the same fact about the image as
+         * having no LC_FUNCTION_STARTS at all, which the `!fsoff || !fssize`
+         * line above answers with "nothing to check against". Same
+         * fact, same answer: accept. rc stays 0 and the loop is skipped. */
+    } else if (mg_collect(buf, fsize, addr, kinds, MG_SNAP_MAX, &n) != 0) {
+        /* collection itself failed -- a malformed or overflowing structure
+         * among the base-relative entries, or more of them than MG_SNAP_MAX.
+         * Nothing was compared, so this is not a verdict about the offsets. */
+        fprintf(stderr, "macho_grow: implausible -- the base-relative entries (initializers, "
+                        "export-trie, data-in-code and unwind starts) could not be "
+                        "collected, so nothing could be checked against "
+                        "LC_FUNCTION_STARTS\n");
         rc = -1;
     } else {
         for (uint32_t i = 0; i < n && rc == 0; i++) {

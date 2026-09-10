@@ -1193,18 +1193,40 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * own MR_SKIP contract already draws everywhere else in this file; this
  * report does not attempt to see past it.
  *
- * On stderr, deliberately: the five compat/ wrapper shell scripts wrap this
- * binary for five historical tool names, and their stdout has to stay
- * byte-identical to what those tools always printed (tests/known-callers.sh,
- * tests/wrapper_test.sh). A new line on stdout would be exactly the kind of
- * drift those tests exist to catch; stderr is where a diagnostic can be
- * added without moving it.
+ * On stderr, deliberately. Six compat/ wrapper shell scripts wrap this
+ * binary for six historical tool names, and every one of them has a stdout
+ * contract that tests/known-callers.sh and tests/wrapper_test.sh pin. The
+ * contract is not the same for all six -- five must reproduce their tool's
+ * stdout byte for byte, while fix_macho's is deliberately NOT byte-identical
+ * (compat/fix_macho.sh's DELIBERATE DIVERGENCES block says which lines moved
+ * and why) -- but that difference does not weaken the reason for stderr, it
+ * strengthens it: fix_macho's stdout is pinned to a shape the repo CHOSE,
+ * one assertion at a time, and an unmatched report appearing on it would
+ * break those assertions exactly as it would break the byte-identical five.
+ * What every wrapper has in common is that its stdout is somebody's
+ * contract; none of them has ever had to reproduce a stderr line. So stderr
+ * is where a per-operation diagnostic can be added without moving anything
+ * six wrappers' worth of tests are holding still.
  *
  * Returns the number of entries reported as unmatched, so mr_apply_file can
  * turn this report into a refusal (ops->fatal_unmatched) without re-scanning
  * the hit arrays itself. */
 static int mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
                                 const int *hit_rpath, const int *hit_strip) {
+    /* The "macho9: " prefix on the three lines below is DELIBERATE and is
+     * the one program-specific string in this file -- every other diagnostic
+     * here is program-neutral ("ERROR: ..."), because this library does not
+     * otherwise know which front end is running it. It says macho9 because
+     * the report names operations in MACHO9'S grammar ("-replace X matched
+     * nothing" is about a `macho9 dylib` operation, not about whatever the
+     * caller typed), and every compat/ wrapper's job is to teach that
+     * grammar: each prints the equivalent macho9 command line before running
+     * it, so a caller who sees "macho9: ..." on stderr has just been shown
+     * the macho9 command it is talking about. Coupled to: the wrappers'
+     * teaching output, and the exact text asserted in tests/cli_test.sh,
+     * tests/wrapper_test.sh and tests/change_dylib_test.sh. Changing it to
+     * argv[0] would make the wrapper case name the old tool and so name a
+     * grammar these operations are not written in. */
     int n = 0;
     for (int i = 0; i < ops->n_dylib_changes; i++)
         if (hit_dylib[i] == 0) {

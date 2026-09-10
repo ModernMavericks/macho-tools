@@ -130,6 +130,19 @@ typedef struct {
      * *out_modified in the first place, so mr_apply_file never attempts the
      * write at all -- there is nothing for this refusal to leave in place,
      * and the file is untouched, same as any other all-miss run.
+     *
+     * WHAT IT DOES NOT CATCH, and why the line is drawn there: this asks
+     * "did anything in the image MATCH this operation", never "did this
+     * operation act". `dylib f -replace X A -replace X B` matches X twice,
+     * so neither entry is unmatched and --fatal-warnings is silent, even
+     * though only the first -replace can act -- the second is shadowed. The
+     * predicate is deliberately the matched-not-acted one: the counting site
+     * (src/rewrite.c, mr_build_lcs_lc's "No break" comment) explains that a
+     * -delete and a -change may legitimately name the same old_path, and
+     * that a counting rule of "only the operation that ACTED" reports the
+     * -delete of `-replace X N -delete X` as a false miss. Loosening this is
+     * how that false miss comes back, so a shadowed operation stays silent.
+     *
      * cli/macho9.c's `dylib`, `rpath` and `lc` verbs are the only ones that
      * ever set this; `segment` and `retag-swift` don't take a list of
      * operations that could miss, so they have nothing to parse a

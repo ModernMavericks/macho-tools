@@ -1,5 +1,9 @@
-/* mkimplausible OUT -- write a thin 64-bit Mach-O that mg_plausible REFUSES,
- * and that is otherwise perfectly well formed.
+/* mkimplausible OUT [-empty-starts]
+ *     -- write a thin 64-bit Mach-O that mg_plausible REFUSES, and that is
+ *        otherwise perfectly well formed. With -empty-starts, write the SAME
+ *        image with an empty LC_FUNCTION_STARTS instead, which mg_plausible
+ *        must ACCEPT; the two differ in exactly three bytes (see "THE
+ *        -empty-starts TWIN" below).
  *
  * WHY IT EXISTS. src/rewrite.c's mr_process_thin skips mg_plausible when the
  * operation set is a rename only, because that gate asks an OFFSET question
@@ -15,8 +19,19 @@
  * ran on any of them: mg_plausible took its image base from mi_text_base,
  * whose 0 return means BOTH "no segment maps the header" and "the base is 0",
  * and a dylib is linked at base 0 -- so it bailed at the precondition. Since
- * mi_image_base separated those two answers (src/image.h) all 26 pass, and
- * the scan this fixture replaced would now find nothing to use on ANY host.
+ * mi_image_base separated those two answers (src/image.h) all 26 pass.
+ *
+ * How far that generalises is bounded by what has been swept, and this
+ * comment used to overclaim it as "nothing to use on ANY host". What was
+ * actually measured: the old scan's own filter (`grep -q 'no known
+ * function'`, over `macho9 lc COPY -delete uuid`) run RECURSIVELY over every
+ * thin 64-bit .dylib/.so/.bundle under /usr/lib, /usr/libexec and
+ * /System/Library/PrivateFrameworks on a stock 10.9 -- 131 files -- turns up
+ * no usable victim. It DID turn one up until src/grow.c's mg_plausible
+ * stopped folding "this image declares no function starts" into a refusal:
+ * /usr/lib/swift/libswiftObjectiveC.dylib, whose __text has size 0 and whose
+ * LC_FUNCTION_STARTS is datasize=8, all eight bytes zero. A host with other
+ * binaries installed has not been measured and nothing here claims about it.
  * That is a second, independent reason to build the input rather than look
  * for one -- and the original reason still stands on its own: a scan
  * passes on the target and silently covers NOTHING on the cross/CI runner,
@@ -52,6 +67,27 @@
  * It carries NO dylib load command, so it cannot be refused earlier by
  * mo_map_build (see compat/rename_segment.sh's divergence 5 for what that
  * refuses and why), and no LC_LAZY_LOAD_DYLIB.
+ *
+ * THE -empty-starts TWIN. Same image, one difference: the 8-byte
+ * LC_FUNCTION_STARTS blob is left as the calloc'd zeros instead of holding
+ * the ULEB 0x400 entry -- three bytes, `80 08 00` becoming `00 00 00`. That
+ * is the shape a stock 10.9 system dylib with no functions actually has
+ * (/usr/lib/swift/libswiftObjectiveC.dylib), and mg_plausible must ACCEPT
+ * it: an image that declares no function starts is the same fact as one with
+ * no LC_FUNCTION_STARTS at all, which the gate has always accepted with
+ * "nothing to check against". mg_plausible folded the two apart for a while
+ * -- ns == 0 fell into a composite `ns <= 0 ||` refusal -- and refused this
+ * image contentlessly through `verify` and, through the rewrite path, with a
+ * message about base-relative offsets naming no known function when there
+ * were no function starts for anything to name.
+ *
+ * That the twin keeps the __init_offsets entry naming 0x999 is deliberate,
+ * not an oversight: with no function starts declared there is nothing to
+ * check it against, exactly as when LC_FUNCTION_STARTS is absent. So the
+ * pair pins the whole rule in three bytes -- declare one function start and
+ * the initializer that names no function is a refusal; declare none and it
+ * is not checked at all. A regression that makes ns == 0 refuse again, by
+ * either route, fails on the twin.
  *
  * segname/sectname are char[16] and need NOT be NUL-terminated, so every name
  * is written with memcpy through set16 and never strcpy -- tests/README.md's
@@ -110,7 +146,9 @@ static void put_sect(struct segment_command_64 *seg, int i, const char *sect,
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) { fprintf(stderr, "usage: %s OUT\n", argv[0]); return 2; }
+    int empty_starts = 0;
+    if (argc == 3 && strcmp(argv[2], "-empty-starts") == 0) empty_starts = 1;
+    else if (argc != 2) { fprintf(stderr, "usage: %s OUT [-empty-starts]\n", argv[0]); return 2; }
 
     size_t fsize = LE_OFF + LE_SIZE;
     uint8_t *buf = (uint8_t *)calloc(1, fsize);
@@ -154,9 +192,14 @@ int main(int argc, char **argv) {
     h->sizeofcmds = (uint32_t)(p - (buf + sizeof *h));
 
     /* One function start at base + 0x400, then the 0 terminator.
-     * ULEB128 of 0x400 is 0x80 0x08. */
+     * ULEB128 of 0x400 is 0x80 0x08.
+     *
+     * -empty-starts writes nothing here, leaving calloc's eight zero bytes:
+     * datasize is still FS_SIZE, so the command is present and points at
+     * real file bytes -- the blob simply declares no function starts, the
+     * terminator being the first thing in it. */
     uint8_t *f = buf + LE_OFF;
-    f[0] = 0x80; f[1] = 0x08; f[2] = 0x00;
+    if (!empty_starts) { f[0] = 0x80; f[1] = 0x08; f[2] = 0x00; }
 
     /* The initializer that names no function start. */
     uint32_t bad = BAD_INIT;

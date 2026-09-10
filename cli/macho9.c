@@ -223,7 +223,17 @@ static void print_ops_csv(int is_rpath) {
  *                        this refuses. (If EVERY operation matched nothing,
  *                        there was no write to roll back in the first
  *                        place -- same as any other all-miss run.) Named
- *                        after `ld`/`gas`'s own --fatal-warnings.
+ *                        after `ld`/`gas`'s own --fatal-warnings. It catches
+ *                        "you asked for something that matched nothing",
+ *                        NOT "you asked for something that matched but was
+ *                        shadowed by an earlier operation": two -replace
+ *                        flags naming the same old path both count as hits
+ *                        and this stays silent, even though only the first
+ *                        can act. That line is where it is because counting
+ *                        only the operation that ACTED reports the -delete
+ *                        of `-replace X N -delete X` as a false miss --
+ *                        src/rewrite.h's mr_ops.fatal_unmatched has the
+ *                        whole argument.
  *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`

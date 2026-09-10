@@ -14,7 +14,7 @@ Thirteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements. `rpath -insert`, `segment` and `retag-swift` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `-insert` is only correct if the new search path lands FIRST (an `-append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment` has to rename each section's own copy of the segment name (`macho9 info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `retag-swift` has to move the tag bit without disturbing the rest of the word |
 | `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally |
 | `translate_test` | `compat/translate.sh`, the old-grammar-to-`macho9` translator Task 2's wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every verb/op/KIND the translator can emit against `macho9 --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
-| `wrapper_test` | the five `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment` and `retag_swift_classes`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `macho9` returns `EX_REFUSED`; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/macho9.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
+| `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `macho9` returns `EX_REFUSED`; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/macho9.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
 | `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from commit `91b30b3`** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. The retirement plan says it outright: "a wrapper that passes the test suite but breaks a real caller is a failure" |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
@@ -40,8 +40,8 @@ hardware, with their results committed:
   vocabulary cannot reach (the capacity caps, `install.sh`'s production line,
   the chained `-rename_seg`). **Point its `<bindir>` at a build of commit
   `91b30b3`** (`compat: refuse chained -rename_seg, and make the matrix
-  replayable`), the last commit carrying all six `.c` files: five of the six
-  are shell wrappers around `macho9` now, so a current build makes the "old
+  replayable`), the last commit carrying all six `.c` files: all six are
+  shell wrappers around `macho9` now, so a current build makes the "old
   side" a wrapper and the comparison close to tautological. (`f500021`
   -- `tests: add the real elision detector, aimed at the case that can elide`
   -- is the last commit carrying the *pre-extraction* originals, from before
@@ -51,8 +51,9 @@ hardware, with their results committed:
   The bindir it ran against is recorded in the matrix header.
 
 `compat-matrix.tsv` is a **committed artifact, not a report**: Task 2 of the
-retirement plan replaced five of the six C sources with shell wrappers, after
-which those binaries exist only in git history. The matrix and the SHA-256s in
+retirement plan replaced five of the six C sources with shell wrappers, and a
+later commit replaced the sixth, `fix_macho`, so all six now exist as C only in
+git history. The matrix and the SHA-256s in
 it are what outlive them — as are `known-callers.sh`'s pinned pipeline
 digests. Regenerate it only from a real 10.9 build of both families, and say
 in the commit why a row changed.

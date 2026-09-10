@@ -203,6 +203,40 @@ MW_RUN_EOF
     return "$mw_rc"
 }
 
+# mw_require_writable FILE
+#
+# The absent/unwritable pre-check, in the words the C tools produced. Both
+# fix_macho and rename_segment open()ed the file O_RDWR before looking at
+# anything at all, so an absent or unwritable FILE failed immediately with
+# perror("open"): `open: No such file or directory` or `open: Permission
+# denied` -- no program name, on stderr, exit 1.
+#
+# A single macho9 command reproduces that for free, from mr_apply_file's own
+# O_RDWR. The paths that do NOT are the ones that put something else first:
+# mw_run_atomic (below) copies the file aside and runs macho9 against the
+# COPY, which it just created and can always write, so the original's mode is
+# never consulted; rename_segment gates on `macho9 info`, which opens
+# O_RDONLY. Either way the caller's first diagnostic would be a different
+# message at a different time. It lives here, next to mw_run_atomic, because
+# that is the path that most clearly needs it -- and because two byte-for-byte
+# copies of it in two wrappers is the thing this file exists not to have.
+#
+# Returns 1 rather than exiting, so the caller keeps the decision; both call
+# sites read `mw_require_writable "$mw_file" || exit $?`. The two strings are
+# a contract, not a message: tests/wrapper_test.sh and tests/known-callers.sh
+# pin them.
+mw_require_writable() {
+    if [ ! -e "$1" ]; then
+        printf 'open: No such file or directory\n' >&2
+        return 1
+    fi
+    if [ ! -w "$1" ]; then
+        printf 'open: Permission denied\n' >&2
+        return 1
+    fi
+    return 0
+}
+
 # mw_run_atomic TOOL FILE ARG...   (TOOL FILE ARG... is the OLD argv)
 #
 # THE MIXED-FAMILY SPLIT, AND WHAT IT COSTS. change_dylib applies every

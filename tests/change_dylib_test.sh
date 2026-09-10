@@ -674,7 +674,7 @@ if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then
     # Same length as the old path (both 27 bytes). This USED to matter because
     # fix_macho refused a replacement that did not fit the existing command
     # ("new path ... too long"); `macho9 dylib -replace` resizes into header
-    # pad instead, which is the first of compat/fix_macho.sh's four adopted
+    # pad instead, which is the first of compat/fix_macho.sh's five adopted
     # divergences. Keeping the lengths equal anyway keeps this case testing
     # only what it means to -- whether -change recognizes an
     # LC_LOAD_UPWARD_DYLIB at all -- rather than quietly also testing the

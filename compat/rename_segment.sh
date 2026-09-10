@@ -146,14 +146,7 @@ mw_file=$1
 mw_old=$2
 mw_new=$3
 
-if [ ! -e "$mw_file" ]; then
-    printf 'open: No such file or directory\n' >&2
-    exit 1
-fi
-if [ ! -w "$mw_file" ]; then
-    printf 'open: Permission denied\n' >&2
-    exit 1
-fi
+mw_require_writable "$mw_file" || exit $?
 
 # THIN ONLY: `macho9 info` is a bare mi_open, which is the gate
 # rename_segment itself had. Only the exit status is used; the output is

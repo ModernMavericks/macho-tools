@@ -71,9 +71,9 @@ target_compile_options(macho9core PRIVATE -O2 -Wall)
 # PRESERVE its behaviour, because `macho9 dylib` rewrites a longer path using
 # header pad where fix_macho refused outright, and a chained -rename_seg
 # chains where fix_macho's single pass did not. The repo owner ruled those --
-# and two more -- improvements to ADOPT deliberately, which is what made this
-# possible; compat/fix_macho.sh's "DELIBERATE DIVERGENCES FROM fix_macho"
-# block states all four with their reasons.
+# and three more -- improvements to ADOPT deliberately, which is what made
+# this possible; compat/fix_macho.sh's "DELIBERATE DIVERGENCES FROM fix_macho"
+# block states all five with their reasons.
 #
 # So macho9 is now the ONLY Mach-O rewriting binary this repo builds or
 # installs, and compat/ contains no C at all. MACHO_TOOLS is deliberately
@@ -260,7 +260,7 @@ add_test(NAME cli_test
 add_test(NAME translate_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/translate_test.sh" "$<TARGET_FILE_DIR:macho9>")
 
-# The five /bin/sh wrappers' own behaviour: the grammar each translates, the
+# The six /bin/sh wrappers' own behaviour: the grammar each translates, the
 # exit codes it maps back to the C tool's, and the stdout it reshapes. Sits
 # between translate_test (which pins the emitted TEXT and never runs macho9 on
 # a file) and known_callers (which replays the real callers end to end); every
