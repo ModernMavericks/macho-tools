@@ -35,6 +35,57 @@ beside itself, runs the sequence against the copy, and installs on full success.
 That restores atomicity but not the single write, and it costs a third copy —
 peak footprint ~3x the file where the C tool needed 2x.
 
+## Who this is for
+
+This sets the design pressure, and two earlier drafts of it were wrong — first
+arguing from "one Claude binary", then from "the ModernMavericks family". Both
+undershot.
+
+**The population is arbitrary modern macOS applications: shipped as binaries,
+no source, no control over the vendor.** Built by toolchains fifteen years newer
+than the OS they must load on, by people who have never heard of 10.9 and will
+ship a new version next month regardless. Binary surgery is not the preferred
+lever, it is the only one.
+
+**Today's callers are few** — `mavericksforever.com/claude/install.sh`, one
+local script in `mavericks-claude-ongoing`, and this repo's own suites. That was
+established from evidence, not assumption. The gap between those two facts is
+the point: the toolkit is infrastructure for a population it has barely started
+serving.
+
+Four consequences, each of which this design has to answer for:
+
+**The refusal surface is the product.** An arbitrary binary carries load
+commands, `__LINKEDIT` layouts and pointer formats nobody here has seen. Every
+shape the toolkit does not understand must produce a clear refusal naming what
+it did not understand — never a plausible-looking result. "Refuse rather than
+guess" is not fastidiousness under these conditions; it is the entire safety
+argument, because the alternative is handing someone a binary that loads and
+then misbehaves.
+
+**A recipe has to survive version churn.** The vendor ships 1.3 where the recipe
+was written against 1.2, and the paths, the ordinals and the load command set
+all moved. So a recipe is an artifact that gets re-run against inputs it was not
+written for — which makes *an operation matching nothing* the normal case rather
+than the exceptional one, and makes reporting it (and `fatal-warnings`) load
+bearing rather than a nicety. See the companion plan,
+`docs/superpowers/plans/2026-09-10-report-what-macho9-did.md`.
+
+**Diagnosis matters as much as editing.** Nobody knows what surgery an unfamiliar
+binary needs until they look, and 10.9's own `otool` prints
+`?(0x80000034) Unknown load command` for most of what a modern linker emits. So
+`info` and `verify` are not conveniences alongside the rewriting verbs; they are
+how a recipe gets written in the first place.
+
+**Centralising the relations stops being tidiness.** One known binary can be
+served by knowledge scattered across whichever functions need it. An open-ended
+population of unfamiliar shapes is where "only one place to put the knowledge"
+becomes the thing that keeps the toolkit correct as coverage grows.
+
+What this does **not** change: arbitrary *applications*, not arbitrary
+*formats*. Modern macOS applications are Mach-O. See "Two generalizations, not
+one".
+
 ## What this design does
 
 Adds one verb, `macho9 rewrite`, which takes a **recipe**: a flat sequence of
@@ -311,38 +362,6 @@ this uses it for *deliberate refusal*. It is documented in `--capabilities` and
 relied on by the compat wrappers, so changing it now would be a compatibility
 break. It will surprise someone; this is where it is written down.
 
-## Who this is for
-
-Worth stating plainly, because it sets the design pressure and an earlier draft
-of this reasoning got it wrong.
-
-**Today's callers are few**: `mavericksforever.com/claude/install.sh`, one
-local script in `mavericks-claude-ongoing`, and this repo's own suites. That was
-established from evidence, not assumption.
-
-**The intended population is the ModernMavericks family**, which is roughly
-thirty repos — `golang`, `clang`, `nodejs`, `rust`, `openssh`, `tailscale`,
-`signal-desktop`, `swift-toolchain` and the rest. Many of those ship binaries
-built by toolchains fifteen years newer than the OS they must run on, and
-getting them to load at all is exactly the surgery this toolkit performs. One
-Claude binary is the first customer, not the market.
-
-That changes what a recipe *is*. Not a way to spell a one-off command line, but
-**an artifact worth committing**: one recipe per ported application, living
-beside that application's packaging, reviewable in a diff, and re-runnable when
-its upstream cuts a new version. A port's surgery becomes a file someone can
-read and reason about, rather than a shell incantation reconstructed from an
-install script each time.
-
-It also raises the value of the relation table above. A single known binary can
-be handled by knowledge distributed across the functions that happen to need it.
-Thirty applications of varying shape — different linkers, different eras,
-different `__LINKEDIT` layouts — is where "only one place to put the knowledge"
-stops being tidiness and starts being the thing that keeps the toolkit correct.
-
-What it does **not** change: this is still one binary format and one target OS.
-See below.
-
 ## Out of scope
 
 - Conditionals, variables, includes. The operations are already safe no-ops on
@@ -356,42 +375,87 @@ See below.
 - `--explain` / expansion of logical statements into physical ones. See "Why the
   levels are marked rather than composed".
 
-### A format-description engine — the road not taken
+### Two generalizations, not one
 
-Zooming out, the general version of this is a language where a **format
-description declares the relations** and the engine derives repair from them:
-you would say "this index is one-based into the subsequence matching this
-predicate" once, and every edit that reorders that subsequence would renumber
-correctly by construction, for any format. Four levels rather than two — bytes,
-structure, relation-preserving, intent — with each statement's level explicit,
-because the level is what the engine is promising.
+The general version of this design is often described as one idea — "a format
+description language with an engine that derives repair" — and an earlier draft
+of this spec dismissed it as a scope error. That was wrong twice over: it is two
+ideas with very different evidence behind them, and the objection to the second
+is about **sequencing**, not scope.
 
-**We are deliberately not building that**, and this section exists so the next
-person does not reopen it without new information.
+The design heuristic that produced this section, and the relation table above,
+is worth naming because it is the opposite of the reflex: *what would have made
+the current problem easy to solve, and is it worth making that thing exist?*
 
-The reasons are not "one binary" — see "Who this is for". They are:
+**(a) Declare the relations for this format; derive repair and verification
+from them.** Not speculative. This spec commits to it, and the evidence is that
+it would have prevented four failures this codebase actually had:
 
-- **One format.** Mach-O, on one target OS. The generality buys nothing until
-  there is a second format, and there is no plan for one.
-- **The deepest fork is already decided against the general case.** A
-  format-driven engine naturally *rebuilds* a binary from its parsed model.
-  This toolkit must not: "the tools must never move a byte." That constraint is
-  the reason it exists — 10.9's `install_name_tool` refuses these binaries
-  outright ("file not in an order that can be processed") precisely because it
-  rebuilds `__LINKEDIT` and expects a 2013-era ordering. Repair-in-place is
-  much harder than rebuild, and it is the whole product.
-- **Nobody has built it.** GNU poke is the closest — a real language for
-  describing and editing binary structures — and it stops at the structure
-  level: it will let you assign to a field and has no notion of repairing what
-  the assignment invalidated. Kaitai Struct is read-mostly. LIEF derives repair
-  but rebuilds. That is either a gap or a signal, and finding out which is not
-  this project's job.
+| failure | what a declared relation would have done |
+|---|---|
+| `mg_plausible` refusing every dylib on a base-of-zero sentinel | applicability declared ("when `LC_FUNCTION_STARTS` is present"), so no hand-rolled precondition to get wrong |
+| PROPOSAL #4 — two correct `__init_offsets` re-base implementations both running, entries gaining `2*grow` | one declaration, one repair; nothing to duplicate |
+| PROPOSAL #2 — `-delete` leaving library ordinals stale, `dyld: library ordinal (4) too big` | repair derived from the relation rather than remembered |
+| `fix_macho -change` hand-listing `{LOAD, WEAK, ID, REEXPORT}` and silently missing `LC_LOAD_UPWARD_DYLIB` | one declaration of which commands carry an ordinal; the second list cannot drift because there is no second list |
 
-**The limit this accepts, stated plainly:** the statement set is a hardcoded
-enumeration of the relations we happen to know, so adding an edit — or a format
-— means editing C, not data. The relation table centralises that knowledge but
-does not make it extensible by configuration. That is a deliberate ceiling, not
-an oversight.
+The generalization axis here is **relations, not formats** — and there are five
+of them today. That is enough to generalize from.
+
+**(b) Make the format itself data, so a second format could be added.** This is
+the sequencing question, and it is genuinely open rather than closed.
+
+Against it now: there is one format and no concrete second. And the deepest
+design fork is already decided in a direction that makes the general case
+harder — a format-driven engine naturally *rebuilds* a binary from its parsed
+model, and this toolkit must never move a byte. That constraint is the reason it
+exists: 10.9's `install_name_tool` refuses these binaries outright ("file not in
+an order that can be processed") precisely because it rebuilds `__LINKEDIT` and
+expects a 2013-era ordering. Repair-in-place is much harder than rebuild, and it
+is the whole product. Any general engine would have to be built on the hard side
+from the start.
+
+**But there is already a second consumer of the same knowledge, and it is not a
+second format.** `src/live.h` walks the same structures against *loaded images*
+— `_dyld_*` plus slide, in-process, allocation-free — and `docs/PROPOSAL.md` is
+explicit that *"the shared thing is the structure knowledge, not the code
+path."* Today that sharing is achieved by writing the walks twice and hoping
+they agree. Declared relations are exactly what would let one description serve
+both the on-disk rewriter and the in-memory reader. That is a real second
+consumer, existing today, in this repository's own orbit — and it arrived
+without anyone needing a second binary format.
+
+So the honest position: (b) is not out of scope, it is **not yet**. What would
+make it pay, in rough order of how likely each is to arrive:
+
+- the relation table from (a) existing and proving itself in use;
+- `live.h` deriving its walks from the same declarations instead of duplicating
+  them — the second consumer that already exists;
+- a second binary format actually needed, which nothing currently suggests:
+  the population is arbitrary macOS applications, and those are all Mach-O.
+
+The first two are reachable from here. Revisit when the first has landed and the
+second is the obvious next factoring rather than a guess.
+
+**Prior art, for whoever picks this up.** GNU poke is the closest thing that
+exists — a real language for describing and editing binary structures — and it
+stops at the structure level: it will let you assign to a field and has no
+notion of repairing what the assignment invalidated. Kaitai Struct is
+declarative and read-mostly. LIEF derives repair but rebuilds. The
+relation-declaring, repair-deriving, never-move-a-byte combination appears not
+to exist, which is either a gap worth filling or a signal that it is harder than
+it looks. Finding out which is a project, not a task.
+
+### The ceiling this design accepts
+
+Stated plainly, so nobody has to infer it: the statement set is a hardcoded
+enumeration of the relations we know, so adding an edit — or a format — means
+editing C, not data. The relation table centralises that knowledge; it does not
+make it extensible by configuration.
+
+That is generalization (a) without (b): one description of what points at what,
+consumed by the code that repairs and the code that verifies, but not itself a
+format description an engine reads. It is a deliberate ceiling with a named
+condition for raising it, not an oversight.
 
 ## Consumers
 
