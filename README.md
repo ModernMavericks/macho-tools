@@ -20,16 +20,18 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
   load-command rewriter, the `LC_VERSION_MIN_MACOSX` appender, the segment
   rename, and the Swift class-record retag.
 - `compat/` — these six tools' entry points. They predate `macho9` and keep
-  their original names because `install.sh` fetches some of them by name.
-  Five are now `/bin/sh` wrappers that print the `macho9` equivalent of what
-  they were asked to do and then do it through `macho9`; `fix_macho` is still
-  C, because it could not be wrapped without changing what it does — so this
-  repo still ships **two** Mach-O rewriting binaries, not the one the
-  retirement plan is aiming at. Also here: `translate.sh`, the
-  old-grammar-to-`macho9` translator the wrappers source, and
-  `macho9-compat.sh`, the machinery they share. See `compat/README.md`.
+  their original names because `install.sh` fetches some of them by name. All
+  six are now `/bin/sh` wrappers that print the `macho9` equivalent of what
+  they were asked to do and then do it through `macho9`, so **`macho9` is the
+  only Mach-O rewriting binary this repo ships** and `compat/` contains no C
+  at all. `fix_macho` was the last holdout: wrapping it changes what it does
+  in four ways, and those changes were adopted deliberately rather than
+  papered over — `compat/fix_macho.sh`'s header states each with its reason.
+  Also here: `translate.sh`, the old-grammar-to-`macho9` translator the
+  wrappers source, and `macho9-compat.sh`, the machinery they share. See
+  `compat/README.md`.
 
-  **Packaging note:** the five wrappers need `macho9`, `macho9-compat.sh` and
+  **Packaging note:** the six wrappers need `macho9`, `macho9-compat.sh` and
   `macho9-translate.sh` installed beside them. Anything that fetches
   `patch_macho`, `change_dylib` or `add_version_min` by name now has three
   more files to fetch. `compat/README.md` says what that means for

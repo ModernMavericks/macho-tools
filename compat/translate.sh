@@ -36,9 +36,11 @@
 #     nothing.) It is NOT an error, and it is deliberately not translated as
 #     some adjacent command that would do something.
 #   * Exit 2 means NO EQUIVALENT: this argv is one the old tool accepted but
-#     that no macho9 command line means the same thing as. Today there are two
-#     -- an unknown TOOL name, and fix_macho's chained -rename_seg (see the
-#     divergence list below). Nothing goes to stdout; emitting a
+#     that no macho9 command line means the same thing as. Today there is
+#     exactly one -- an unknown TOOL name. (There were two: fix_macho's
+#     chained -rename_seg was the other, until the ruling recorded at
+#     mt_tr_fix_macho's -rename_seg arm made chaining a behaviour to ADOPT
+#     rather than to preserve.) Nothing goes to stdout; emitting a
 #     plausible-looking command that would do something else is exactly what
 #     the plan forbids.
 #   * Exit 1 means the OLD TOOL ITSELF would have refused this argv --
@@ -58,6 +60,17 @@
 # the new grammar never leaks the old flag spellings -- both cap sites in
 # cli/macho9.c carry a comment saying so and telling whoever writes the wrapper
 # to enforce the caps here and print the origin text. That is what mt_room does.
+#
+# fix_macho's two caps come here for a second reason as well: its -rename_seg
+# array has NO macho9 counterpart at all (each pair is its own `macho9 segment`
+# invocation, so nothing downstream counts them), and its `changes[32]` /
+# `renames[16]` were the same unbounded fixed-size arrays docs/PROPOSAL.md
+# records smashing the stack in change_dylib -- "Repeated options wrote past
+# their fixed-size arrays; 33 -change flags smashed the stack -- fixed, PR #9",
+# a fix that only ever covered change_dylib. compat/fix_macho.c grew a bounds
+# check of its own before it was retired; mt_room below is where that check
+# lives now, in fix_macho's own words, so retiring the C file did not take the
+# refusal with it.
 #
 # ---- the grammar mapping -------------------------------------------------
 #
@@ -140,17 +153,18 @@
 #     where retag_swift_classes exited 0.
 #   macho9 declassify uses exit 2 where patch_macho returns a flat 1, writes
 #     atomically, and names the file it wrote even on the pass-through.
-#   fix_macho refuses a longer path where macho9 dylib rewrites it using
-#     header pad, skips mg_plausible, tolerates a fat slice it cannot handle,
-#     and writes non-atomically.
+#   fix_macho is the one tool whose divergences are NOT closed by its wrapper,
+#     because the repo owner ruled them improvements to ADOPT: a longer
+#     replacement path is now rewritten using header pad instead of refused, a
+#     chained -rename_seg now chains, the write-back is atomic, and a fat slice
+#     macho9 cannot handle refuses the whole file instead of being skipped.
+#     compat/fix_macho.sh's header states all four as deliberate changes, with
+#     their reasons; this file simply translates, as it does for every other
+#     tool.
 #
-# There is one shape this file REFUSES outright rather than hands on, because
-# no sequence of macho9 commands means the same thing: `fix_macho -rename_seg
-# A B -rename_seg B C`, where a later pair renames a name an earlier pair
-# produced. fix_macho's single pass gives each segment its FIRST match, so the
-# later pair never fires; two `macho9 segment` passes chain, and the two
-# binaries differ while both exit 0. See mt_fm_chain below for the measurement
-# and for the three neighbouring shapes that are NOT affected.
+# There is no shape this file refuses outright any more. There used to be one
+# -- `fix_macho -rename_seg A B -rename_seg B C` -- and mt_tr_fix_macho's
+# -rename_seg arm records why it existed and what reversed it.
 
 # ---- quoting -------------------------------------------------------------
 #
@@ -196,6 +210,10 @@ mt_room() {
 # their own 32; -strip-lc gets 16.
 MT_MAX_OPS=32
 MT_MAX_STRIP=16
+# fix_macho's own second array, from compat/fix_macho.c's FM_MAX_RENAMES. No
+# shared header has an opinion about segment renames -- macho9 never sees more
+# than one at a time -- so this 16 is fix_macho's alone and lives here.
+MT_MAX_RENAMES=16
 
 # change_dylib's -strip-lc vocabulary, from src/lc_kinds.c. This is the OLD
 # tool's table, frozen: it is what change_dylib accepted, and reproducing its
@@ -317,79 +335,13 @@ mt_fm_usage() {
     return 1
 }
 
-# CHAINED -rename_seg: no equivalent, so refuse.
-#
-# fix_macho applies EVERY -rename_seg pair in one pass over the load commands
-# and `break`s out of its rename loop on the first match
-# (compat/fix_macho.c's process_macho), so each segment gets the first pair
-# matching its ORIGINAL name and a later pair naming a name an earlier pair
-# produced never fires. The translation is one `macho9 segment` invocation per
-# pair, and the second one reads the first one's OUTPUT -- so the chain that
-# fix_macho refuses to follow, the sequence follows.
-#
-# Measured, on tests/fixture.macho, with the real binaries:
-#
-#   -rename_seg __DATA __X -rename_seg __X __Y
-#       fix_macho     -> __X      (the second pair never fires)
-#       the sequence  -> __Y      DIFFERENT BYTES, both exit 0
-#
-# That is a plausible-looking command line that does something else, which the
-# plan forbids outright ("never a plausible-looking command that would do
-# something else"; "never let a wrapper silently do something adjacent to what
-# was asked"). Documenting a silent wrong answer does not satisfy either
-# sentence, so this refuses instead.
-#
-# ONLY that shape refuses. Each of these was checked the same way and agrees
-# byte-for-byte, so refusing them would be over-refusing:
-#
-#   -rename_seg __DATA __A -rename_seg __DATA __B   same OLD twice: fix_macho
-#       takes the first, and the translation's second pass finds no __DATA
-#       left to rename. Both end __A.
-#   -rename_seg __DATA __B -rename_seg __TEXT __DATA   a later NEW equal to an
-#       earlier OLD is fine: by the time the second pair is applied there is
-#       no __DATA for it to collide with.
-#   -rename_seg __DATA __A -rename_seg __TEXT __B   independent pairs.
-#
-# So the condition is exactly "some later pair's OLD equals some earlier pair's
-# NEW", which a chain of three (__DATA -> __P -> __Q -> __R) also trips at its
-# first link.
-#
-# mt_fm_chain OLD -- returns 1, having reported, if OLD is a name some earlier
-# -rename_seg in this same invocation produced.
-#
-# mt_segnews holds one entry per earlier NEW, each prefixed with "=" and
-# newline-separated (see the append site below). The "=" is load-bearing, not
-# decoration: newline is IFS WHITE SPACE even when IFS is set to nothing but
-# a newline (POSIX classifies space/tab/newline together), so field-splitting
-# collapses an EMPTY field -- an earlier `-rename_seg X ''` -- into nothing,
-# and the `for` below would silently never see it. A later `-rename_seg '' Y`
-# would then not be recognized as chaining off it, which is exactly the hole
-# this function exists to close (empty is a legal NEW: fix_macho truncates
-# any name to the field width, and 0 bytes is a valid truncation). Prefixing
-# every stored entry with "=" makes even the empty-NEW entry a non-empty
-# field, so it survives the split; the same prefix on the needle keeps the
-# comparison exact.
-mt_fm_chain() {
-    mt_ci=$IFS
-    IFS='
-'
-    for mt_cn in $mt_segnews; do
-        if [ "=$1" = "$mt_cn" ]; then
-            IFS=$mt_ci
-            printf 'translate.sh: no equivalent -- -rename_seg %s renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary\n' "$1" >&2
-            return 1
-        fi
-    done
-    IFS=$mt_ci
-    return 0
-}
-
 mt_tr_fix_macho() {
     # `argc < 3`: program name plus fewer than two arguments.
     [ $# -ge 2 ] || { mt_fm_usage; return 1; }
 
     mt_file=$1; shift
-    mt_lc='' mt_dy='' mt_seg='' mt_segnews=''
+    mt_lc='' mt_dy='' mt_seg=''
+    mt_nchanges=0 mt_nrenames=0
 
     while [ $# -gt 0 ]; do
         case $1 in
@@ -398,6 +350,12 @@ mt_tr_fix_macho() {
             # `-change OLD` with no NEW falls through to "Unknown option:
             # -change" -- naming the flag, not the missing operand.
             [ $# -ge 3 ] || { mt_die "Unknown option: $1"; return 1; }
+            # fix_macho's FM_MAX_CHANGES was change_dylib's own MR_MAX_OPS, and
+            # its FM_ROOM printed change_dylib's exact "too many %s (max %d)" --
+            # so mt_room's text is already fix_macho's text, with fix_macho's
+            # flag spelling in it.
+            mt_room "$mt_nchanges" "$MT_MAX_OPS" -change || return 1
+            mt_nchanges=$((mt_nchanges + 1))
             mt_dy="$mt_dy$(mt_qargs -replace "$2" "$3")"
             shift 3 ;;
         -strip_build_version)
@@ -411,12 +369,36 @@ mt_tr_fix_macho() {
             # Same 16-byte segname limit fix_macho checks here, before any
             # I/O, in its own words (which differ from rename_segment's).
             [ "${#3}" -le 16 ] || { mt_die "new segment name longer than 16 bytes: $3"; return 1; }
-            # CHAINED RENAMES HAVE NO EQUIVALENT -- refuse. See the block
-            # above mt_fm_chain for the mechanism and for exactly which
-            # shapes are and are not affected.
-            mt_fm_chain "$2" || return 2
-            mt_segnews="$mt_segnews=$3
-"
+            # fix_macho's renames[] held 16, and its FM_ROOM refused the 17th
+            # in these same words. Nothing downstream counts these -- each
+            # pair becomes its OWN `macho9 segment` invocation, so macho9 sees
+            # one rename at a time and has no cap of its own to hit. Enforcing
+            # it here is the only thing keeping that refusal alive.
+            mt_room "$mt_nrenames" "$MT_MAX_RENAMES" -rename_seg || return 1
+            mt_nrenames=$((mt_nrenames + 1))
+            # A CHAINED RENAME (`-rename_seg A B -rename_seg B C`) USED TO
+            # REFUSE HERE, with exit 2, via a helper called mt_fm_chain. That
+            # refusal was DELIBERATE, not an oversight, and it was right at the
+            # time: while compat/fix_macho.c still shipped, a wrapper had to
+            # PRESERVE its behaviour, and the two answers differ -- fix_macho
+            # applies every pair in ONE pass and gives each segment its FIRST
+            # match, so the second pair never fires and it produces B, while
+            # separate `macho9 segment` passes chain and produce C. Measured on
+            # tests/fixture.macho with the real binaries: different bytes, both
+            # exiting 0. Emitting the sequence anyway would have been exactly
+            # the "plausible-looking command that would do something else" the
+            # retirement plan forbids, so it refused instead.
+            #
+            # WHAT REVERSED IT: the repo owner's ruling, recorded in
+            # docs/superpowers/plans/2026-09-10-report-what-macho9-did.md ("The
+            # decision this plan rests on"), that fix_macho's divergences from
+            # the shared drivers are improvements to ADOPT deliberately rather
+            # than behaviour to preserve -- chaining is listed there as "doing
+            # what was asked". compat/fix_macho.c is gone; there is no longer a
+            # behaviour on the other side to preserve, so refusing a shape the
+            # surviving implementation handles correctly would be the wrong
+            # answer. compat/fix_macho.sh's header states the change as one of
+            # its four deliberate divergences.
             mt_seg="$mt_seg$(mt_qargs "$2" "$3")
 "
             shift 3 ;;
@@ -427,10 +409,13 @@ mt_tr_fix_macho() {
 
     mt_pre="$(mt_pre_word)"
     mt_fq="$(mt_qargs "$mt_file")"
-    # No --allow-grow anywhere: fix_macho never grows a header. It refuses a
-    # replacement that does not fit the EXISTING command, which is stricter
-    # than `macho9 dylib` without --allow-grow (that one may still use header
-    # pad). That difference is a matrix row, not something to paper over here.
+    # No --allow-grow anywhere: fix_macho had no -grow and never enlarged a
+    # header, so nothing in its grammar can ask for one. `macho9 dylib`
+    # without --allow-grow still resizes a command into EXISTING header pad,
+    # which fix_macho refused ("new path ... too long") -- the first of the
+    # four adopted changes listed in compat/fix_macho.sh's header. Growing the
+    # header outright is a further step, and this translation still does not
+    # take it.
     [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fq" "$mt_lc"
     [ -n "$mt_dy" ] && printf '%s dylib%s%s\n' "$mt_pre" "$mt_fq" "$mt_dy"
     if [ -n "$mt_seg" ]; then

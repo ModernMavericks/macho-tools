@@ -128,9 +128,14 @@
 #
 # `blocked` splits by WHO said no, in the refuser column: refuser=macho9 is the
 # regression-shaped one; refuser=translate is compat/translate.sh refusing on
-# purpose, because no macho9 command line means what that argv meant (today:
-# fix_macho's chained -rename_seg). Those two must not be read as the same
-# thing, and the generated matrix header says so as well.
+# purpose, because no macho9 command line means what that argv meant. Those two
+# must not be read as the same thing, and the generated matrix header says so
+# as well. NOTE, for anyone reading the COMMITTED tests/compat-matrix.tsv: its
+# refuser=translate rows are fix_macho's chained -rename_seg, and that refusal
+# is GONE -- compat/translate.sh now emits the chain, deliberately, per the
+# ruling recorded at its -rename_seg arm. The matrix is a dated measurement
+# against the pre-wrapper C binaries, not a live assertion; re-running this
+# sweep would produce no refuser=translate row at all.
 #
 # and any refusing class picks up a "+partial" suffix when the new side had
 # ALREADY written the file before a later command in the sequence failed. That

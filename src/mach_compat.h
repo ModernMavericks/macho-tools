@@ -18,9 +18,11 @@
  * src/lc_kinds.c), at the paths those files had at the time. Most of those
  * files are gone now: change_dylib.c and patch_macho.c were replaced by
  * /bin/sh wrappers around macho9 (compat/<tool>.sh) when the compat tools
- * were retired, fix_macho.c moved to compat/ and stayed C, and macho_grow.h was
- * folded into src/grow.c/src/grow.h (Task 3). The list is kept as the record
- * of how many places one constant was being spelled in.
+ * were retired, fix_macho.c held out in compat/ as C for one more plan and is
+ * now a wrapper as well, and macho_grow.h was folded into src/grow.c/
+ * src/grow.h (Task 3). Of that list only cli/macho9.c, src/ordinals.c and
+ * src/lc_kinds.c still exist. The list is kept as the record of how many
+ * places one constant was being spelled in.
  *
  * Each of those copies was guarded so that a real SDK definition always wins,
  * but each was also a place the VALUE could drift from the others if only one

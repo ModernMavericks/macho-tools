@@ -205,13 +205,16 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
      * recognized as dylib-shaped so `dc`/`name` below are valid, but it's
      * excluded from matching just below, same as before.
      *
-     * compat/fix_macho.c's `-change` implements this exact same question
-     * ("which dylib LCs can `-change` rewrite?") independently, and until
-     * this wave it hand-listed {LOAD, WEAK, ID, REEXPORT} -- silently
-     * missing LC_LOAD_UPWARD_DYLIB, so `fix_macho -change` reported "No
-     * changes needed" (exit 0) on exactly the input this function rewrites.
-     * fix_macho.c now uses mo_is_ordinal_lc() too, so it cannot drift from
-     * this set again; see its own copy of this comment. */
+     * compat/fix_macho.c's `-change` used to implement this exact same
+     * question ("which dylib LCs can `-change` rewrite?") independently, and
+     * it hand-listed {LOAD, WEAK, ID, REEXPORT} -- silently missing
+     * LC_LOAD_UPWARD_DYLIB, so `fix_macho -change` reported "No changes
+     * needed" (exit 0) on exactly the input this function rewrites. It was
+     * pointed at mo_is_ordinal_lc() so it could not drift again, and has
+     * since been retired outright: fix_macho is a /bin/sh wrapper and its
+     * `-change` reaches THIS predicate. There is now exactly one answer to
+     * the question, which is the end state that fix was aiming at.
+     * tests/change_dylib_test.sh case 8b still pins it from that side. */
     if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
         const struct dylib_command *dc = (const struct dylib_command *)lc;
         if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */

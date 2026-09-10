@@ -176,32 +176,35 @@ macho9 segment f __A __B' -- fix_macho f -change A B -strip_build_version -renam
 ok fm-stripbv-twice 'macho9 lc f -delete build-version' \
     -- fix_macho f -strip_build_version -strip_build_version
 
-# CHAINED -rename_seg has no equivalent and must REFUSE. fix_macho gives each
-# segment its FIRST matching pair and never revisits it, so `-rename_seg A B
-# -rename_seg B C` ends at B; two macho9 segment passes chain and end at C --
-# two different binaries from one command line, both exiting 0. Emitting the
-# sequence anyway would be exactly the "plausible-looking command that would do
-# something else" the plan forbids.
-FM_CHAIN_X='translate.sh: no equivalent -- -rename_seg __X renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary'
-FM_CHAIN_P='translate.sh: no equivalent -- -rename_seg __P renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary'
-refuses fm-chain   2 "$FM_CHAIN_X" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
-# A chain of three trips at its first link, not its last.
-refuses fm-chain-3 2 "$FM_CHAIN_P" \
+# CHAINED -rename_seg TRANSLATES, and these three assertions USED TO BE
+# `refuses ... 2 ...`. compat/translate.sh refused the shape while
+# compat/fix_macho.c still shipped, because a wrapper had to preserve that
+# tool's answer and the two differ: fix_macho gave each segment its FIRST
+# matching pair and never revisited it, so `-rename_seg A B -rename_seg B C`
+# ended at B, while two macho9 segment passes chain and end at C. The repo
+# owner has since ruled that difference an improvement to ADOPT -- "doing what
+# was asked" -- and the C tool is gone, so there is no longer a second answer
+# to preserve. These now pin the translation, in the same place they used to
+# pin the refusal; compat/translate.sh's -rename_seg arm records the reversal.
+ok fm-chain 'macho9 segment f __DATA __X
+macho9 segment f __X __Y' -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
+# A chain of three emits three passes, in argv order -- every link, not just
+# the first (which is where the refusal used to trip).
+ok fm-chain-3 'macho9 segment f __DATA __P
+macho9 segment f __P __Q
+macho9 segment f __Q __R' \
     -- fix_macho f -rename_seg __DATA __P -rename_seg __P __Q -rename_seg __Q __R
-# The empty string is a legal NEW -- fix_macho truncates any name to the
-# 16-byte field width, and 0 bytes is a valid truncation -- so a chain through
-# an empty NEW must refuse exactly like a chain through any other name.
-# Regression test for the hole where mt_fm_chain's newline field-splitting
-# silently dropped an earlier EMPTY stored NEW (newline is IFS white space,
-# so an empty field between two newlines vanishes rather than surviving as an
-# iteration of the `for` loop) and so failed to recognize the second pair's
-# OLD as chaining off it.
-FM_CHAIN_EMPTY='translate.sh: no equivalent -- -rename_seg  renames a segment name an earlier -rename_seg in this same invocation produced; fix_macho applies every pair in ONE pass and gives each segment its FIRST match, so that later pair never fires, while separate macho9 segment passes would chain and produce a different binary'
-refuses fm-chain-empty 2 "$FM_CHAIN_EMPTY" \
+# The empty string is a legal NEW -- a segname may be all NULs -- and it stays
+# an argument rather than vanishing: mt_quote emits it as '' so the emitted
+# line still has four words after the verb. That is what the old chain check's
+# own regression case was really about (an empty NEW that field-splitting
+# silently dropped), and it is still worth pinning now that the check is gone.
+ok fm-chain-empty "macho9 segment f __DATA ''
+macho9 segment f '' __Y" \
     -- fix_macho f -rename_seg __DATA '' -rename_seg '' __Y
-# ... and it must not OVER-refuse. Each of these three neighbouring shapes was
-# measured against the real fix_macho on tests/fixture.macho and agrees
-# byte-for-byte with its translation, so each must still translate.
+# The three shapes that were never affected by that refusal, and are not
+# affected by its removal either. Each was measured against the real fix_macho
+# on tests/fixture.macho and agreed byte-for-byte with its translation.
 ok fm-same-old 'macho9 segment f __DATA __A
 macho9 segment f __DATA __B' -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
 ok fm-new-eq-earlier-old 'macho9 segment f __DATA __B
@@ -309,6 +312,28 @@ refuses cap-radd-33  1 'too many -add-rpath (max 32)' -- change_dylib f $(mkcap 
 # flag that overflowed, which here is -delete.
 refuses cap-shared 1 'too many -delete (max 32)' \
     -- change_dylib f $(mkcap '-change A B' 16) $(mkcap '-delete P' 17)
+
+# fix_macho's two caps, which came here when compat/fix_macho.c retired. Its
+# FM_ROOM printed change_dylib's exact wording with fix_macho's flag names in
+# it, so these are that same text. The -rename_seg cap has no macho9
+# counterpart at all -- each pair is its own `macho9 segment` invocation, so
+# nothing downstream would ever count them -- which makes this file the only
+# thing keeping that refusal alive.
+ok fm-cap-change-32-fits "macho9 dylib f$(mkcap '-replace A B' 32)" \
+    -- fix_macho f $(mkcap '-change A B' 32)
+refuses fm-cap-change-33 1 'too many -change (max 32)' -- fix_macho f $(mkcap '-change A B' 33)
+refuses fm-cap-rename-17 1 'too many -rename_seg (max 16)' \
+    -- fix_macho f $(mkcap '-rename_seg __A __B' 17)
+# At capacity must still be accepted -- a check one too eager would silently
+# halve what a caller can ask for. 16 pairs is 16 emitted `segment` lines.
+fm_16=$( /bin/sh "$TR" fix_macho f $(mkcap '-rename_seg __A __B' 16) 2>"$T/err" )
+if [ "$(printf '%s\n' "$fm_16" | wc -l | tr -d ' ')" = 16 ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL fm-cap-rename-16-fits: %s lines, want 16 (stderr: %s)\n' \
+        "$(printf '%s\n' "$fm_16" | wc -l | tr -d ' ')" "$(cat "$T/err")" >&2
+    fail=$((fail + 1))
+fi
 
 # ---- the emitted grammar is one this build actually has -----------------
 #

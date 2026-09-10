@@ -1,13 +1,15 @@
 # compat/
 
-The six original entry points, kept for compatibility. Five of them are now
-`/bin/sh` wrappers around `macho9`; the sixth is still C.
+The six original entry points, kept for compatibility. All six are now
+`/bin/sh` wrappers around `macho9`. There is no C left in this directory.
 
-> **The goal is not met yet.** The retirement plan's headline is "`macho9`
-> becomes the only Mach-O rewriting binary this repo ships." This repo still
-> ships two: `macho9` and `fix_macho`. Five of six is real progress and it is
-> not the goal — see "Why `fix_macho` is still C" below, and do not read the
-> table above as saying otherwise.
+> **The goal is met.** The retirement plan's headline was "`macho9` becomes
+> the only Mach-O rewriting binary this repo ships." It is: `compat/` holds
+> six shell wrappers and two shell support files, and `macho9` is the only
+> binary `CMakeLists.txt` builds or installs. `fix_macho` was the holdout —
+> see "Why `fix_macho` could not be wrapped, and what changed" below, which is
+> the record of what adopting its four divergences cost and why that was the
+> right call rather than a shortcut.
 
 | installed name | what it is now |
 |---|---|
@@ -16,7 +18,7 @@ The six original entry points, kept for compatibility. Five of them are now
 | `add_version_min` | `add_version_min.sh` → `macho9 minos FILE 10.9` |
 | `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE`, once per file |
-| `fix_macho` | still `fix_macho.c` — see below |
+| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment` |
 
 plus the two files every wrapper sources:
 
@@ -114,7 +116,9 @@ families, a fat container, or every possible order.
 Stdout is identical everywhere a caller or an in-repo test can see it, and
 each wrapper's own header **enumerates** the places where it is not, with the
 measurement behind each one (`tests/compat-matrix.tsv` records what all 1227
-enumerated argument combinations did on both sides, stdout included).
+enumerated argument combinations did on both sides, stdout included). The one
+exception is `fix_macho`, whose stdout is deliberately not reproduced at all —
+see below.
 
 Stderr is where the wrappers deliberately differ: each one prints the
 `macho9` equivalent of the invocation it just received, so the caller's
@@ -126,24 +130,39 @@ go on stderr.
 production `install.sh` wrapper pipeline first — and `tests/wrapper_test.sh`
 covers the wrappers' own grammar, exit-code and stdout mapping.
 
-## Why `fix_macho` is still C — and why the plan's goal is not met
+## Why `fix_macho` could not be wrapped, and what changed
 
-It was attempted as a wrapper and measured, on real 10.9, against the
-binaries that shipped before the wrappers. It cannot be wrapped without
-changing what it does: `macho9 dylib -replace` rewrites a longer path using
-header pad where `fix_macho` refuses outright (different exit code AND
-different bytes), and a chained `-rename_seg` has no `macho9` equivalent at
-all, so a wrapper would refuse an invocation `fix_macho` accepts. Three
-smaller differences follow (no `mg_plausible` gate, a tolerated bad fat
-slice, and stdout nothing could reconstruct). `compat/fix_macho.c`'s own
-header has the detail. Converging it in C is the honest way to retire it, and
-that is a decision to take deliberately rather than a wrapper to slip in.
+It was attempted as a wrapper once before and measured, on real 10.9, against
+the binaries that shipped before the wrappers — and it could not be wrapped,
+because a wrapper had to **preserve** behaviour and `fix_macho`'s differs from
+the shared rewriter's. It stayed C for a whole plan on that basis.
 
-So this repo still ships **two** Mach-O rewriting binaries, not one.
-Converging `fix_macho` onto the shared drivers in C is real work with its own
-behaviour decisions, and it belongs to its own task.
+What changed is not the code but the standard: the repo owner ruled those
+differences **improvements to adopt deliberately**. There are four, and
+`compat/fix_macho.sh`'s "DELIBERATE DIVERGENCES FROM fix_macho" block states
+each with its reason:
 
-Its two repeated options are capped now, in `fix_macho.c`, with
-`change_dylib`'s exact wording — the fixed-size arrays they filled had no
+1. a replacement path longer than the existing load command is now rewritten
+   into header pad instead of refused;
+2. a chained `-rename_seg A B -rename_seg B C` now produces `C` instead of
+   stopping at `B`;
+3. the write-back is atomic (`wa_write_atomic`) instead of `lseek` + `write`
+   over the original;
+4. a fat slice that **is** a 64-bit Mach-O and whose edit fails now refuses
+   the whole file instead of being skipped with the rest rewritten. (A slice
+   that is not a Mach-O at all is still skipped, exactly as before —
+   `tests/wrapper_test.sh` pins that distinction.)
+
+`fix_macho`'s stdout is not reproduced either, and that is deliberate:
+`Processing thin Mach-O:` / `Changed: X -> Y` / `File updated: F` /
+`No changes needed: F` are replaced by `macho9`'s own reporting plus the
+per-operation `macho9: <path> matched nothing` lines on stderr, which say more
+than `No changes needed` could. This repo's own `tests/change_dylib_test.sh`
+was `fix_macho`'s only caller.
+
+Its two repeated options are still capped, in `compat/translate.sh`'s
+`mt_room`, with the same wording — the fixed-size arrays they filled had no
 bounds check at all, which is the same stack smash `docs/PROPOSAL.md` records
-being fixed in `change_dylib` alone.
+being fixed in `change_dylib` alone. The `-rename_seg` cap exists nowhere
+else: each pair becomes its own `macho9 segment` invocation, so nothing
+downstream would ever count them.

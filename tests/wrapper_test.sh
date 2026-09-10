@@ -1,5 +1,5 @@
 #!/bin/sh
-# tests/wrapper_test.sh -- the five /bin/sh wrappers' own behaviour: the
+# tests/wrapper_test.sh -- the six /bin/sh wrappers' own behaviour: the
 # grammar they translate, the exit codes they map, and the stdout they
 # reshape.
 #
@@ -35,7 +35,7 @@ ROOT=$(cd "$HERE/.." && pwd)
 FIXTURE="$HERE/fixture.macho"
 CC="${CC:-clang}"
 
-for t in macho9 patch_macho change_dylib add_version_min rename_segment retag_swift_classes; do
+for t in macho9 patch_macho change_dylib add_version_min rename_segment retag_swift_classes fix_macho; do
     [ -x "$BIN/$t" ] || { echo "wrapper_test: $BIN/$t not found or not executable" >&2; exit 1; }
 done
 
@@ -77,20 +77,17 @@ run() {
 # ---- every name is there, and runs --------------------------------------
 #
 # The plan's first "what must be true when you are done": all six names still
-# install and still run. Five are wrappers; fix_macho is still C (see
-# compat/fix_macho.c's header for the measurement that decided that), and is
-# checked here only for existence, since its own behaviour is unchanged and
-# tests/change_dylib_test.sh already covers it.
-for t in patch_macho change_dylib add_version_min rename_segment retag_swift_classes; do
+# install and still run -- and, since fix_macho joined them, all SIX are
+# /bin/sh scripts. That last part is the retirement plan's headline made
+# checkable: if any of these six is an executable rather than a script, this
+# repo is shipping a second Mach-O rewriting binary again.
+for t in patch_macho change_dylib add_version_min rename_segment retag_swift_classes fix_macho; do
     if [ -x "$BIN/$t" ] && head -1 "$BIN/$t" | grep -q '^#!/bin/sh$'; then
         ok "$t: installed, executable, and a /bin/sh script"
     else
         bad "$t" "not an executable /bin/sh script in $BIN"
     fi
 done
-[ -x "$BIN/fix_macho" ] \
-    && ok "fix_macho: still installed (still C -- see compat/fix_macho.c)" \
-    || bad "fix_macho" "missing from $BIN"
 
 # ---- POSIX sh, not bash -------------------------------------------------
 #
@@ -537,6 +534,252 @@ run retag_swift_classes
 [ "$rc" -eq 1 ] && firstline_is "$T/err" "Usage: $BIN/retag_swift_classes binary [binary ...]" \
     && ok "retag_swift_classes: no argument is a usage error naming argv[0]" \
     || bad "retag_swift_classes usage" "exit $rc, stderr: $(head -1 "$T/err")"
+
+# ---- fix_macho ----------------------------------------------------------
+#
+# The last tool to become a wrapper, and the only one whose wrapper does NOT
+# close its divergences: the repo owner ruled four of them improvements to
+# ADOPT. compat/fix_macho.sh's header states all four with their reasons. This
+# block asserts each of the three flags it accepts, a fat container (its
+# headline capability, and the one thing change_dylib could not do), and the
+# two adopted changes that used to be REFUSALS -- a longer replacement path
+# and a chained -rename_seg. Both of those were measured against the
+# pre-wrapper C binary and recorded in tests/compat-matrix.tsv as differences;
+# they are now the expected behaviour, and these are the assertions that say
+# so out loud.
+
+# -change, the flag with the most reach. Byte-identical to the same operation
+# through macho9 itself, which is the same shape the change_dylib block above
+# asserts and for the same reason: one emitted command is one mr_apply_file
+# pass over the same file with the same ops.
+fresh
+run fix_macho f -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
+fmrc=$rc
+cp "$T/out" "$T/fm.out"
+fmsha=$(sha "$T/f")
+fresh
+( cd "$T" && "$BIN/macho9" dylib f -replace /usr/lib/libSystem.B.dylib \
+    '@loader_path/../S.dylib' ) >"$T/m9.out" 2>/dev/null
+[ "$fmrc" -eq 0 ] && cmp -s "$T/fm.out" "$T/m9.out" && [ "$fmsha" = "$(sha "$T/f")" ] \
+    && ok "fix_macho: -change is byte-identical to macho9 dylib -replace, stdout included" \
+    || bad "fix_macho -change" "exit $fmrc; stdout or bytes differ from macho9 dylib's"
+
+# -rename_seg, which fix_macho's own usage line never mentioned even though
+# its parser always accepted it. One `macho9 segment` pass per pair.
+fresh
+before=$(sha "$T/f")
+run fix_macho f -rename_seg __DATA __DATA_F1
+[ "$rc" -eq 0 ] && [ "$(sha "$T/f")" != "$before" ] \
+    && ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null | grep -q '__DATA_F1' \
+    && ok "fix_macho: -rename_seg renames the segment" \
+    || bad "fix_macho -rename_seg" "exit $rc: $(cat "$T/err")"
+
+# -strip_build_version. tests/fixture.macho is a real 10.9 binary and carries
+# no LC_BUILD_VERSION (the load command postdates it by four years), so this
+# asserts the OTHER half, which is the half a caller depends on: the emitted
+# command is the right one, the operation that matched nothing SAYS SO on
+# stderr -- this plan's Task 1 report, which is what replaced fix_macho's
+# "No changes needed: F" -- and the exit code is still 0.
+#
+# THAT LAST PART IS A GATE, not a detail. Task 2 added `--fatal-warnings`,
+# which turns that report into a refusal. This wrapper must never pass it:
+# fix_macho exited 0 when an operation matched nothing, and that is compat
+# surface. An exit of 2 here means the flag leaked into the translation.
+fresh
+before=$(sha "$T/f")
+run fix_macho f -strip_build_version
+[ "$rc" -eq 0 ] && [ "$(sha "$T/f")" = "$before" ] \
+    && ok "fix_macho: -strip_build_version with nothing to strip exits 0, having written nothing" \
+    || bad "fix_macho -strip_build_version" "exit $rc (want 0), file changed=$([ "$(sha "$T/f")" = "$before" ] && echo no || echo YES)"
+has_line "$T/err" 'macho9: no load command of kind build-version to delete' \
+    && ok "fix_macho: an operation that matched nothing says so on stderr" \
+    || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
+has_line "$T/err" '    macho9 lc f -delete build-version' \
+    && ok "fix_macho: -strip_build_version translates to lc -delete build-version" \
+    || bad "fix_macho -strip_build_version translation" "stderr: $(cat "$T/err")"
+
+# ADOPTED CHANGE 1: A REPLACEMENT PATH LONGER THAN THE EXISTING COMMAND.
+# compat/fix_macho.c wrote the new path INTO the existing LC_LOAD_DYLIB and
+# refused when it did not fit ("new path '...' too long (320 > 32)", exit 1,
+# file untouched -- a measured row of tests/compat-matrix.tsv). `macho9 dylib
+# -replace` resizes the command into header pad the image already has, so this
+# now succeeds. No --allow-grow is emitted; this uses existing pad only.
+fresh
+fm_long="@loader_path/"
+i=0
+while [ $i -lt 30 ]; do fm_long="${fm_long}longlongl"; i=$((i + 1)); done
+fm_long="${fm_long}.dylib"
+run fix_macho f -change /usr/lib/libSystem.B.dylib "$fm_long"
+# A raw byte search over the rewritten file, NOT `otool -L`: tests/README.md's
+# second lesson. grep's own "Binary file matches" chatter is irrelevant under
+# -q, which reports only through its exit status.
+if [ "$rc" -eq 0 ] && LC_ALL=C grep -q -- "$fm_long" "$T/f"; then
+    ok "fix_macho: a longer replacement path is now rewritten into header pad, not refused"
+else
+    bad "fix_macho long path" "exit $rc (want 0); the 289-byte replacement did not land: $(cat "$T/err")"
+fi
+
+# ADOPTED CHANGE 2: A CHAINED -rename_seg NOW CHAINS. fix_macho applied every
+# pair in ONE pass and gave each segment its FIRST match, so `-rename_seg
+# __DATA __X -rename_seg __X __Y` ended at __X and the second pair never
+# fired. Two `macho9 segment` passes chain, so it ends at __Y. Asserted on
+# BOTH names: __Y present is the new behaviour, __X absent is what rules out
+# the old one still happening.
+fresh
+run fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
+fm_names=$( ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null )
+if [ "$rc" -eq 0 ] \
+    && printf '%s\n' "$fm_names" | grep -q 'segname=__Y' \
+    && ! printf '%s\n' "$fm_names" | grep -q 'segname=__X'; then
+    ok "fix_macho: a chained -rename_seg now produces the SECOND name, not the first"
+else
+    bad "fix_macho chained rename" "exit $rc; segnames: $(printf '%s\n' "$fm_names" | sed -n 's/.*\(segname=__[XY]\).*/\1/p' | tr '\n' ' ')"
+fi
+
+# A FAT CONTAINER. This is fix_macho's headline capability -- it is the reason
+# the tool existed alongside change_dylib, which understood only thin files
+# until the shared rewriter gave both the same fat loop.
+#
+# The container is BUILT HERE, in shell, from tests/fixture.macho rather than
+# found by scanning the host. tests/README.md records why: a test that scanned
+# for a suitable binary shipped zero coverage on the cross runner. The bytes
+# are the on-disk fat convention (big-endian fat_header/fat_arch), written by
+# construction, not by detection -- the same choice tests/change_dylib_test.sh
+# made when it built makefat instead of calling lipo.
+fm_be32() {
+    printf '%b' "$(printf '\\0%o\\0%o\\0%o\\0%o' \
+        $((($1 >> 24) & 255)) $((($1 >> 16) & 255)) $((($1 >> 8) & 255)) $(($1 & 255)))"
+}
+# fm_mkfat OUT SLICE0 CPUTYPE0 [SLICE1 CPUTYPE1] -- slices at 4096-aligned
+# offsets, in the order given.
+fm_mkfat() {
+    fm_out=$1 fm_s0=$2 fm_ct0=$3 fm_s1=${4:-} fm_ct1=${5:-}
+    fm_z0=$(wc -c < "$fm_s0" | tr -d ' ')
+    fm_n=1; [ -n "$fm_s1" ] && fm_n=2
+    fm_o0=4096
+    {
+        printf '%b' '\0312\0376\0272\0276'     # FAT_MAGIC, big-endian on disk
+        fm_be32 "$fm_n"
+        fm_be32 "$fm_ct0"; fm_be32 3; fm_be32 "$fm_o0"; fm_be32 "$fm_z0"; fm_be32 12
+        if [ "$fm_n" -eq 2 ]; then
+            fm_z1=$(wc -c < "$fm_s1" | tr -d ' ')
+            fm_o1=$(( (fm_o0 + fm_z0 + 4095) / 4096 * 4096 ))
+            fm_be32 "$fm_ct1"; fm_be32 3; fm_be32 "$fm_o1"; fm_be32 "$fm_z1"; fm_be32 12
+        fi
+        dd if=/dev/zero bs=1 count=$(( fm_o0 - 8 - 20 * fm_n )) 2>/dev/null
+        cat "$fm_s0"
+        if [ "$fm_n" -eq 2 ]; then
+            dd if=/dev/zero bs=1 count=$(( fm_o1 - fm_o0 - fm_z0 )) 2>/dev/null
+            cat "$fm_s1"
+        fi
+    } > "$fm_out"
+}
+# 0x01000007 is CPU_TYPE_X86_64, which is what tests/fixture.macho really is.
+fm_mkfat "$T/fat1" "$FIXTURE" 16777223
+case $(od -An -tx1 -N4 "$T/fat1" | tr -d ' ') in
+    cafebabe) ok "fix_macho: the hand-built fat container really is one" ;;
+    *) bad "fix_macho fat fixture" "magic is $(od -An -tx1 -N4 "$T/fat1" | tr -d ' '), not cafebabe" ;;
+esac
+cp "$T/fat1" "$T/fatf"
+run fix_macho fatf -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
+if [ "$rc" -eq 0 ] && LC_ALL=C grep -q -- '@loader_path/../S.dylib' "$T/fatf" \
+    && ! grep -q 'matched nothing' "$T/err"; then
+    ok "fix_macho: rewrites inside a fat container, which is why this tool existed"
+else
+    bad "fix_macho fat" "exit $rc: $(cat "$T/err")"
+fi
+
+# A SLICE THAT IS NOT A 64-BIT MACH-O IS LEFT ALONE, and the rest of the file
+# is still rewritten. This is NOT one of the four adopted changes: fix_macho
+# printed "  Skipping arch N" and carried on, and mr_process_fat's MR_SKIP path
+# does the same thing with a different message. Measured, not assumed -- the
+# plan's table describes the fat divergence as "refuses the whole file", which
+# is true only of MR_ERROR (a slice that IS a 64-bit Mach-O whose edit failed),
+# not of a slice that simply is not one. Asserting the SKIP is what keeps that
+# distinction from being quietly widened later.
+#
+# 0x00000007 is CPU_TYPE_I386; the slice's bytes are filler, not a Mach-O.
+dd if=/dev/zero bs=1 count=4096 2>/dev/null | tr '\000' 'Z' > "$T/junkslice"
+fm_mkfat "$T/fat2" "$FIXTURE" 16777223 "$T/junkslice" 7
+cp "$T/fat2" "$T/fatg"
+run fix_macho fatg -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
+if [ "$rc" -eq 0 ] && grep -q 'not a 64-bit Mach-O; leaving this slice unchanged' "$T/out" \
+    && LC_ALL=C grep -q -- '@loader_path/../S.dylib' "$T/fatg"; then
+    ok "fix_macho: a non-64-bit slice is left unchanged and the other slice is still rewritten"
+else
+    bad "fix_macho fat skip" "exit $rc; stdout: $(cat "$T/out")"
+fi
+
+# THE CAPACITY CAPS, in fix_macho's own words. Both moved into
+# compat/translate.sh when compat/fix_macho.c retired, and the -rename_seg one
+# has no macho9 counterpart at all -- each pair is its own `macho9 segment`
+# invocation, so nothing downstream would ever count them. This is the
+# assertion that the message a caller sees is still fix_macho's.
+fresh
+i=0; fm_chg33=''
+while [ $i -lt 33 ]; do fm_chg33="$fm_chg33 -change A B"; i=$((i + 1)); done
+# shellcheck disable=SC2086
+run fix_macho f $fm_chg33
+[ "$rc" -eq 1 ] && grep -qxF 'too many -change (max 32)' "$T/err" \
+    && [ "$(sha "$T/f")" = "$(sha "$FIXTURE")" ] \
+    && ok "fix_macho: the -change cap refuses in fix_macho's own words, before touching the file" \
+    || bad "fix_macho -change cap" "exit $rc, stderr: $(cat "$T/err")"
+
+fresh
+i=0; fm_seg17=''
+while [ $i -lt 17 ]; do fm_seg17="$fm_seg17 -rename_seg __A __B"; i=$((i + 1)); done
+# shellcheck disable=SC2086
+run fix_macho f $fm_seg17
+[ "$rc" -eq 1 ] && grep -qxF 'too many -rename_seg (max 16)' "$T/err" \
+    && [ "$(sha "$T/f")" = "$(sha "$FIXTURE")" ] \
+    && ok "fix_macho: the -rename_seg cap refuses, and nothing downstream would have" \
+    || bad "fix_macho -rename_seg cap" "exit $rc, stderr: $(cat "$T/err")"
+
+# Usage and refusals, in fix_macho's own words, naming argv[0] where it did.
+run fix_macho f
+[ "$rc" -eq 1 ] && firstline_is "$T/err" "Usage: $BIN/fix_macho <file> [-change old new] [-strip_build_version]" \
+    && ok "fix_macho: too few arguments is a usage error naming argv[0]" \
+    || bad "fix_macho usage" "exit $rc, stderr: $(head -1 "$T/err")"
+fresh
+run fix_macho f -nope
+[ "$rc" -eq 1 ] && grep -qxF 'Unknown option: -nope' "$T/err" \
+    && ok "fix_macho: an unknown flag refuses in fix_macho's own words" \
+    || bad "fix_macho unknown flag" "exit $rc, stderr: $(cat "$T/err")"
+fresh
+run fix_macho f -rename_seg __DATA 12345678901234567
+[ "$rc" -eq 1 ] && grep -qxF 'new segment name longer than 16 bytes: 12345678901234567' "$T/err" \
+    && ok "fix_macho: a 17-byte NEW segment name is refused before any I/O" \
+    || bad "fix_macho long segname" "exit $rc, stderr: $(head -1 "$T/err")"
+
+# An absent file, and an unwritable one: fix_macho opened O_RDWR before it
+# looked at anything, so both failed immediately with perror("open"). The
+# single-command path gets that from mr_apply_file's own O_RDWR; the
+# MULTI-command path would not, because mw_run_atomic copies the file aside
+# first and runs macho9 against the copy -- which is why the wrapper checks for
+# itself, and why both cases below are MULTI-command.
+#
+# THE ABSENT CASE IS THE ONE THAT DISCRIMINATES. Removing the wrapper's checks
+# makes it fail (mw_run_atomic's `cp` reports in its own words instead), and it
+# was mutation-tested that way. The unwritable case passes either way on this
+# platform, because `cp -p` propagates mode 444 to the copy and macho9's own
+# O_RDWR on it then fails with the identical "open: Permission denied" -- so it
+# pins the observable rather than the guard. It is kept because that observable
+# is the one fix_macho produced, and a future change to mw_run_atomic's copy
+# (dropping -p, say) would separate the two.
+run fix_macho nosuchfile -strip_build_version -change A B
+[ "$rc" -eq 1 ] && has_line "$T/err" 'open: No such file or directory' \
+    && ok "fix_macho: an absent file fails immediately, in fix_macho's own words" \
+    || bad "fix_macho absent" "exit $rc, stderr: $(cat "$T/err")"
+fresh
+chmod 444 "$T/f"
+before=$(sha "$T/f")
+run fix_macho f -strip_build_version -change A B
+fm_ro_rc=$rc
+chmod 644 "$T/f"
+[ "$fm_ro_rc" -eq 1 ] && has_line "$T/err" 'open: Permission denied' \
+    && [ "$(sha "$T/f")" = "$before" ] \
+    && ok "fix_macho: an unwritable file fails before the multi-command copy-aside runs" \
+    || bad "fix_macho unwritable" "exit $fm_ro_rc, stderr: $(cat "$T/err")"
 
 # ---- hostile argv shapes -----------------------------------------------
 #

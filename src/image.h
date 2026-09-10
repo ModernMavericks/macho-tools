@@ -102,15 +102,19 @@ uint8_t *mi_release(mi_image *im);
  * exactly that, for the walk itself. A callback with nothing to abort for
  * just always returns 0.
  *
- * No MUTATING variant exists here either, on purpose: fix_macho.c's
- * -strip_build_version walk shrinks the chain mid-iteration (memmove's a
- * later command down over the one being dropped, shrinks ncmds/sizeofcmds,
- * and revisits the same cursor instead of advancing). That is a genuinely
- * different contract from "stop early" -- the caller would own recomputing
- * bounds and deciding whether to advance after every call, i.e. exactly the
- * stride logic this module exists to centralize, pushed back out to every
- * such caller. One caller needs that shape; see fix_macho.c's process_macho
- * for the full reasoning. Revisit if a second one shows up. */
+ * No MUTATING variant exists here either, on purpose. The one caller that
+ * ever needed that shape was compat/fix_macho.c's -strip_build_version walk,
+ * which shrank the chain mid-iteration (memmove'd a later command down over
+ * the one being dropped, shrank ncmds/sizeofcmds, and revisited the same
+ * cursor instead of advancing). That is a genuinely different contract from
+ * "stop early" -- the caller would own recomputing bounds and deciding
+ * whether to advance after every call, i.e. exactly the stride logic this
+ * module exists to centralize, pushed back out to every such caller. THAT
+ * CALLER IS GONE: fix_macho is a /bin/sh wrapper now and the deletion runs
+ * through src/rewrite.c, which rebuilds the load-command table wholesale
+ * rather than mutating it in place. So today there are ZERO callers wanting
+ * a mutating walk, which makes not having one easier still. Revisit only if
+ * one shows up. */
 typedef int (*mi_lc_fn)(const struct load_command *lc, void *ctx);
 int mi_each_lc(const mi_image *im, mi_lc_fn cb, void *ctx);
 

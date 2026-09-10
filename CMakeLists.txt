@@ -59,45 +59,46 @@ add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c sr
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
-# The five historical tools that are now /bin/sh WRAPPERS around macho9
-# (the retirement plan's Task 2). Each keeps its original installed name,
-# because mavericksforever.com/claude/install.sh fetches patch_macho,
-# change_dylib and add_version_min BY THOSE NAMES -- the wrappers are
-# drop-in, and compat/<tool>.sh's own header says how each one maps that
-# tool's grammar, its exit codes and its stdout onto macho9's.
+# ALL SIX historical tools are now /bin/sh WRAPPERS around macho9 (the
+# retirement plan's Task 2 did five; this plan's Task 3 did fix_macho, the
+# last one). Each keeps its original installed name, because
+# mavericksforever.com/claude/install.sh fetches patch_macho, change_dylib and
+# add_version_min BY THOSE NAMES -- the wrappers are drop-in, and
+# compat/<tool>.sh's own header says how each one maps that tool's grammar,
+# its exit codes and its stdout onto macho9's.
 #
-# THE SIXTH, fix_macho, IS STILL COMPILED. It could not be wrapped without
-# changing behaviour: `macho9 dylib` rewrites a longer path using header pad
-# where fix_macho refuses outright, and a chained -rename_seg has no macho9
-# equivalent at all (compat/translate.sh refuses it). Both are measured rows
-# in tests/compat-matrix.tsv. See compat/fix_macho.c's own header.
+# fix_macho was the holdout: it could not be wrapped while a wrapper had to
+# PRESERVE its behaviour, because `macho9 dylib` rewrites a longer path using
+# header pad where fix_macho refused outright, and a chained -rename_seg
+# chains where fix_macho's single pass did not. The repo owner ruled those --
+# and two more -- improvements to ADOPT deliberately, which is what made this
+# possible; compat/fix_macho.sh's "DELIBERATE DIVERGENCES FROM fix_macho"
+# block states all four with their reasons.
+#
+# So macho9 is now the ONLY Mach-O rewriting binary this repo builds or
+# installs, and compat/ contains no C at all. MACHO_TOOLS is deliberately
+# still here, empty: it is the list a future compiled compat tool would join,
+# and its emptiness is the measurable form of "the goal is met".
 set(MACHO_WRAPPERS
   patch_macho
   change_dylib
   add_version_min
   rename_segment
-  retag_swift_classes)
+  retag_swift_classes
+  fix_macho)
 
-set(MACHO_TOOLS fix_macho)
+set(MACHO_TOOLS)
 
 foreach(tool IN LISTS MACHO_TOOLS)
-  # compat/: what is left here after Task 2 is fix_macho alone. See
-  # compat/README.md, and the note above MACHO_WRAPPERS.
   add_executable(${tool} compat/${tool}.c)
   target_compile_options(${tool} PRIVATE -O2 -Wall)
+  target_link_libraries(${tool} PRIVATE macho9core)
   # The compat guard is the in-CI equivalence proof: no 10.9 runner validates
   # these, so the build fails if a binary declares a floor above 10.9 or links a
   # symbol 10.9 lacks. It matters more here than in most of the family, because
   # these tools are themselves what makes other binaries loadable on 10.9.
   mavericks_assert_binary_compatible(${tool})
 endforeach()
-
-# fix_macho includes src/fat.h directly, so that both fat-aware readers
-# validate a fat file's arch table through the same code (src/fat.c) instead
-# of each having its own hand-rolled walk that could -- and did -- disagree
-# about validation. The five tools that used to be listed here alongside it
-# are shell wrappers now and link nothing.
-target_link_libraries(fix_macho PRIVATE macho9core)
 
 # The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): every verb it
 # implements delegates in-process to macho9core -- `verify`/`info`/`grow` to
@@ -121,7 +122,8 @@ mavericks_assert_binary_compatible(macho9)
 # than CMAKE_CURRENT_BINARY_DIR so this holds for a multi-config generator
 # too, and a plain ALL target rather than OUTPUT rules because a generator
 # expression in an OUTPUT needs CMake 3.20 and this project asks for 3.16.
-# copy_if_different keeps the per-build cost to seven stat calls.
+# copy_if_different keeps the per-build cost to eight stat calls (six
+# wrappers plus the two files they source).
 #
 # translate.sh is the one file renamed on the way out: a bin directory full of
 # tools should not gain a file called `translate.sh`. Nothing else about it
@@ -144,6 +146,10 @@ add_custom_command(TARGET compat_wrappers POST_BUILD
           "${CMAKE_CURRENT_SOURCE_DIR}/compat/translate.sh"
           "$<TARGET_FILE_DIR:macho9>/macho9-translate.sh")
 
+# ${MACHO_TOOLS} is empty now that fix_macho is a wrapper, so this installs
+# macho9 and nothing else. It is left expanded rather than deleted for the
+# same reason the empty list above is: a future compiled compat tool joins
+# that list and needs no change here.
 install(TARGETS ${MACHO_TOOLS} macho9 RUNTIME DESTINATION bin)
 
 # The wrappers install under the historical binaries' exact names, into the
@@ -209,10 +215,11 @@ add_test(NAME linkedit_test COMMAND linkedit_test)
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Now
 # matches chained-fixups.sh/characterize.sh/cli_test.sh/leaf-tool-crashes.sh:
-# passed the bindir so it runs the change_dylib and fix_macho CMake actually
-# built, instead of compiling its own copies from a hand-enumerated source
-# list that had to be kept in sync with macho9core by hand (Task 5) -- it
-# still compiles from source, deriving the list from a glob, when run
+# passed the bindir so it runs the change_dylib and fix_macho wrappers CMake
+# actually staged (and the macho9 under them), instead of compiling its own
+# copies from a hand-enumerated source list that had to be kept in sync with
+# macho9core by hand (Task 5) -- it still builds macho9 from source, deriving
+# the list from a glob, and copies the two wrappers beside it, when run
 # standalone with no bindir argument.
 add_test(NAME change_dylib_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:macho9>")

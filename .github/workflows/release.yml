@@ -105,11 +105,16 @@ jobs:
           sh tests/characterize.sh "$PWD/build-cross" check
 
       # macho9 and the two files the wrappers source belong in the artifact
-      # too, and are not optional: five of the six historical names are
-      # /bin/sh wrappers that look for macho9, macho9-compat.sh and
+      # too, and are not optional: ALL SIX historical names are now /bin/sh
+      # wrappers that look for macho9, macho9-compat.sh and
       # macho9-translate.sh in their own directory, so an artifact without
       # them is six names that cannot run. (macho9 itself was missing from
       # this list even before that, when it was still a standalone CLI.)
+      #
+      # The paths below are unchanged by fix_macho becoming a wrapper: this
+      # list names FILES in build-cross/, not CMake targets, and CMake stages
+      # every wrapper there under its historical name -- so build-cross/
+      # fix_macho exists either way. Verified, not assumed.
       - uses: actions/upload-artifact@v7
         with:
           name: macho-tools

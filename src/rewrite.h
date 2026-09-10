@@ -161,13 +161,14 @@ typedef struct {
  *     constructs an mr_ops and passes it to mr_apply_file below -- see that
  *     function's own comment for why that makes it load-bearing, not just
  *     one front-end among several.
- *   compat/fix_macho.c's FM_ROOM macro (which reuses this MR_MAX_OPS rather
- *     than spelling out a second 32) prints "too many <flag> (max N)", in
- *     fix_macho's own words -- this is still C, so this is still a fixed
- *     array a C parser fills. Its own comment calls this CD_ROOM, revived
- *     in this file, in change_dylib's exact wording. fix_macho.c never calls
- *     mr_apply_file, though -- it is a wholly separate rewrite path that
- *     happens to reuse this same numeric cap for its own, unrelated arrays.
+ *   compat/fix_macho.c's FM_ROOM macro used to be here too, reusing this
+ *     MR_MAX_OPS rather than spelling out a second 32 and printing "too many
+ *     <flag> (max N)" in fix_macho's own words. That file is GONE: fix_macho
+ *     is a /bin/sh wrapper, its argv is accumulated in shell, and its two
+ *     caps moved into compat/translate.sh's mt_room alongside change_dylib's
+ *     (with a literal 16 of their own for -rename_seg, which no shared header
+ *     has an opinion about). Recorded here because the numeric agreement was
+ *     the reason this list mentioned that file at all.
  *   compat/translate.sh's mt_room -- CD_ROOM revived again, since
  *     change_dylib.c is gone -- accumulates the OLD grammar's argv into a
  *     shell variable rather than a C array, capped by its own literal

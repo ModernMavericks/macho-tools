@@ -11,7 +11,8 @@
 #
 #   sh tests/change_dylib_test.sh               standalone (needs only clang + otool)
 #   sh tests/change_dylib_test.sh <bindir>       via ctest: uses the change_dylib
-#                                                 and fix_macho CMake already built
+#                                                 and fix_macho wrappers CMake
+#                                                 already staged next to macho9
 set -e
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
@@ -28,7 +29,8 @@ CC="${CC:-clang}"
 # either host, so the test asks the same question everywhere.
 #
 # Note this applies only to the fixtures. change_dylib/fix_macho themselves
-# (below) are host tools, built for (or already built on) the host.
+# (below) are /bin/sh wrappers around macho9, which is a host tool, built for
+# (or already built on) the host.
 FIXTURE_FLAGS="-mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/change_dylib_test.$$"
 mkdir -p "$T"
@@ -77,17 +79,20 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # It is compat/change_dylib.sh, a wrapper that needs macho9 and the two files
 # it sources sitting next to it -- so the standalone branch builds macho9 and
 # then assembles that layout in $T, under the installed names, exactly as
-# CMakeLists.txt stages it next to macho9 in a build tree. fix_macho is still
-# C and is still compiled here.
+# CMakeLists.txt stages it next to macho9 in a build tree.
+#
+# fix_macho joined it: compat/fix_macho.c is gone, and there is nothing left
+# in compat/ to compile at all. macho9 is the only binary this branch builds
+# now, which is the whole retirement plan's headline seen from inside a test.
 if [ $# -eq 0 ]; then
     echo "change_dylib_test: no bindir given -- compiling standalone from source"
     mkdir -p "$T/bin"
     "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/macho9" "$ROOT_DIR/cli/macho9.c" "$SRC_DIR"/*.c
-    "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/fix_macho" "$COMPAT_DIR/fix_macho.c" "$SRC_DIR"/*.c
     cp "$COMPAT_DIR/change_dylib.sh" "$T/bin/change_dylib"
+    cp "$COMPAT_DIR/fix_macho.sh" "$T/bin/fix_macho"
     cp "$COMPAT_DIR/macho9-compat.sh" "$T/bin/macho9-compat.sh"
     cp "$COMPAT_DIR/translate.sh" "$T/bin/macho9-translate.sh"
-    chmod +x "$T/bin/change_dylib"
+    chmod +x "$T/bin/change_dylib" "$T/bin/fix_macho"
     CHANGE_DYLIB="$T/bin/change_dylib"
     FIX_MACHO="$T/bin/fix_macho"
     MACHO9="$T/bin/macho9"
@@ -646,23 +651,34 @@ else
 fi
 
 # --- 8b. fix_macho -change must rewrite an LC_LOAD_UPWARD_DYLIB too ----------
-# Companion to case 8, but for compat/fix_macho.c's own independent dylib-LC
-# set rather than change_dylib's: fix_macho hand-listed {LOAD, WEAK, ID,
-# REEXPORT} for -change and, until this wave, silently omitted
-# LC_LOAD_UPWARD_DYLIB -- so `fix_macho -change` on this exact fixture used to
-# leave libupd_a.dylib's upward dependency untouched and print "No changes
-# needed" (exit 0), while change_dylib (case 8, above) rewrites the identical
-# load command. Two answers to the same question -- reuses case 8's real,
-# linker-produced upward-dylib fixture (a pristine copy taken before case 8's
-# own change_dylib run mutates the original) rather than a fabricated one.
+# Companion to case 8. It was written against compat/fix_macho.c's own
+# independent dylib-LC set: that file hand-listed {LOAD, WEAK, ID, REEXPORT}
+# for -change and silently omitted LC_LOAD_UPWARD_DYLIB, so `fix_macho
+# -change` on this exact fixture left libupd_a.dylib's upward dependency
+# untouched and printed "No changes needed" (exit 0) while change_dylib (case
+# 8, above) rewrote the identical load command. Two answers to one question.
+#
+# WHAT CHANGED, AND WHY THIS CASE STAYS. fix_macho is a /bin/sh wrapper now
+# (compat/fix_macho.sh), so there is only ONE answer left: both tools reach
+# mo_is_ordinal_lc through mr_apply_file. The question the case asks is
+# therefore no longer "do these two agree" but "does the surviving
+# implementation still recognize an upward dylib" -- which is worth pinning
+# either way, and is the reason this is an update rather than a deletion.
+#
+# The "No changes needed" oracle had to change with it: that line was
+# fix_macho's own stdout and no longer exists anywhere. Its replacement is
+# this plan's Task 1 unmatched report, `macho9: <path> matched nothing`, on
+# STDERR, which says the same thing per operation instead of per run. Note
+# `$out` merges both streams, so the check reads either way.
 if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then
-    # Same length as the old path (both 27 bytes): fix_macho -change, unlike
-    # change_dylib -grow, never widens a load command to fit a longer
-    # replacement -- it refuses if the new path doesn't fit the existing
-    # cmdsize slack (see "new path ... too long" in process_macho). A
-    # same-length replacement sidesteps that unrelated refusal so this case
-    # tests only what it means to: whether -change recognizes an
-    # LC_LOAD_UPWARD_DYLIB at all.
+    # Same length as the old path (both 27 bytes). This USED to matter because
+    # fix_macho refused a replacement that did not fit the existing command
+    # ("new path ... too long"); `macho9 dylib -replace` resizes into header
+    # pad instead, which is the first of compat/fix_macho.sh's four adopted
+    # divergences. Keeping the lengths equal anyway keeps this case testing
+    # only what it means to -- whether -change recognizes an
+    # LC_LOAD_UPWARD_DYLIB at all -- rather than quietly also testing the
+    # resize.
     old_install_name="@loader_path/libupd_b.dylib"
     new_install_name="@loader_path/libupd_c.dylib"
     out=$("$FIX_MACHO" "$T/libupd_a_for_fixmacho.dylib" \
@@ -673,8 +689,8 @@ if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then
     # dependency-list FORMAT is exactly the kind of thing this project does
     # not control across OS releases; a raw byte-search over the rewritten
     # file's own bytes asks the same question regardless.
-    if echo "$out" | grep -q "No changes needed"; then
-        bad "fix_macho -change upward" "reported no changes needed -- LC_LOAD_UPWARD_DYLIB not rewritten"
+    if echo "$out" | grep -q "matched nothing"; then
+        bad "fix_macho -change upward" "macho9 reported the -change matched nothing -- LC_LOAD_UPWARD_DYLIB not rewritten"
     elif "$T/has_bytes" "$T/libupd_a_for_fixmacho.dylib" "$new_install_name"; then
         ok "fix_macho -change: an LC_LOAD_UPWARD_DYLIB is rewritten like any other dylib LC"
     else
@@ -739,9 +755,20 @@ fi
 # filled by a loop that never checked. A 33rd -change made the pre-fix binary
 # die of SIGABRT (exit 134, stack-protector abort), measured on this host.
 #
+# WHAT CHANGED: there are no arrays any more. compat/fix_macho.c is retired
+# and fix_macho is a /bin/sh wrapper, so the caps live in compat/translate.sh's
+# mt_room, which counts and refuses before it emits anything. The -change cap
+# would ALSO be caught downstream (macho9 caps at MR_MAX_OPS too, in different
+# words); the -rename_seg cap would NOT, because each pair becomes its own
+# `macho9 segment` invocation and macho9 never sees more than one -- so for
+# that half of this case the translation is the only thing enforcing anything,
+# which is exactly why both halves stay.
+#
 # Asserted as "refuses, saying too many, having modified nothing", not as a
 # particular exit code, per this suite's own rule about pinning the behaviour
-# rather than which guard fired.
+# rather than which guard fired. That phrasing is why these two assertions did
+# not have to change with the implementation under them: they always described
+# the outcome, never the guard.
 fm_cap_case() {
     desc=$1; shift
     build_main "$T/main_fmcap"
@@ -773,9 +800,24 @@ else
     bad "fix_macho -change at capacity" "refused at the cap: $(head -1 "$T/fmatcap.err")"
 fi
 
+# ...and the same for -rename_seg, which is NEW here. It was never asserted
+# while the cap lived in compat/fix_macho.c, and it matters more now than the
+# -change one does: nothing downstream counts renames (one `macho9 segment`
+# invocation per pair), so an off-by-one in compat/translate.sh's mt_room would
+# silently halve what a caller can ask for with nothing else to catch it. 16
+# pairs must run, which is 16 macho9 invocations against the same file.
+build_main "$T/main_fmatcap_seg"
+set -- ; i=0
+while [ $i -lt 16 ]; do set -- "$@" -rename_seg __DATA __DATA_R; i=$((i+1)); done
+if "$FIX_MACHO" "$T/main_fmatcap_seg" "$@" >/dev/null 2>"$T/fmatcapseg.err"; then
+    ok "fix_macho: -rename_seg exactly at capacity is accepted"
+else
+    bad "fix_macho -rename_seg at capacity" "refused at the cap: $(head -1 "$T/fmatcapseg.err")"
+fi
+
 # --- 10/11. fat binaries in the rewrite path ---------------------------------
-# fix_macho already walks fat/thin; until now change_dylib only understood
-# thin. Both cases build a genuine 2-slice fat binary: a real, linked x86_64
+# fix_macho walked fat and thin itself; change_dylib understood only thin until
+# this same convergence gave both the shared rewriter's fat loop. Both cases build a genuine 2-slice fat binary: a real, linked x86_64
 # executable (the same $T/main built above) plus a slice this tool cannot
 # and must not try to rewrite -- a syntactically valid but deliberately
 # minimal 32-bit (MH_MAGIC, CPU_TYPE_I386) Mach-O, built by hand rather than
@@ -1353,17 +1395,27 @@ fi
 # what any caller does with the file afterward. Before this check existed
 # this exact malformed input silently let change_dylib's reassembly
 # corrupt one slice's bytes with another's (case 12/13 above cover THAT,
-# the write-side consequence, for change_dylib specifically). But fix_macho
-# has no write-side check of its own to fall back on -- mfat_parse's
-# read-side refusal is 100% of what stands between fix_macho and indexing
-# into overlapping/aliased slice data as if the two slices were independent.
+# the write-side consequence, for change_dylib specifically). compat/
+# fix_macho.c had no write-side check of its own to fall back on -- mfat_parse's
+# read-side refusal was 100% of what stood between it and indexing into
+# overlapping/aliased slice data as if the two slices were independent.
 # A prior review deleted this check and the entire suite (32/32 at the time)
 # stayed green, because nothing exercised it -- this closes that hole
-# directly, against the tool that actually depends on it.
+# directly.
 #
-# fix_macho (like change_dylib) came from $BIN if a bindir was given, or was
-# compiled above as part of the standalone fallback -- either way $FIX_MACHO
-# is ready to use here, with no separate build step needed for this case.
+# WHAT CHANGED: fix_macho is a /bin/sh wrapper now, so the fat walk under it
+# is mr_process_fat (src/rewrite.c), which calls the SAME mfat_parse -- there
+# is no longer a second fat reader anywhere in this repo, which is the point
+# of the convergence. The case is therefore no longer "the one tool that
+# depends on this check"; it is a caller-side exercise of the check itself,
+# reached through the grammar that used to be the only way in. It is kept
+# rather than folded into case 12/13 because nothing else drives mfat_parse
+# from a compat grammar, and because a deleted assertion is how this check got
+# silently removed once already.
+#
+# $FIX_MACHO is $BIN/fix_macho if a bindir was given, or the copy staged in
+# $T/bin by the standalone fallback -- either way it is ready to use here,
+# with no separate build step needed for this case.
 
 cat > "$T/mk2fat_overlap.c" <<'EOF'
 #include <stdio.h>
