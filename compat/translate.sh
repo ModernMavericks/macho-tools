@@ -156,11 +156,12 @@
 #   fix_macho is the one tool whose divergences are NOT closed by its wrapper,
 #     because the repo owner ruled them improvements to ADOPT: a longer
 #     replacement path is now rewritten using header pad instead of refused, a
-#     chained -rename_seg now chains, the write-back is atomic, and a fat slice
-#     macho9 cannot handle refuses the whole file instead of being skipped.
-#     compat/fix_macho.sh's header states all four as deliberate changes, with
-#     their reasons; this file simply translates, as it does for every other
-#     tool.
+#     chained -rename_seg now chains, the write-back is atomic, a fat slice
+#     macho9 cannot handle refuses the whole file instead of being skipped,
+#     and a -change aimed at the dylib's own install name now matches nothing
+#     instead of rewriting LC_ID_DYLIB. compat/fix_macho.sh's header states
+#     all five as deliberate changes, with their reasons; this file simply
+#     translates, as it does for every other tool.
 #
 # There is no shape this file refuses outright any more. There used to be one
 # -- `fix_macho -rename_seg A B -rename_seg B C` -- and mt_tr_fix_macho's
@@ -368,6 +369,17 @@ mt_tr_fix_macho() {
             [ $# -ge 3 ] || { mt_die "Unknown option: $1"; return 1; }
             # Same 16-byte segname limit fix_macho checks here, before any
             # I/O, in its own words (which differ from rename_segment's).
+            # `${#3}` counts CHARACTERS, not bytes -- fix_macho's strlen()
+            # counted bytes. A 16-character multibyte NEW segname whose
+            # encoding runs longer than 16 bytes passes this check where
+            # fix_macho refused it. Both paths still end at fix_macho.sh
+            # exiting 1: macho9's mseg_name_fits (src/segname.c), called from
+            # cmd_segment (cli/macho9.c), catches the over-length name
+            # downstream and returns EX_REFUSED, which fix_macho.sh maps to 1
+            # like every other nonzero macho9 exit -- with different text
+            # than either shell message above. No code change follows from
+            # this -- the observable exit code is the same either way, only
+            # the wording differs earlier.
             [ "${#3}" -le 16 ] || { mt_die "new segment name longer than 16 bytes: $3"; return 1; }
             # fix_macho's renames[] held 16, and its FM_ROOM refused the 17th
             # in these same words. Nothing downstream counts these -- each
@@ -398,7 +410,7 @@ mt_tr_fix_macho() {
             # behaviour on the other side to preserve, so refusing a shape the
             # surviving implementation handles correctly would be the wrong
             # answer. compat/fix_macho.sh's header states the change as one of
-            # its four deliberate divergences.
+            # its five deliberate divergences.
             mt_seg="$mt_seg$(mt_qargs "$2" "$3")
 "
             shift 3 ;;
@@ -413,7 +425,7 @@ mt_tr_fix_macho() {
     # header, so nothing in its grammar can ask for one. `macho9 dylib`
     # without --allow-grow still resizes a command into EXISTING header pad,
     # which fix_macho refused ("new path ... too long") -- the first of the
-    # four adopted changes listed in compat/fix_macho.sh's header. Growing the
+    # five adopted changes listed in compat/fix_macho.sh's header. Growing the
     # header outright is a further step, and this translation still does not
     # take it.
     [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fq" "$mt_lc"

@@ -817,11 +817,12 @@ fi
 
 # --- 10/11. fat binaries in the rewrite path ---------------------------------
 # fix_macho walked fat and thin itself; change_dylib understood only thin until
-# this same convergence gave both the shared rewriter's fat loop. Both cases build a genuine 2-slice fat binary: a real, linked x86_64
-# executable (the same $T/main built above) plus a slice this tool cannot
-# and must not try to rewrite -- a syntactically valid but deliberately
-# minimal 32-bit (MH_MAGIC, CPU_TYPE_I386) Mach-O, built by hand rather than
-# `clang -arch i386`, which a modern toolchain may no longer support at all.
+# this same convergence gave both the shared rewriter's fat loop. Both cases
+# build a genuine 2-slice fat binary: a real, linked x86_64 executable (the
+# same $T/main built above) plus a slice this tool cannot and must not try to
+# rewrite -- a syntactically valid but deliberately minimal 32-bit (MH_MAGIC,
+# CPU_TYPE_I386) Mach-O, built by hand rather than `clang -arch i386`, which a
+# modern toolchain may no longer support at all.
 # The fat container itself is assembled by makefat (above), not system lipo,
 # for the same host-portability reason -- what lipo will accept is not this
 # suite's to pin. makefat's layout was cross-checked by hand during

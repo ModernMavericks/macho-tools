@@ -25,7 +25,7 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
   they were asked to do and then do it through `macho9`, so **`macho9` is the
   only Mach-O rewriting binary this repo ships** and `compat/` contains no C
   at all. `fix_macho` was the last holdout: wrapping it changes what it does
-  in four ways, and those changes were adopted deliberately rather than
+  in five ways, and those changes were adopted deliberately rather than
   papered over — `compat/fix_macho.sh`'s header states each with its reason.
   Also here: `translate.sh`, the old-grammar-to-`macho9` translator the
   wrappers source, and `macho9-compat.sh`, the machinery they share. See

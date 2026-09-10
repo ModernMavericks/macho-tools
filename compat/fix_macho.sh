@@ -40,7 +40,7 @@
 # ---- DELIBERATE DIVERGENCES FROM fix_macho -------------------------------
 #
 # The other five wrappers close their tool's divergences. This one does NOT,
-# and that is the point: the repo owner ruled these four differences
+# and that is the point: the repo owner ruled these five differences
 # improvements to ADOPT rather than behaviour to preserve
 # (docs/superpowers/plans/2026-09-10-report-what-macho9-did.md, "The decision
 # this plan rests on"). Every one of them is a case where fix_macho and the
@@ -105,6 +105,39 @@
 #      Mach-O; leaving this slice unchanged") and exit 0.
 #      tests/wrapper_test.sh asserts that skip explicitly, on a hand-built
 #      two-slice container, so the distinction cannot be quietly widened.
+#
+#   5. A `-change` AIMED AT THIS DYLIB'S OWN INSTALL NAME now MATCHES
+#      NOTHING, instead of rewriting it. compat/fix_macho.c's match block
+#      opened on `mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB` and
+#      then ran the `changes[]` comparison loop with NO LC_ID_DYLIB
+#      exclusion -- so `fix_macho -change <this dylib's own install name>
+#      NEW` rewrote the dylib's identity, even though the file's own comment
+#      said "nothing in `changes` is ever meant to match it": the code
+#      matched it anyway. src/rewrite.c:220 guards it (`if (lc->cmd !=
+#      LC_ID_DYLIB) { /* never rewrite this dylib's own identity */`).
+#      MEASURED, on copies of the same `-install_name /tmp/aaa/libfoo.dylib`
+#      dylib:
+#
+#          old:  Changed: /tmp/aaa/libfoo.dylib -> /tmp/bbb/libfoo.dylib
+#                File updated: a.dylib          rc=0   otool -D -> /tmp/bbb/libfoo.dylib
+#          new:  macho9: /tmp/aaa/libfoo.dylib matched nothing
+#                b.dylib: nothing to change.    rc=0   otool -D -> /tmp/aaa/libfoo.dylib
+#          cmp a.dylib b.dylib -> differ
+#
+#      BOTH SIDES EXIT 0 AND THE BYTES DIFFER, and nothing on stderr named
+#      the reason -- which is exactly the invisible edit this whole plan
+#      exists to make visible.
+#      WHY ADOPTING IT IS RIGHT: (a) install_name_tool spells identity `-id`
+#      and its `-change` never touches LC_ID_DYLIB -- macho9 matches the
+#      tool everyone already knows; (b) fix_macho.c's own comment stated the
+#      contract macho9 now enforces, so this is the C being fixed, not the C
+#      being contradicted; (c) silently rewriting a dylib's own install name
+#      from an operation the caller aimed at a DEPENDENCY is precisely the
+#      invisible edit this whole plan exists to make visible.
+#      tests/wrapper_test.sh asserts this on a dylib fixture: a `-change`
+#      naming the dylib's own install name leaves LC_ID_DYLIB unchanged and
+#      is reported unmatched, while a `-change` in the SAME invocation aimed
+#      at a real dependency still lands.
 #
 # STDOUT IS NOT REPRODUCED, and that is deliberate too. fix_macho printed
 # "Processing thin Mach-O:" / "Processing arch N at offset M:" / "  Changed: X

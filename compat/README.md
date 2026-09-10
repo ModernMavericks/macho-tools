@@ -8,7 +8,7 @@ The six original entry points, kept for compatibility. All six are now
 > six shell wrappers and two shell support files, and `macho9` is the only
 > binary `CMakeLists.txt` builds or installs. `fix_macho` was the holdout —
 > see "Why `fix_macho` could not be wrapped, and what changed" below, which is
-> the record of what adopting its four divergences cost and why that was the
+> the record of what adopting its five divergences cost and why that was the
 > right call rather than a shortcut.
 
 | installed name | what it is now |
@@ -138,7 +138,7 @@ because a wrapper had to **preserve** behaviour and `fix_macho`'s differs from
 the shared rewriter's. It stayed C for a whole plan on that basis.
 
 What changed is not the code but the standard: the repo owner ruled those
-differences **improvements to adopt deliberately**. There are four, and
+differences **improvements to adopt deliberately**. There are five, and
 `compat/fix_macho.sh`'s "DELIBERATE DIVERGENCES FROM fix_macho" block states
 each with its reason:
 
@@ -152,6 +152,15 @@ each with its reason:
    the whole file instead of being skipped with the rest rewritten. (A slice
    that is not a Mach-O at all is still skipped, exactly as before —
    `tests/wrapper_test.sh` pins that distinction.)
+5. a `-change` aimed at the dylib's own install name now matches nothing
+   instead of rewriting `LC_ID_DYLIB` — `fix_macho.c`'s own comment said
+   "nothing in `changes` is ever meant to match it", but its match block had
+   no exclusion for `LC_ID_DYLIB` and rewrote it anyway. Both sides exit 0
+   and the bytes differ; nothing on stderr named the reason. `macho9`'s
+   `-change` now matches what `install_name_tool` does (`-id`, never
+   `-change`, touches identity) — `src/rewrite.c` enforces it, and
+   `tests/wrapper_test.sh` pins it on a dylib fixture, alongside a real
+   dependency's `-change` in the same run still landing.
 
 `fix_macho`'s stdout is not reproduced either, and that is deliberate:
 `Processing thin Mach-O:` / `Changed: X -> Y` / `File updated: F` /

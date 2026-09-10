@@ -598,6 +598,43 @@ has_line "$T/err" '    macho9 lc f -delete build-version' \
     && ok "fix_macho: -strip_build_version translates to lc -delete build-version" \
     || bad "fix_macho -strip_build_version translation" "stderr: $(cat "$T/err")"
 
+# THE FIFTH DIVERGENCE: -change AIMED AT THIS DYLIB'S OWN INSTALL NAME.
+# compat/fix_macho.c's match block opened on `mo_is_ordinal_lc(lc->cmd) ||
+# lc->cmd == LC_ID_DYLIB` and then ran the changes[] comparison loop with NO
+# LC_ID_DYLIB exclusion -- so `-change <this dylib's own install name> NEW`
+# rewrote the dylib's identity, even though the file's own comment claimed
+# "nothing in changes is ever meant to match it". src/rewrite.c enforces that
+# comment as code now (`if (lc->cmd != LC_ID_DYLIB) { /* never rewrite this
+# dylib's own identity */`), matching what install_name_tool does: -id, never
+# -change, is the flag that ever touches LC_ID_DYLIB. The repo owner ruled
+# this the fifth divergence to ADOPT; compat/fix_macho.sh's header states it,
+# with its reasons.
+#
+# tests/fixture.macho is an EXECUTABLE and carries no LC_ID_DYLIB at all, so
+# this needs its own fixture: a tiny dylib, built here the same way
+# tests/change_dylib_test.sh builds its dylib fixtures (`$CC -dynamiclib
+# -install_name ...`), with its own install name AND a real dependency, so
+# one run asserts both halves at once -- the guard holds on the identity,
+# and a -change aimed at a real dependency in the SAME invocation still
+# lands, so this pins the guard rather than "fix_macho does nothing to
+# dylibs".
+fm_id="@loader_path/libfmid.dylib"
+"$CC" -dynamiclib -O2 -mmacosx-version-min=10.9 -install_name "$fm_id" \
+    -x c - -o "$T/libfmid.dylib" <<'EOF'
+int fmid_dummy(void) { return 0; }
+EOF
+run fix_macho libfmid.dylib -change "$fm_id" '@loader_path/OTHER.dylib' \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
+if [ "$rc" -eq 0 ] \
+    && has_line "$T/err" "macho9: $fm_id matched nothing" \
+    && LC_ALL=C grep -q -- "$fm_id" "$T/libfmid.dylib" \
+    && ! LC_ALL=C grep -q -- '@loader_path/OTHER.dylib' "$T/libfmid.dylib" \
+    && LC_ALL=C grep -q -- '@loader_path/../S.dylib' "$T/libfmid.dylib"; then
+    ok "fix_macho: -change at a dylib's own install name leaves LC_ID_DYLIB unchanged, reported unmatched, while a real dependency's -change in the same run still lands"
+else
+    bad "fix_macho -change own id" "exit $rc; stderr: $(cat "$T/err")"
+fi
+
 # ADOPTED CHANGE 1: A REPLACEMENT PATH LONGER THAN THE EXISTING COMMAND.
 # compat/fix_macho.c wrote the new path INTO the existing LC_LOAD_DYLIB and
 # refused when it did not fit ("new path '...' too long (320 > 32)", exit 1,
@@ -833,6 +870,24 @@ rc=$?
 [ "$rc" -eq 0 ] && cmp -s "$T/-dashy" "$T/f" \
     && ok "change_dylib: and on the multi-command path, where cp and cat see it" \
     || bad "change_dylib leading dash, mixed" "exit $rc: $(cat "$T/err")"
+rm -f "$T/-dashy"
+
+# The same leading-dash shape for fix_macho, on its single-command path
+# (mw_run_atomic's MW_NCMDS<=1 branch, which runs macho9 directly -- no
+# cp/rm/cat, so no `--` to them is at stake here). What IS at stake: FILE
+# reaches cmd_dylib_or_rpath as argv[2], read positionally, never scanned
+# for a leading dash the way an option would be -- so `$1` passing through
+# mt_translate unexamined is the guard this pins, same file-not-option
+# question as change_dylib's case above. -change, not -strip_build_version,
+# because tests/fixture.macho carries no LC_BUILD_VERSION to strip (see
+# below) and a no-op would not tell the dash apart from a typo.
+fresh
+cp "$FIXTURE" "$T/-dashy"
+before=$(sha "$T/-dashy")
+run fix_macho -dashy -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
+[ "$rc" -eq 0 ] && [ "$(sha "$T/-dashy")" != "$before" ] \
+    && ok "fix_macho: a file name starting with a dash is a file name" \
+    || bad "fix_macho leading dash" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
 
 # An EMPTY NEW segment name: legal (a segname may be all NULs) and matched by
