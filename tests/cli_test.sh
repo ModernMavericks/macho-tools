@@ -1253,6 +1253,36 @@ fi
 grep -q "unknown KIND" "$T/lc_bad.err" && ok "lc: bad kind message" \
     || bad "lc: bad kind message" "missing 'unknown KIND'"
 
+# lc -delete naming a KIND the file does not carry: the strip-cmds twin of
+# the dylib -replace miss report above. "build-version" is a kind a plain
+# -mmacosx-version-min=10.9 clang build never emits (confirmed empirically:
+# a fresh build_main-shaped fixture has no LC_BUILD_VERSION), so this is a
+# guaranteed miss, not a maybe.
+build_main "$T/lc_miss_fixture"
+"$MACHO9" lc "$T/lc_miss_fixture" -delete build-version \
+    >"$T/lc_miss.out" 2>"$T/lc_miss.err" && lc_miss_rc=0 || lc_miss_rc=$?
+[ "$lc_miss_rc" -eq 0 ] && ok "lc: -delete of an absent kind still exits 0" \
+    || bad "lc: -delete of an absent kind" "expected 0, got $lc_miss_rc: $(cat "$T/lc_miss.err")"
+grep -q "no load command of kind build-version to delete" "$T/lc_miss.err" \
+    && ok "lc: names the kind that matched nothing" \
+    || bad "lc: -delete of an absent kind" "expected the 'no load command of kind build-version to delete' message on stderr, got: $(cat "$T/lc_miss.err")"
+
+# A duplicated -delete for a kind the file DOES carry ("uuid" -- every build
+# has one) must not report the SECOND occurrence as unmatched: the load
+# command it names was struck by the very same strip pass the first
+# occurrence's match credits. This is the strip_cmds twin of the dylib
+# -replace+-delete-same-path case above -- see the "no `break`" comment on
+# the strip-kind loop in src/rewrite.c for why a duplicate used to be able
+# to make this false.
+build_main "$T/lc_dup_fixture"
+"$MACHO9" lc "$T/lc_dup_fixture" -delete uuid -delete uuid \
+    >/dev/null 2>"$T/lc_dup.err" || bad "lc: duplicate -delete uuid" "$(cat "$T/lc_dup.err")"
+if grep -q "no load command of kind uuid to delete" "$T/lc_dup.err"; then
+    bad "lc: duplicate -delete uuid" "a uuid load command WAS present and WAS stripped, but the duplicate -delete was reported as a miss: $(cat "$T/lc_dup.err")"
+else
+    ok "lc: a duplicate -delete for a kind that IS present is not reported as a miss"
+fi
+
 # ============================================================================
 # dylib: --allow-grow alone (no operation) must be refused with MACHO9's
 # OWN usage, not change_dylib's.
@@ -1346,6 +1376,48 @@ fi
 echo "$unmatched_out" | grep -qF "libSystem.B.dylib -> /tmp/new.dylib" \
     && ok "dylib: the -replace that DID match is still reported" \
     || bad "dylib: matched -replace" "expected 'libSystem.B.dylib -> /tmp/new.dylib' on stdout, got: $unmatched_out"
+# The inverse of the two checks above: an implementation that reported EVERY
+# operation as a miss (hit and miss inverted) would still pass every
+# assertion so far -- inverting hit/miss is exactly the failure this feature
+# exists to prevent, so it has to be checked for directly, not just inferred
+# from the positive cases passing.
+if grep -qF "/usr/lib/libSystem.B.dylib" "$T/unmatched.err"; then
+    bad "dylib: matched -replace" "the -replace that DID match was reported as a miss: $(cat "$T/unmatched.err")"
+else
+    ok "dylib: the -replace that matched is NOT reported as a miss"
+fi
+
+# A -delete anywhere wins over a conflicting -change for the SAME old_path,
+# regardless of argument order (see the comment on mr_is_deleted in
+# src/rewrite.c) -- so a -replace and a -delete naming the identical path
+# both match the SAME load command. Crediting only the first entry that
+# matched (the old behaviour) would report the SECOND -- here, the -delete,
+# the operation that actually removed the load command -- as having matched
+# nothing, which is false. This is exactly tests/change_dylib_test.sh's
+# historical-bug regression case and compat/translate.sh's accumulation of
+# -change/-delete into one macho9 invocation, reached through this same
+# code path.
+build_main "$T/dylib_conflict_fixture"
+conflict_path="@loader_path/libconflict.dylib"
+"$MACHO9" dylib "$T/dylib_conflict_fixture" -append "$conflict_path" \
+    >/dev/null || bad "dylib: conflict fixture setup" "-append of $conflict_path failed"
+"$MACHO9" dylib "$T/dylib_conflict_fixture" \
+        -replace "$conflict_path" /also/absent.dylib \
+        -delete "$conflict_path" \
+        >"$T/conflict.out" 2>"$T/conflict.err" && conflict_rc=0 || conflict_rc=$?
+[ "$conflict_rc" -eq 0 ] && ok "dylib: -replace and -delete on the same path still exits 0" \
+    || bad "dylib: -replace+-delete same path" "expected 0, got $conflict_rc: $(cat "$T/conflict.err")"
+conflict_info=$("$MACHO9" info "$T/dylib_conflict_fixture")
+if echo "$conflict_info" | grep -qF "path=$conflict_path"; then
+    bad "dylib: -replace+-delete same path" "expected the -delete to win (dependency removed), still present in: $conflict_info"
+else
+    ok "dylib: -replace+-delete same path: the -delete won, as documented"
+fi
+if grep -q "matched nothing" "$T/conflict.err"; then
+    bad "dylib: -replace+-delete same path" "one of the two operations that both matched the SAME load command was reported as a miss: $(cat "$T/conflict.err")"
+else
+    ok "dylib: -replace+-delete same path: neither operation is reported as a miss"
+fi
 
 # ============================================================================
 # dylib -append / -insert / -delete / -reexport
@@ -1458,6 +1530,21 @@ if echo "$delete_rp_info" | grep -q "^  rpath="; then
 else
     ok "rpath: -delete removed the search path"
 fi
+
+# rpath -replace naming a search path the file does not have: the rpath twin
+# of the dylib -replace miss report above.
+build_main "$T/rpath_miss_fixture" "/tmp/cli_test_rpath_present"
+"$MACHO9" rpath "$T/rpath_miss_fixture" -replace "/tmp/cli_test_rpath_absent" "/tmp/cli_test_rpath_new" \
+    >"$T/rpath_miss.out" 2>"$T/rpath_miss.err" && rpath_miss_rc=0 || rpath_miss_rc=$?
+[ "$rpath_miss_rc" -eq 0 ] && ok "rpath: unmatched -replace still exits 0" \
+    || bad "rpath: unmatched -replace" "expected 0, got $rpath_miss_rc: $(cat "$T/rpath_miss.err")"
+grep -q "rpath /tmp/cli_test_rpath_absent matched nothing" "$T/rpath_miss.err" \
+    && ok "rpath: names the -replace that matched nothing" \
+    || bad "rpath: unmatched -replace" "expected 'rpath /tmp/cli_test_rpath_absent matched nothing' on stderr, got: $(cat "$T/rpath_miss.err")"
+rpath_miss_info=$("$MACHO9" info "$T/rpath_miss_fixture")
+echo "$rpath_miss_info" | grep -q "rpath=/tmp/cli_test_rpath_present" \
+    && ok "rpath: an untouched rpath is left alone by the unmatched -replace" \
+    || bad "rpath: unmatched -replace" "the ORIGINAL rpath disappeared: $rpath_miss_info"
 
 # ============================================================================
 # rpath -insert: the search path lands FIRST, not last

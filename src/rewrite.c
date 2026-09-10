@@ -135,12 +135,18 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
     /* Dropping a command reclaims its bytes for the rest of the table.
      * Any __LINKEDIT payload it referenced simply stops being reachable;
      * nothing moves, so no offset anywhere needs fixing up. */
+    /* No `break`: a load command of this kind can be named by more than one
+     * -strip-lc argument (a duplicate, e.g. two "-strip-lc uuid"), and every
+     * one of them DID find a match here, not just the first. Stopping at the
+     * first match would credit that argument's hit array slot and leave
+     * every later duplicate's slot at zero -- reported as "no load command
+     * of kind uuid to delete" about an image that HAD one, which this
+     * function just dropped. `stripped` only needs to become true once. */
     int stripped = 0;
     for (int s = 0; s < ctx->ops->n_strip_cmds; s++)
         if (lc->cmd == ctx->ops->strip_cmds[s]) {
             stripped = 1;
             if (ctx->hit_strip) ctx->hit_strip[s]++;
-            break;
         }
     if (stripped) {
         if (ctx->verbose) printf("  Strip [%u bytes]: load command 0x%x\n", cmdsize, lc->cmd);
@@ -233,11 +239,24 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
                         dc->dylib.name.offset, cmdsize);
                 return 1;
             }
+            /* No `break`: `matched` still ends up as the FIRST entry naming
+             * this path (that is what decides which change gets applied,
+             * just below), but every entry naming it is counted as a hit,
+             * not only the first. A -delete and a -change can legitimately
+             * name the SAME old_path -- see mr_is_deleted just below, which
+             * makes a -delete win over a conflicting -change regardless of
+             * argument order -- so `macho9 dylib f -replace X N -delete X`
+             * has two dylib_changes entries sharing old_path X. Breaking
+             * here would count only the -replace's entry as a hit and
+             * report the -delete's entry as "matched nothing", which is
+             * false: it is the operation that removed the load command.
+             * n_dylib_changes is capped at MR_MAX_OPS (rewrite.h), so
+             * scanning the whole array unconditionally costs nothing
+             * observable. */
             for (int c = 0; c < ctx->ops->n_dylib_changes; c++)
                 if (strcmp(name, ctx->ops->dylib_changes[c].old_path) == 0) {
-                    matched = c;
                     if (ctx->hit_dylib) ctx->hit_dylib[c]++;
-                    break;
+                    if (matched < 0) matched = c;
                 }
             /* Deletion is decided by mr_is_deleted -- the SAME predicate
              * passed to mo_map_build below -- not by whichever `changes`
@@ -376,10 +395,12 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
  *
  * hit_dylib/hit_rpath/hit_strip: per-operation hit counts, so mr_apply_file
  * can name the operations that matched nothing. Caller-owned and
- * caller-zeroed, sized MR_MAX_OPS / MR_MAX_STRIP -- what both front-ends cap
- * at. NULL is legal and means "do not count" -- the sizing pass passes NULL,
- * because counting a dry run would double every hit (see mr_process_thin's
- * two call sites). */
+ * caller-zeroed, sized MR_MAX_OPS / MR_MAX_STRIP -- the same bound mr_ops's
+ * own arrays are already required to respect (mr_apply_file's own comment,
+ * rewrite.h, states the precondition; cli/macho9.c is the one caller that
+ * enforces it today). NULL is legal and means "do not count" -- the sizing
+ * pass passes NULL, because counting a dry run would double every hit (see
+ * mr_process_thin's two call sites). */
 static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
                         uint8_t *new_lcs, uint32_t *out_off, uint32_t *out_ncmds,
                         int *out_mods, int *out_renames, int verbose,
@@ -1134,6 +1155,17 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * the image for them to fail to find), so they have no hit array and cannot
  * be reported as missed.
  *
+ * A slice mr_process_thin reports MR_SKIP for (mr_process_fat: not a 64-bit
+ * Mach-O, passed through byte-for-byte) is never examined by mr_build_lcs at
+ * all, so it contributes no hits, the same as if it did not exist. "No load
+ * command of kind codesig to delete" is therefore a fact about the slices
+ * THIS TOOL UNDERSTOOD, not necessarily about the whole image -- a fat file
+ * with one 64-bit slice this rewriter skips for some other reason and one it
+ * rewrites can still report a miss for a kind that exists only in the
+ * skipped slice. That is the same boundary mr_process_thin/mr_process_fat's
+ * own MR_SKIP contract already draws everywhere else in this file; this
+ * report does not attempt to see past it.
+ *
  * On stderr, deliberately: the five compat/ wrapper shell scripts wrap this
  * binary for five historical tool names, and their stdout has to stay
  * byte-identical to what those tools always printed (tests/known-callers.sh,
@@ -1161,8 +1193,11 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * zeroed here, once, so a fat file's slices (each processed by its own
      * mr_process_thin call, via mr_process_fat) all accumulate into the SAME
      * arrays -- see mr_process_fat's own comment for why that matters. Sized
-     * MR_MAX_OPS / MR_MAX_STRIP, the caps both front-ends already enforce on
-     * these same arrays in mr_ops. */
+     * MR_MAX_OPS / MR_MAX_STRIP, the same bound `ops`'s own arrays are
+     * required to respect -- an UNENFORCED precondition on this function's
+     * caller; see this function's own declaration in rewrite.h for the
+     * detail (only cli/macho9.c enforces it today, and only because it is
+     * the sole caller, not because anything here checks). */
     int hit_dylib[MR_MAX_OPS] = {0};
     int hit_rpath[MR_MAX_OPS] = {0};
     int hit_strip[MR_MAX_STRIP] = {0};
@@ -1275,12 +1310,11 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
         }
     }
 
-    /* Only on success: a refused rewrite (rc != 0) errored out for its own
-     * reason, possibly before mr_build_lcs ever ran a single comparison, so
-     * the hit arrays in that case mean nothing -- reporting them would risk
-     * calling an operation "matched nothing" that never got a chance to
-     * match anything at all. */
-    if (rc == 0) mr_report_unmatched(ops, hit_dylib, hit_rpath, hit_strip);
+    /* Captured before the write attempt below, which can turn `rc` from 0 to
+     * 1 on its own failure -- the miss report's gate has to stay "did
+     * mr_process_thin/mr_process_fat succeed", not "is the file on disk now
+     * what we intended", or a failed write would silently swallow it. */
+    int processed_ok = (rc == 0);
 
     if (rc == 0 && modified) {
         if (wa_write_atomic(path, orig_mode, buf, fsize) != 0) {
@@ -1290,6 +1324,17 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
             printf("Updated %s (%zu bytes)\n", path, fsize);
         }
     }
+
+    /* After the write, not before: this is a report about which operations
+     * matched, and printing it ahead of "Updated ..." (or, worse, ahead of
+     * "left unmodified (atomic replace failed)") would read as a summary of
+     * a result that had not been written yet. Still gated on `processed_ok`,
+     * not the now-possibly-overwritten `rc`: a refused rewrite (the ORIGINAL
+     * rc != 0) errored out for its own reason, possibly before mr_build_lcs
+     * ever ran a single comparison, so the hit arrays in that case mean
+     * nothing -- reporting them would risk calling an operation "matched
+     * nothing" that never got a chance to match anything at all. */
+    if (processed_ok) mr_report_unmatched(ops, hit_dylib, hit_rpath, hit_strip);
 
     free(buf);
     return rc;

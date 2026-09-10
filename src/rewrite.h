@@ -121,32 +121,44 @@ typedef struct {
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
 } mr_ops;
 
-/* How many times one operation may repeat in a single run. TWO call sites
- * accumulate into fixed-size C arrays sized from these two macros; a third
+/* How many times one operation may repeat in a single run. THREE call sites
+ * accumulate into fixed-size C arrays sized from these two macros; a fourth
  * enforces the identical numeric cap from its own separately-declared shell
- * constant, since it cannot include this header. All three refuse at the
- * same point -- `change_dylib -delete ... x33`, `fix_macho -change ... x33`
- * and `macho9 dylib -delete ... x33` all agree about being too many -- each
- * in its own wording, since none of the three grammars spell the operations
- * the same way:
+ * constant, since it cannot include this header. All four refuse (or, for
+ * mr_apply_file's own arrays, must never be handed more than) the same count
+ * -- `change_dylib -delete ... x33`, `fix_macho -change ... x33` and
+ * `macho9 dylib -delete ... x33` all agree about being too many -- each in
+ * its own wording, since none of the grammars spell the operations the same
+ * way:
  *
  *   cli/macho9.c's own dylib/rpath parser checks the count inline and prints
  *     "macho9 <verb>: too many <flag> operations (max N)", naming ITS OWN
  *     flag spelling (`-append`, not change_dylib's `-add`) -- see the
  *     comment at that call site for why the wording is deliberately not
- *     shared with the other two.
+ *     shared with the other two. This is the ONLY call site that actually
+ *     constructs an mr_ops and passes it to mr_apply_file below -- see that
+ *     function's own comment for why that makes it load-bearing, not just
+ *     one front-end among several.
  *   compat/fix_macho.c's FM_ROOM macro (which reuses this MR_MAX_OPS rather
  *     than spelling out a second 32) prints "too many <flag> (max N)", in
  *     fix_macho's own words -- this is still C, so this is still a fixed
  *     array a C parser fills. Its own comment calls this CD_ROOM, revived
- *     in this file, in change_dylib's exact wording.
+ *     in this file, in change_dylib's exact wording. fix_macho.c never calls
+ *     mr_apply_file, though -- it is a wholly separate rewrite path that
+ *     happens to reuse this same numeric cap for its own, unrelated arrays.
  *   compat/translate.sh's mt_room -- CD_ROOM revived again, since
  *     change_dylib.c is gone -- accumulates the OLD grammar's argv into a
  *     shell variable rather than a C array, capped by its own literal
  *     MT_MAX_OPS=32 (not derived from MR_MAX_OPS: a /bin/sh script cannot
  *     include this header), and refuses at the identical count, in
  *     change_dylib's own historical words ("too many <flag> (max N)"),
- *     before ever emitting a `macho9` command line. */
+ *     before ever emitting a `macho9` command line.
+ *   mr_apply_file (src/rewrite.c) declares its own per-operation hit-count
+ *     arrays -- int[MR_MAX_OPS] for dylib/rpath, int[MR_MAX_STRIP] for
+ *     strip -- sized from these same two macros, but does NOT itself check
+ *     `ops->n_dylib_changes`/`n_rpath_changes`/`n_strip_cmds` against them.
+ *     See mr_apply_file's own comment for the precondition this leaves on
+ *     its caller. */
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 
@@ -162,7 +174,19 @@ typedef struct {
  * case -- or 1 with a message already printed on stderr. On any failure the
  * file on disk is left exactly as it was found: every refusal happens before
  * the single atomic replace at the end.
- */
+ *
+ * PRECONDITION, unenforced here: `ops->n_dylib_changes` and
+ * `ops->n_rpath_changes` must each be <= MR_MAX_OPS, and
+ * `ops->n_strip_cmds` must be <= MR_MAX_STRIP. This function keeps its own
+ * per-operation hit-count arrays on the stack, sized exactly from those two
+ * macros, to report (on stderr) which operations matched nothing; it trusts
+ * the caller for the bound the same way the rest of this module already
+ * trusts mr_ops's arrays to be caller-owned and caller-sized. cli/macho9.c
+ * is the only caller today, and enforces the identical cap itself before
+ * ever building an mr_ops (see MR_MAX_OPS's own comment) -- but that
+ * enforcement lives in the caller, not in this library, so a future or
+ * different caller that skips it turns an over-long array into a stack
+ * overflow here, not a diagnostic. */
 int mr_apply_file(const char *path, const mr_ops *ops);
 
 #endif /* MACHO9_REWRITE_H */
