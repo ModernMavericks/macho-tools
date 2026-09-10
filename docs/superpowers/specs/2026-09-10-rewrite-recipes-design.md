@@ -1,4 +1,4 @@
-# `macho9 rewrite` — recipes, and two vocabularies
+# `macho9 rewrite` — recipes
 
 **Status:** design, agreed 2026-09-10. Supersedes the `port` verb sketched in
 `docs/PROPOSAL.md`, including its name.
@@ -197,6 +197,25 @@ What would remain ours either way: lowering chained fixups to
 growing the pad of a finished binary, and the never-move-a-byte constraint that
 `install_name_tool` violates by design when it rebuilds `__LINKEDIT`.
 
+**Partly answered since, by `2026-09-10-toolchain-backport-survey.md`.** Modern
+`cctools` does recognise the modern load commands — `libstuff/checkout.c`
+handles `LC_DYLD_CHAINED_FIXUPS` and `LC_DYLD_EXPORTS_TRIE` — so a modern
+`install_name_tool` may well open a binary 10.9's refuses. But it reaches the
+file through `breakout` → `checkout` → `writeout`, which **re-emits it with
+recomputed symbol-info sizes and drops or invalidates a code signature**. That
+is not the byte-preserving edit this toolkit performs, so the two are not
+interchangeable even where both succeed. Whether real Electron and Zoom binaries
+pass `checkout.c`'s remaining ordering invariants at all is still untested.
+
+The survey also settles the wider question: `vtool -set-version-min` replaces
+`add_version_min` outright, and `install_name_tool -change`/`-id` replaces most
+of `fix_macho` — but **no public project lowers chained fixups**. LIEF parses
+all three formats and its `Builder` exposes no cross-conversion; every search
+returns "relink with `-no_fixup_chains`", which a vendor binary forecloses. That
+transform is the load-bearing justification for this repo, and `grow` is the
+second: Apple's own answer when the header pad runs out is *"the program must be
+relinked"*.
+
 ## What this design does
 
 Adds one verb, `macho9 rewrite`, which takes a **recipe**: a flat sequence of
@@ -211,21 +230,7 @@ macho9 rewrite FILE -                      # recipe on stdin
 `install.sh`'s three writes collapse to one. The mixed-family split disappears,
 and with it the temp-copy dance and its extra 200MB.
 
-## Two vocabularies
-
-Statements are **physical** or **logical**, and the language marks which. The
-distinction is not stylistic: it is whether a statement has consequences beyond
-the bytes it names.
-
-Space consequences — pad exhaustion, growth — apply to *any* statement, so they
-are handled orthogonally by the `allow-grow` directive. That leaves **reference
-invalidation** as the only thing separating the two levels, and the
-ordinal-carrying command set is exactly four (`mo_is_ordinal_lc`,
-`src/ordinals.c`: `LC_LOAD_DYLIB`, `LC_LOAD_WEAK_DYLIB`, `LC_REEXPORT_DYLIB`,
-`LC_LOAD_UPWARD_DYLIB`). So the logical vocabulary is small enough to name
-exhaustively rather than gesture at.
-
-**Physical** — touches only what it names:
+## Statements
 
 ```
 load-command  delete    KIND        uuid | codesig | source-version
@@ -233,43 +238,56 @@ load-command  delete    KIND        uuid | codesig | source-version
 segment       rename    OLD NEW
 version-min   set       10.9
 retag-swift
-dylib         replace   OLD NEW     position and ordinal kept
-dylib         append    PATH        hands out a new index only
-dylib         reexport  PATH        LC_LOAD_DYLIB -> LC_REEXPORT_DYLIB, same position
+fixups        lower
+dylib         replace   OLD NEW
+dylib         append    PATH
+dylib         insert    PATH
+dylib         delete    PATH
+dylib         reexport  PATH
 rpath         replace   OLD NEW
 rpath         delete    PATH
 rpath         append    PATH
 rpath         insert    PATH
 ```
 
-**Logical** — does dependent work not visible in the line:
+That is every rewriting operation the toolkit has, spelled as the existing verbs
+with the file argument dropped. Nothing new is invented, so a reader who knows
+the verbs can read a recipe.
 
-```
-dylib   delete   PATH    renumbers survivors; refuses if any symbol still binds
-dylib   insert   PATH    renumbers every dylib after it
-fixups  lower            rebuilds __LINKEDIT's bind and rebase streams
-```
+### Some operations do only what they say; others carry their consequences
 
-Three statements, and the code already said which three.
-`docs/PROPOSAL.md`'s own note: *"Appending is safe because it only hands out new
-indices, but INSERTING or DELETING shifts every later one."* `LC_RPATH` carries
-no ordinal, so every rpath operation is physical.
+The one property worth knowing about this set, because it is the difference
+between this toolkit and reaching for `install_name_tool`:
 
-`load-command delete`'s five-kind vocabulary is not a convenience list. It was
-selected as the set with no non-local consequence, and `src/lc_kinds.c` says so:
-*"purely informational, or invalidated the moment the binary is rewritten …
-None of them carries a library ordinal, so stripping never disturbs
-change_dylib's ordinal renumbering."* That table is the physical layer,
-isolated before anyone named it.
+**Most operations are self-consistent.** Nothing in the binary points at what
+they touch, so doing the edit is the whole job. `load-command delete uuid`
+removes a command nothing references. `segment rename` rewrites name characters
+and no offsets. `rpath` operations edit commands that carry no library ordinal.
+`dylib replace` keeps the command's position and its ordinal.
 
-**Why the levels are marked rather than composed.** Logical statements are not
-macros over physical ones and the language does not pretend otherwise. Ordinal
-renumbering is data-dependent — which ordinals shift depends on which symbols
-currently bind to which dylib — so it cannot be written as a static expansion.
-A language that offered `--explain` and then could not explain its three most
-consequential statements would claim more than it delivers.
+**A few require follow-up work to leave the binary valid, and the operation does
+that work as part of itself:**
 
-## Relations — where the vocabulary split actually comes from
+- `dylib delete` renumbers every surviving library ordinal — in the `nlist`
+  entries *and* in the `SET_DYLIB_ORDINAL*` opcodes of the bind, weak and lazy
+  streams — and refuses outright if any symbol still binds to what you asked to
+  remove.
+- `dylib insert` renumbers every dylib after the one it inserts.
+- `fixups lower` rebuilds `__LINKEDIT`'s bind and rebase streams wholesale.
+
+The caller writes one line and gets the whole consequence. That is the point:
+the alternative is doing the edit and finding out later that something else
+needed updating, which is how `docs/PROPOSAL.md`'s defect #2 shipped — a
+`-delete` that left ordinals stale and produced `dyld: library ordinal (4) too
+big`.
+
+**This is not a distinction the recipe language marks, and it does not need
+to.** It is a property of the operations, not a vocabulary the writer chooses
+between. The implementation derives which operations carry follow-ups from the
+relation table below rather than from a hand-maintained list, so the two cannot
+drift apart — and a relation added later moves the set with it.
+
+## Relations — one place to record what points at what
 
 A binary is a graph that has been flattened, and the hard part of editing one is
 never the edit: it is the cross-references. Offsets, counts, indices, addresses,
@@ -278,11 +296,10 @@ same shape — an edit changed the flattened form without updating something tha
 pointed into it. Of the four defects `docs/PROPOSAL.md` lists, three are that
 (the fourth was an array bounds bug).
 
-So the physical/logical split above is a shadow of something more basic.
-**Physical means nothing points at what you are touching. Logical means
-something does.** We did not invent that boundary; we found it, which is what
-you would expect of a property that belongs to the format rather than to our
-taste.
+So "does this operation need follow-up work?" is not a judgement call. It is
+**whether anything points at what the operation touches** — a property of the
+format, not of our taste, which is why the set came out small and specific
+rather than arguable.
 
 This design names the relations as **data in one place**, rather than leaving
 them as knowledge distributed across whichever functions happen to maintain
@@ -299,12 +316,12 @@ them:
 Two things follow, and both are requirements of this design rather than
 observations about it:
 
-**The vocabulary split is derived, not hardcoded.** A statement is logical
-exactly when the structure it edits is the referent of some relation in that
-table. `dylib delete` and `dylib insert` reorder the ordinal-carrying
+**Which operations carry follow-ups is derived, not hardcoded.** An operation
+needs follow-up work exactly when the structure it edits is the referent of some
+relation in that table. `dylib delete` and `dylib insert` reorder the ordinal-carrying
 subsequence; `fixups lower` rewrites the blobs that file-offset fields name.
 Everything else touches nothing anyone points at. If a relation is added, the
-split moves with it — nobody has to remember to update a second list.
+set moves with it — nobody has to remember to update a second list.
 
 **PROPOSAL's own argument for this is defect #4.** Two correct functions,
 written months apart against different predicates, met in a merge and silently
@@ -363,7 +380,8 @@ dylib         replace  /usr/lib/libc++.1.dylib     @loader_path/../c++.1.dylib
 
 ## Execution model
 
-1. **Parse the whole recipe.** Any syntax or vocabulary error is reported before
+1. **Parse the whole recipe.** Any syntax error, or a statement this build does
+   not know, is reported before
    the file is opened for writing.
 2. **Read the image once.**
 3. **Apply each statement in order** against the in-memory buffer.
@@ -416,7 +434,7 @@ This widens the design past the `rewrite` verb: it touches `src/grow.c`'s
 verification, which the recipe language does not otherwise care about. That cost
 is accepted rather than hidden, for two reasons. A mandatory verify gate is only
 worth having if the thing it runs is trustworthy, and this design makes verify
-mandatory. And the deriving of the vocabulary split above needs the same table,
+mandatory. And deriving which operations carry follow-ups needs the same table,
 so it is paid for twice over.
 
 ## The recipe is the plan
@@ -483,8 +501,11 @@ break. It will surprise someone; this is where it is written down.
 - Symbol-table surgery (`objcopy --redefine-sym`, `--localize-symbol`). The
   toolkit touches `nlist` only as a consequence of ordinal renumbering and
   exposes no symbol verbs.
-- `--explain` / expansion of logical statements into physical ones. See "Why the
-  levels are marked rather than composed".
+- `--explain`, or expanding an operation into the smaller edits it performs.
+  Ordinal renumbering is data-dependent — which ordinals shift depends on which
+  symbols currently bind to which dylib — so it cannot be shown as a fixed
+  sequence, and an `--explain` that could not explain the three operations that
+  most need explaining would claim more than it delivers.
 
 ### Two generalizations, not one
 
