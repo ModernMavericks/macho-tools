@@ -26,12 +26,16 @@
  * actually measured: the old scan's own filter (`grep -q 'no known
  * function'`, over `macho9 lc COPY -delete uuid`) run RECURSIVELY over every
  * thin 64-bit .dylib/.so/.bundle under /usr/lib, /usr/libexec and
- * /System/Library/PrivateFrameworks on a stock 10.9 -- 131 files -- turns up
- * no usable victim. It DID turn one up until src/grow.c's mg_plausible
+ * /System/Library/PrivateFrameworks on this 10.9 host -- 131 files -- turns
+ * up no usable victim. It DID turn one up until src/grow.c's mg_plausible
  * stopped folding "this image declares no function starts" into a refusal:
  * /usr/lib/swift/libswiftObjectiveC.dylib, whose __text has size 0 and whose
- * LC_FUNCTION_STARTS is datasize=8, all eight bytes zero. A host with other
- * binaries installed has not been measured and nothing here claims about it.
+ * LC_FUNCTION_STARTS is datasize=8, all eight bytes zero. Note that that file
+ * is NOT stock 10.9 -- Swift postdates 10.9 by a year, and this one is
+ * shipped by ModernMavericks swift-runtime. So the corpus is this host's
+ * system directories INCLUDING what the family has installed into them, not
+ * a pristine 10.9; a host with a different set has not been measured and
+ * nothing here claims about it.
  * That is a second, independent reason to build the input rather than look
  * for one -- and the original reason still stands on its own: a scan
  * passes on the target and silently covers NOTHING on the cross/CI runner,
@@ -71,8 +75,9 @@
  * THE -empty-starts TWIN. Same image, one difference: the 8-byte
  * LC_FUNCTION_STARTS blob is left as the calloc'd zeros instead of holding
  * the ULEB 0x400 entry -- three bytes, `80 08 00` becoming `00 00 00`. That
- * is the shape a stock 10.9 system dylib with no functions actually has
- * (/usr/lib/swift/libswiftObjectiveC.dylib), and mg_plausible must ACCEPT
+ * is the shape a real dylib with no functions actually has
+ * (/usr/lib/swift/libswiftObjectiveC.dylib, shipped by ModernMavericks
+ * swift-runtime -- not a stock 10.9 file), and mg_plausible must ACCEPT
  * it: an image that declares no function starts is the same fact as one with
  * no LC_FUNCTION_STARTS at all, which the gate has always accepted with
  * "nothing to check against". mg_plausible folded the two apart for a while

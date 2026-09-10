@@ -2095,7 +2095,8 @@ fi
 #
 # The same fixture with three bytes changed: its 8-byte LC_FUNCTION_STARTS
 # blob is all zeros, so it declares no function starts. That is the shape a
-# stock 10.9 system dylib with no functions has (libswiftObjectiveC.dylib),
+# real dylib with no functions has (libswiftObjectiveC.dylib, from
+# ModernMavericks swift-runtime -- not a stock 10.9 file),
 # and it is the same fact about an image as carrying no LC_FUNCTION_STARTS at
 # all, which mg_plausible has always accepted. It folded the two apart for a
 # while -- ns == 0 fell into a composite `ns <= 0 ||` refusal -- which refused

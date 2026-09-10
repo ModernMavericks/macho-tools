@@ -726,9 +726,11 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
 
     /* Three unrelated outcomes, three answers. `ns <= 0 || mg_collect(...)`
      * used to fold all of them into one silent -1, and the one that is not a
-     * refusal at all was the one that bit: a stock 10.9 system dylib with an
-     * empty function-starts list (/usr/lib/swift/libswiftObjectiveC.dylib --
-     * __text size 0, LC_FUNCTION_STARTS datasize=8, all eight bytes zero)
+     * refusal at all was the one that bit: a real dylib with an empty
+     * function-starts list (/usr/lib/swift/libswiftObjectiveC.dylib, shipped
+     * by ModernMavericks swift-runtime -- Swift postdates 10.9 by a year, so
+     * nothing in /usr/lib/swift is stock -- __text size 0,
+     * LC_FUNCTION_STARTS datasize=8, all eight bytes zero)
      * decodes to ns == 0 and was refused, contentlessly through `verify` and
      * with a message about "offsets that name no known function" through the
      * rewrite path, when the image has no function starts to name anything.
