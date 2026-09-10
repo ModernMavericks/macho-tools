@@ -266,6 +266,26 @@ else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
 
+# --fatal-warnings promotes "an operation matched nothing" from a stderr
+# report to a refusal (dylib/rpath/lc only -- segment and retag-swift take no
+# list of operations that could miss). A wrapper has no other way to learn
+# this build can do that than by probing this line, the same reason
+# --allow-grow is advertised.
+for v in dylib rpath lc; do
+    if echo "$caps" | grep "^verb $v" | grep -q "flags=.*fatal-warnings"; then
+        ok "capabilities: $v advertises fatal-warnings"
+    else
+        bad "capabilities: $v fatal-warnings" "not listed"
+    fi
+done
+for v in segment retag-swift; do
+    if echo "$caps" | grep "^verb $v" | grep -q "fatal-warnings"; then
+        bad "capabilities: $v fatal-warnings" "advertised, but $v takes no list of operations that could miss"
+    else
+        ok "capabilities: $v correctly does not advertise fatal-warnings"
+    fi
+done
+
 # ----------------------------------------------------------------------------
 # capabilities vocabulary must match what the parsers actually accept.
 #
@@ -1284,6 +1304,37 @@ else
 fi
 
 # ============================================================================
+# lc --fatal-warnings: the same "matched nothing" report as -delete
+# build-version above (a plain build_main fixture never emits it), turned
+# into a refusal instead of just a stderr note. EX_REFUSED (2), the same
+# code a deliberate refusal uses elsewhere (cmd_verify, cmd_grow, cmd_minos),
+# because mr_apply_file returns MR_REFUSED for this and MR_REFUSED is
+# defined (src/rewrite.h) to equal EX_REFUSED.
+# ============================================================================
+build_main "$T/lc_fw_fixture"
+"$MACHO9" lc "$T/lc_fw_fixture" --fatal-warnings -delete build-version \
+    >/dev/null 2>"$T/lc_fw.err" && lc_fw_rc=0 || lc_fw_rc=$?
+[ "$lc_fw_rc" -eq 2 ] && ok "lc: --fatal-warnings refuses when a KIND matched nothing (EX_REFUSED)" \
+    || bad "lc: --fatal-warnings refusal" "expected exit 2, got $lc_fw_rc: $(cat "$T/lc_fw.err")"
+grep -q "no load command of kind build-version to delete" "$T/lc_fw.err" \
+    && ok "lc: --fatal-warnings still names the KIND that matched nothing" \
+    || bad "lc: --fatal-warnings refusal message" "expected 'no load command of kind build-version to delete', got: $(cat "$T/lc_fw.err")"
+# Without --fatal-warnings, the identical invocation still succeeds -- so the
+# flag is what changed the answer, not something else about this fixture.
+build_main "$T/lc_fw_lax_fixture"
+"$MACHO9" lc "$T/lc_fw_lax_fixture" -delete build-version \
+    >/dev/null 2>/dev/null && lc_fw_lax_rc=0 || lc_fw_lax_rc=$?
+[ "$lc_fw_lax_rc" -eq 0 ] && ok "lc: without --fatal-warnings the same unmatched KIND still succeeds" \
+    || bad "lc: no --fatal-warnings" "expected 0, got $lc_fw_lax_rc"
+# And when every -delete DOES match, --fatal-warnings must not refuse a run
+# that had nothing to complain about.
+build_main "$T/lc_fw_ok_fixture"
+"$MACHO9" lc "$T/lc_fw_ok_fixture" --fatal-warnings -delete uuid \
+    >/dev/null 2>"$T/lc_fw_ok.err" && lc_fw_ok_rc=0 || lc_fw_ok_rc=$?
+[ "$lc_fw_ok_rc" -eq 0 ] && ok "lc: --fatal-warnings succeeds when the KIND matched" \
+    || bad "lc: --fatal-warnings (matched)" "expected 0, got $lc_fw_ok_rc: $(cat "$T/lc_fw_ok.err")"
+
+# ============================================================================
 # dylib: --allow-grow alone (no operation) must be refused with MACHO9's
 # OWN usage, not change_dylib's.
 #
@@ -1420,6 +1471,63 @@ else
 fi
 
 # ============================================================================
+# dylib --fatal-warnings: turns the "matched nothing" report just above from
+# a stderr note into a refusal. Two -replace ops, one of which matches and
+# one of which cannot -- so this also proves the file is STILL WRITTEN when
+# --fatal-warnings refuses: this mode reports AFTER the rewrite, it does not
+# roll it back (see mr_ops.fatal_unmatched's own comment in src/rewrite.h).
+# ============================================================================
+build_main "$T/dylib_fw_fixture"
+"$MACHO9" dylib "$T/dylib_fw_fixture" --fatal-warnings \
+        -replace "@loader_path/liba.dylib" "@loader_path/renamed-fw.dylib" \
+        -replace /nope/absent-fw.dylib /also/absent-fw.dylib \
+        >"$T/dylib_fw.out" 2>"$T/dylib_fw.err" && dylib_fw_rc=0 || dylib_fw_rc=$?
+[ "$dylib_fw_rc" -eq 2 ] && ok "dylib: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
+    || bad "dylib: --fatal-warnings refusal" "expected exit 2, got $dylib_fw_rc: $(cat "$T/dylib_fw.err")"
+grep -qF "/nope/absent-fw.dylib" "$T/dylib_fw.err" && ok "dylib: --fatal-warnings still names the op that matched nothing" \
+    || bad "dylib: --fatal-warnings refusal message" "expected /nope/absent-fw.dylib on stderr, got: $(cat "$T/dylib_fw.err")"
+dylib_fw_info=$("$MACHO9" info "$T/dylib_fw_fixture")
+echo "$dylib_fw_info" | grep -qF "path=@loader_path/renamed-fw.dylib" \
+    && ok "dylib: --fatal-warnings still wrote the file -- the op that DID match was applied despite the refusal" \
+    || bad "dylib: --fatal-warnings file-still-written" "expected the matched -replace to have landed anyway, got: $dylib_fw_info"
+# Without --fatal-warnings, the identical invocation still succeeds -- so the
+# flag is what changed the answer, not something else about this fixture.
+build_main "$T/dylib_fw_lax_fixture"
+"$MACHO9" dylib "$T/dylib_fw_lax_fixture" \
+        -replace "@loader_path/liba.dylib" "@loader_path/renamed-fw-lax.dylib" \
+        -replace /nope/absent-fw.dylib /also/absent-fw.dylib \
+        >/dev/null 2>/dev/null && dylib_fw_lax_rc=0 || dylib_fw_lax_rc=$?
+[ "$dylib_fw_lax_rc" -eq 0 ] && ok "dylib: without --fatal-warnings the same unmatched op still succeeds" \
+    || bad "dylib: no --fatal-warnings" "expected 0, got $dylib_fw_lax_rc"
+# And when every op DOES match, --fatal-warnings must not refuse a run that
+# had nothing to complain about.
+build_main "$T/dylib_fw_ok_fixture"
+"$MACHO9" dylib "$T/dylib_fw_ok_fixture" --fatal-warnings \
+        -replace "@loader_path/liba.dylib" "@loader_path/renamed-fw-ok.dylib" \
+        >"$T/dylib_fw_ok.out" 2>"$T/dylib_fw_ok.err" && dylib_fw_ok_rc=0 || dylib_fw_ok_rc=$?
+[ "$dylib_fw_ok_rc" -eq 0 ] && ok "dylib: --fatal-warnings succeeds when nothing is unmatched" \
+    || bad "dylib: --fatal-warnings (matched)" "expected 0, got $dylib_fw_ok_rc: $(cat "$T/dylib_fw_ok.err")"
+
+# segment and retag-swift take no list of operations that could miss, so
+# neither parses --fatal-warnings at all -- passing it lands as an extra
+# positional argument and is refused the same way any wrong argument count
+# is, with each verb's own usage line, not a --fatal-warnings-specific
+# message (there is nothing to be specific about: the flag was never seen).
+build_main "$T/segment_fw_fixture"
+"$MACHO9" segment "$T/segment_fw_fixture" __DATA __DATA_R9 --fatal-warnings \
+    >/dev/null 2>"$T/segment_fw.err" \
+    && bad "segment: --fatal-warnings" "should be refused (segment takes exactly FILE OLD NEW)" \
+    || { grep -q "usage:" "$T/segment_fw.err" \
+         && ok "segment: does not accept --fatal-warnings (refused as a usage error)" \
+         || bad "segment: --fatal-warnings" "refused, but not with a usage message: $(cat "$T/segment_fw.err")"; }
+"$MACHO9" retag-swift "$T/segment_fw_fixture" --fatal-warnings \
+    >/dev/null 2>"$T/retag_fw.err" \
+    && bad "retag-swift: --fatal-warnings" "should be refused (retag-swift takes exactly FILE)" \
+    || { grep -q "usage:" "$T/retag_fw.err" \
+         && ok "retag-swift: does not accept --fatal-warnings (refused as a usage error)" \
+         || bad "retag-swift: --fatal-warnings" "refused, but not with a usage message: $(cat "$T/retag_fw.err")"; }
+
+# ============================================================================
 # dylib -append / -insert / -delete / -reexport
 #
 # -replace and --allow-grow (above) exercise only two of change_dylib's
@@ -1545,6 +1653,32 @@ rpath_miss_info=$("$MACHO9" info "$T/rpath_miss_fixture")
 echo "$rpath_miss_info" | grep -q "rpath=/tmp/cli_test_rpath_present" \
     && ok "rpath: an untouched rpath is left alone by the unmatched -replace" \
     || bad "rpath: unmatched -replace" "the ORIGINAL rpath disappeared: $rpath_miss_info"
+
+# rpath --fatal-warnings: the same miss report just above, turned into a
+# refusal, the rpath twin of the dylib --fatal-warnings block above.
+build_main "$T/rpath_fw_fixture" "/tmp/cli_test_rpath_fw_present"
+"$MACHO9" rpath "$T/rpath_fw_fixture" --fatal-warnings \
+        -replace "/tmp/cli_test_rpath_fw_absent" "/tmp/cli_test_rpath_fw_new" \
+        >/dev/null 2>"$T/rpath_fw.err" && rpath_fw_rc=0 || rpath_fw_rc=$?
+[ "$rpath_fw_rc" -eq 2 ] && ok "rpath: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
+    || bad "rpath: --fatal-warnings refusal" "expected exit 2, got $rpath_fw_rc: $(cat "$T/rpath_fw.err")"
+grep -q "rpath /tmp/cli_test_rpath_fw_absent matched nothing" "$T/rpath_fw.err" \
+    && ok "rpath: --fatal-warnings still names the op that matched nothing" \
+    || bad "rpath: --fatal-warnings refusal message" "expected the miss message on stderr, got: $(cat "$T/rpath_fw.err")"
+# Without --fatal-warnings, the identical invocation still succeeds.
+build_main "$T/rpath_fw_lax_fixture" "/tmp/cli_test_rpath_fw_lax_present"
+"$MACHO9" rpath "$T/rpath_fw_lax_fixture" \
+        -replace "/tmp/cli_test_rpath_fw_absent" "/tmp/cli_test_rpath_fw_new" \
+        >/dev/null 2>/dev/null && rpath_fw_lax_rc=0 || rpath_fw_lax_rc=$?
+[ "$rpath_fw_lax_rc" -eq 0 ] && ok "rpath: without --fatal-warnings the same unmatched op still succeeds" \
+    || bad "rpath: no --fatal-warnings" "expected 0, got $rpath_fw_lax_rc"
+# And when the op DOES match, --fatal-warnings must not refuse.
+build_main "$T/rpath_fw_ok_fixture" "/tmp/cli_test_rpath_fw_ok_present"
+"$MACHO9" rpath "$T/rpath_fw_ok_fixture" --fatal-warnings \
+        -replace "/tmp/cli_test_rpath_fw_ok_present" "/tmp/cli_test_rpath_fw_ok_new" \
+        >"$T/rpath_fw_ok.out" 2>"$T/rpath_fw_ok.err" && rpath_fw_ok_rc=0 || rpath_fw_ok_rc=$?
+[ "$rpath_fw_ok_rc" -eq 0 ] && ok "rpath: --fatal-warnings succeeds when nothing is unmatched" \
+    || bad "rpath: --fatal-warnings (matched)" "expected 0, got $rpath_fw_ok_rc: $(cat "$T/rpath_fw_ok.err")"
 
 # ============================================================================
 # rpath -insert: the search path lands FIRST, not last

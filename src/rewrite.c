@@ -590,7 +590,7 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * paragraph above, and decides whether the new field belongs in the
  * conjunction.
  *
- * 144 and 136 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) -- the LAST
+ * 144 and 140 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) -- the LAST
  * declared field -- on the only architecture this project builds (CMakeLists.txt
  * pins CMAKE_OSX_ARCHITECTURES to x86_64), so literals are stable here. They
  * are a tripwire, not a portability claim: on some other target the fix is to
@@ -621,14 +621,26 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * enumerated correctly. This version names one member of it as an example of
  * what "invisible to it" means in practice, and stops there on purpose. */
 typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
-    (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 136) ? 1 : -1];
+    (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 140) ? 1 : -1];
 
 static int mr_is_rename_only(const mr_ops *ops) {
     return ops->segment_rename_old != NULL && ops->segment_rename_new != NULL &&
            ops->n_dylib_changes == 0 && ops->n_dylib_appends == 0 &&
            ops->n_dylib_inserts == 0 && ops->n_rpath_changes == 0 &&
            ops->n_rpath_appends == 0 && ops->n_rpath_inserts == 0 &&
-           ops->n_strip_cmds == 0 && ops->allow_grow == 0;
+           ops->n_strip_cmds == 0 && ops->allow_grow == 0 &&
+           /* fatal_unmatched governs whether mr_apply_file refuses when a
+            * dylib_changes/rpath_changes/strip_cmds entry matched nothing --
+            * and a rename-only ops has none of those (every count above is
+            * already required to be 0), so fatal_unmatched has nothing to
+            * act on here regardless of its value. A rename-only run WITH
+            * fatal_unmatched set is still rename-only for the purpose of
+            * this predicate. Named explicitly anyway (as a tautology, not a
+            * `== 0` requirement) so that decision is visible in the
+            * conjunction itself rather than being an omission a future
+            * reader has to notice on their own -- which is exactly what the
+            * layout tripwire above exists to force. */
+           (ops->fatal_unmatched == 0 || ops->fatal_unmatched != 0);
 }
 
 /*
@@ -1171,21 +1183,33 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * byte-identical to what those tools always printed (tests/known-callers.sh,
  * tests/wrapper_test.sh). A new line on stdout would be exactly the kind of
  * drift those tests exist to catch; stderr is where a diagnostic can be
- * added without moving it. */
-static void mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
+ * added without moving it.
+ *
+ * Returns the number of entries reported as unmatched, so mr_apply_file can
+ * turn this report into a refusal (ops->fatal_unmatched) without re-scanning
+ * the hit arrays itself. */
+static int mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
                                 const int *hit_rpath, const int *hit_strip) {
+    int n = 0;
     for (int i = 0; i < ops->n_dylib_changes; i++)
-        if (hit_dylib[i] == 0)
+        if (hit_dylib[i] == 0) {
             fprintf(stderr, "macho9: %s matched nothing\n",
                     ops->dylib_changes[i].old_path);
+            n++;
+        }
     for (int i = 0; i < ops->n_rpath_changes; i++)
-        if (hit_rpath[i] == 0)
+        if (hit_rpath[i] == 0) {
             fprintf(stderr, "macho9: rpath %s matched nothing\n",
                     ops->rpath_changes[i].old_path);
+            n++;
+        }
     for (int i = 0; i < ops->n_strip_cmds; i++)
-        if (hit_strip[i] == 0)
+        if (hit_strip[i] == 0) {
             fprintf(stderr, "macho9: no load command of kind %s to delete\n",
                     lc_kind_name(ops->strip_cmds[i]));
+            n++;
+        }
+    return n;
 }
 
 int mr_apply_file(const char *path, const mr_ops *ops) {
@@ -1334,7 +1358,21 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * ever ran a single comparison, so the hit arrays in that case mean
      * nothing -- reporting them would risk calling an operation "matched
      * nothing" that never got a chance to match anything at all. */
-    if (processed_ok) mr_report_unmatched(ops, hit_dylib, hit_rpath, hit_strip);
+    if (processed_ok) {
+        int nunmatched = mr_report_unmatched(ops, hit_dylib, hit_rpath, hit_strip);
+        /* ops->fatal_unmatched turns that report into a refusal -- but only
+         * when the run otherwise succeeded (rc == 0): a failed atomic write
+         * (rc already 1, above) is a genuine operational failure and stays
+         * one, rather than being overwritten by a DIFFERENT reason to be
+         * unhappy. THE FILE IS STILL WRITTEN when this fires: the rewrite
+         * already happened (or "Updated ..." already printed) by the time
+         * this check runs, so this is a refusal about the fact just
+         * reported, not a rollback of it. MR_REFUSED, not a bare 2, so the
+         * one caller (cli/macho9.c) and this library cannot drift about
+         * what number means "fatal_unmatched fired" -- see MR_REFUSED's own
+         * comment in rewrite.h for why it is safe to forward verbatim. */
+        if (rc == 0 && ops->fatal_unmatched && nunmatched > 0) rc = MR_REFUSED;
+    }
 
     free(buf);
     return rc;

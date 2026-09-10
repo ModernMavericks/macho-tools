@@ -118,6 +118,22 @@ typedef struct {
      * nothing matched, so the count has to come from the code that did the
      * matching. cli/macho9.c's `segment` verb reports it. */
     int             *segment_renamed;
+    /* If non-zero, mr_apply_file refuses (returns MR_REFUSED, below) when
+     * mr_report_unmatched finds that any dylib_changes/rpath_changes/
+     * strip_cmds entry matched nothing -- the same report Task 1 already
+     * prints on stderr, promoted from an FYI to a refusal, the way `ld` and
+     * `gas`'s own --fatal-warnings promote a warning to an error. The file
+     * is STILL WRITTEN either way: this refuses after the rewrite has
+     * already happened, it does not rewind it. cli/macho9.c's `dylib`,
+     * `rpath` and `lc` verbs are the only ones that ever set this; `segment`
+     * and `retag-swift` don't take a list of operations that could miss, so
+     * they have nothing to parse a --fatal-warnings flag into. Declared
+     * before allow_grow, not after, so allow_grow stays the LAST field --
+     * see the layout tripwire next to mr_is_rename_only in rewrite.c, which
+     * checks the last field's offset precisely so that inserting a new
+     * field ahead of it keeps tripping the check on the next such edit
+     * too. */
+    int              fatal_unmatched;
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
 } mr_ops;
 
@@ -162,6 +178,17 @@ typedef struct {
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 
+/* Returned by mr_apply_file, instead of its usual 1, when ops->fatal_unmatched
+ * turned "an operation matched nothing" into a refusal (see that field's own
+ * comment above). Deliberately equal to cli/macho9.c's own EX_REFUSED: that
+ * is the ONLY caller today, `dylib`/`rpath`/`lc` all forward mr_apply_file's
+ * return value verbatim (`return mr_apply_file(path, &ops);`), and this way
+ * that forwarding keeps meaning what --capabilities documents without the
+ * caller having to translate a rewrite-library code into its own exit-code
+ * vocabulary. cli/macho9.c enforces this equality as a build failure, not
+ * just this comment -- see the typedef next to EX_REFUSED's definition. */
+#define MR_REFUSED 2
+
 /*
  * Apply `ops` to the Mach-O at `path`, in place, and write it back atomically
  * if anything changed. Handles both a thin 64-bit Mach-O and a classic
@@ -174,6 +201,13 @@ typedef struct {
  * case -- or 1 with a message already printed on stderr. On any failure the
  * file on disk is left exactly as it was found: every refusal happens before
  * the single atomic replace at the end.
+ *
+ * The one exception to "every refusal happens before the write": when
+ * ops->fatal_unmatched is set and at least one operation matched nothing,
+ * this returns MR_REFUSED (2) instead of 0 -- but only AFTER the rewrite it
+ * examined has already been written to `path`, if anything changed. This
+ * mode reports, on stderr, after the fact; it does not rewind the write it
+ * is refusing about.
  *
  * PRECONDITION, unenforced here: `ops->n_dylib_changes` and
  * `ops->n_rpath_changes` must each be <= MR_MAX_OPS, and

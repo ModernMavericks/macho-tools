@@ -5,11 +5,11 @@
  * verbatim subset this build targets:
  *
  *   macho9 declassify IN OUT
- *   macho9 dylib FILE [--allow-grow] OP...   -replace -delete -append -insert -reexport
- *   macho9 rpath FILE [--allow-grow] OP...   -replace -delete -append -insert
+ *   macho9 dylib FILE [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert -reexport
+ *   macho9 rpath FILE [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert
  *   macho9 segment FILE OLD NEW
  *   macho9 retag-swift FILE
- *   macho9 lc FILE -delete KIND
+ *   macho9 lc FILE [--fatal-warnings] -delete KIND
  *   macho9 grow FILE N
  *   macho9 minos FILE 10.9
  *   macho9 info FILE
@@ -102,8 +102,24 @@
  * have. 1 keeps meaning exactly what it always did, so a caller that only
  * checks "== 0" or "!= 0" needs no changes; --capabilities documents both
  * codes (see print_capabilities below) and tests/README.md repeats it for
- * humans. */
+ * humans.
+ *
+ * The one exception, since --fatal-warnings: mr_apply_file returns MR_REFUSED
+ * (rewrite.h), not just 0 or 1, when ops.fatal_unmatched turned "an operation
+ * matched nothing" into a refusal. dylib/rpath/lc still forward mr_apply_file's
+ * return value verbatim (see their own `return mr_apply_file(...)` call
+ * sites) -- no new mapping was added at those call sites -- so this only
+ * keeps meaning EX_REFUSED because MR_REFUSED is DEFINED to equal it; see
+ * the typedef just below. */
 #define EX_REFUSED 2
+
+/* mr_apply_file's MR_REFUSED (rewrite.h) is forwarded verbatim by
+ * cmd_dylib_or_rpath and cmd_lc as this binary's own exit code, so it has to
+ * equal EX_REFUSED or --capabilities' documented refused=2 would be a lie
+ * for exactly the case --fatal-warnings exists to handle. A mismatch here is
+ * a build failure, not a hope -- the same device commit 247d09d used for
+ * mg_classify/ml_bump_lc's coupling. */
+typedef char mr_refused_is_ex_refused[(MR_REFUSED == EX_REFUSED) ? 1 : -1];
 
 /* The KIND vocabulary `lc -delete` accepts is LC_STRIP_KINDS (src/lc_kinds.h),
  * shared with change_dylib's -strip-lc -- so lc's translation to it is a
@@ -185,7 +201,10 @@ static void print_ops_csv(int is_rpath) {
  *       mv_add_version_min: 0 or 1), which does not make this distinction,
  *       so their exit codes are still not covered by this line -- except for
  *       the checks macho9 makes BEFORE calling them (an unknown lc KIND, a
- *       version other than 10.9), which are refusals and say so. See
+ *       version other than 10.9), which are refusals and say so, AND except
+ *       for a dylib/rpath/lc run given --fatal-warnings, where mr_apply_file
+ *       itself returns EX_REFUSED (as MR_REFUSED, rewrite.h) when an
+ *       operation matched nothing -- see that flag's own entry below. See
  *       EX_REFUSED's own comment for the full reasoning.
  *   line 3+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
@@ -195,7 +214,13 @@ static void print_ops_csv(int is_rpath) {
  *                         no spaces)
  *         kinds=a,b,c    (lc only) the KIND vocabulary -delete accepts
  *         versions=a,b   (minos only) the floors this build can target
- *         flags=a,b      verb-level flags, e.g. allow-grow
+ *         flags=a,b      verb-level flags, e.g. allow-grow. fatal-warnings
+ *                        (dylib/rpath/lc) turns "an operation matched
+ *                        nothing" from a stderr report into a refusal
+ *                        (EX_REFUSED) -- but the file is STILL WRITTEN: this
+ *                        refuses about a rewrite that already happened, it
+ *                        does not roll it back. Named after `ld`/`gas`'s own
+ *                        --fatal-warnings.
  *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`
@@ -229,13 +254,13 @@ static int print_capabilities(void) {
     printf("verb minos versions=10.9\n");
     printf("verb lc ops=delete kinds=");
     print_kinds_csv();
-    printf("\n");
+    printf(" flags=fatal-warnings\n");
     printf("verb dylib ops=");
     print_ops_csv(0);
-    printf(" flags=allow-grow\n");
+    printf(" flags=allow-grow,fatal-warnings\n");
     printf("verb rpath ops=");
     print_ops_csv(1);
-    printf(" flags=allow-grow\n");
+    printf(" flags=allow-grow,fatal-warnings\n");
     return 0;
 }
 
@@ -244,15 +269,18 @@ static void usage(const char *prog) {
         "usage: %s --capabilities\n"
         "       %s declassify IN OUT                        chained fixups -> LC_DYLD_INFO_ONLY;\n"
         "                                                    IN is only read, so IN and OUT may match\n"
-        "       %s dylib FILE [--allow-grow] OP...          -replace OLD NEW | -delete PATH |\n"
+        "       %s dylib FILE [--allow-grow] [--fatal-warnings] OP...\n"
+        "                                                    -replace OLD NEW | -delete PATH |\n"
         "                                                    -append PATH | -insert PATH | -reexport PATH\n"
-        "       %s rpath FILE [--allow-grow] OP...          -replace OLD NEW | -delete PATH |\n"
+        "       %s rpath FILE [--allow-grow] [--fatal-warnings] OP...\n"
+        "                                                    -replace OLD NEW | -delete PATH |\n"
         "                                                    -append PATH (searched LAST) |\n"
         "                                                    -insert PATH (searched FIRST)\n"
         "       %s segment FILE OLD NEW                     rename every segment named OLD, and\n"
         "                                                    its sections' copy of that name\n"
         "       %s retag-swift FILE\n"
-        "       %s lc FILE -delete KIND [-delete KIND...]   uuid | codesig | source-version |\n"
+        "       %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n"
+        "                                                    uuid | codesig | source-version |\n"
         "                                                    build-version | code-sign-drs\n"
         "       %s grow FILE N\n"
         "       %s minos FILE 10.9\n"
@@ -467,14 +495,23 @@ static int cmd_minos(const char *path, const char *version) {
  * --capabilities) before anything runs, so a bad KIND fails with this verb's
  * own message rather than somewhere deeper. Translating a KIND to the LC_*
  * constant the rewriter wants is that same table's other column, so this verb
- * decides nothing the vocabulary does not already say. */
+ * decides nothing the vocabulary does not already say.
+ *
+ * `--fatal-warnings` is parsed the same way `dylib`/`rpath` parse it: a
+ * verb-level flag, checked before the `-delete` branch below, that becomes
+ * ops.fatal_unmatched. See cmd_dylib_or_rpath's own comment for what it
+ * means and why it is named after `ld`/`gas`'s flag of the same name. */
 static int cmd_lc(int argc, char **argv) {
     /* argv[0]=macho9 argv[1]="lc" argv[2]=FILE argv[3..]=ops */
     const char *path = argv[2];
     uint32_t strip[MR_MAX_STRIP];
     int nstrip = 0;
+    int fatal_warnings = 0;
     for (int i = 3; i < argc; ) {
-        if (strcmp(argv[i], "-delete") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--fatal-warnings") == 0) {
+            fatal_warnings = 1;
+            i += 1;
+        } else if (strcmp(argv[i], "-delete") == 0 && i + 1 < argc) {
             const char *kind = argv[i + 1];
             size_t kk;
             for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++)
@@ -515,6 +552,7 @@ static int cmd_lc(int argc, char **argv) {
     memset(&ops, 0, sizeof ops);
     ops.strip_cmds = strip;
     ops.n_strip_cmds = nstrip;
+    ops.fatal_unmatched = fatal_warnings;
     return mr_apply_file(path, &ops);
 }
 
@@ -535,6 +573,16 @@ static int cmd_lc(int argc, char **argv) {
  * an appended LC_RPATH is the LAST search path dyld tries while an inserted
  * one is the FIRST. Downgrading either -insert to an -append would produce a
  * wrong answer that merely runs.
+ *
+ * `--fatal-warnings` becomes ops.fatal_unmatched, the same way `--allow-grow`
+ * becomes ops.allow_grow just below -- a verb-level flag, parsed in this same
+ * loop, not one of DYLIB_OPS' per-operation entries. Named after `ld` and
+ * `gas`'s own --fatal-warnings (and GCC's -Werror, the same idea under a
+ * different name): "an operation matched nothing" already IS a warning
+ * (mr_report_unmatched, src/rewrite.c), and this promotes it to a refusal.
+ * The file is still written either way -- this does not roll back a rewrite
+ * that already happened, it refuses about it after the fact. See
+ * mr_ops.fatal_unmatched's own comment in rewrite.h for the full contract.
  */
 static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     const char *path = argv[2];
@@ -547,18 +595,24 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     const char *appends[MR_MAX_OPS]; int nappends = 0;
     const char *inserts[MR_MAX_OPS]; int ninserts = 0;
     /* Counts actual -replace/-delete/-append/-insert/-reexport ops only --
-     * NOT --allow-grow, which on its own is not something to do to a file.
-     * Without this, `dylib FILE --allow-grow` with nothing else used to fall
-     * through to change_dylib and print ITS usage -- leaking the exact
-     * -change/-add/-strip-lc spellings this grammar deliberately doesn't
-     * offer. */
+     * NOT --allow-grow or --fatal-warnings, neither of which on its own is
+     * something to do to a file. Without this, `dylib FILE --allow-grow`
+     * with nothing else used to fall through to change_dylib and print ITS
+     * usage -- leaking the exact -change/-add/-strip-lc spellings this
+     * grammar deliberately doesn't offer. */
     int nops = 0;
     int allow_grow = 0;
+    int fatal_warnings = 0;
 
     for (int i = 3; i < argc; ) {
         const char *tok = argv[i];
         if (strcmp(tok, "--allow-grow") == 0) {
             allow_grow = 1;
+            i += 1;
+            continue;
+        }
+        if (strcmp(tok, "--fatal-warnings") == 0) {
+            fatal_warnings = 1;
             i += 1;
             continue;
         }
@@ -649,6 +703,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     ops.rpath_inserts = is_rpath ? inserts : NULL;
     ops.n_rpath_inserts = is_rpath ? ninserts : 0;
     ops.allow_grow = allow_grow;
+    ops.fatal_unmatched = fatal_warnings;
     return mr_apply_file(path, &ops);
 }
 
@@ -938,15 +993,15 @@ int main(int argc, char **argv) {
         return cmd_retag_swift(argv[2]);
     }
     if (strcmp(verb, "lc") == 0) {
-        if (argc < 5) { fprintf(stderr, "usage: %s lc FILE -delete KIND [-delete KIND...]\n", argv[0]); return 1; }
+        if (argc < 5) { fprintf(stderr, "usage: %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n", argv[0]); return 1; }
         return cmd_lc(argc, argv);
     }
     if (strcmp(verb, "dylib") == 0) {
-        if (argc < 4) { fprintf(stderr, "usage: %s dylib FILE [--allow-grow] OP...\n", argv[0]); return 1; }
+        if (argc < 4) { fprintf(stderr, "usage: %s dylib FILE [--allow-grow] [--fatal-warnings] OP...\n", argv[0]); return 1; }
         return cmd_dylib_or_rpath(argc, argv, 0);
     }
     if (strcmp(verb, "rpath") == 0) {
-        if (argc < 4) { fprintf(stderr, "usage: %s rpath FILE [--allow-grow] OP...\n", argv[0]); return 1; }
+        if (argc < 4) { fprintf(stderr, "usage: %s rpath FILE [--allow-grow] [--fatal-warnings] OP...\n", argv[0]); return 1; }
         return cmd_dylib_or_rpath(argc, argv, 1);
     }
     if (strcmp(verb, "declassify") == 0) {
