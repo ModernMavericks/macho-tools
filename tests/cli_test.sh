@@ -79,6 +79,36 @@ build_main() {
     fi
 }
 
+# A fixture GUARANTEED not to carry LC_BUILD_VERSION, on any host.
+#
+# The three "-delete build-version is a miss" assertions below used to build
+# a plain build_main fixture and rely on a comment claiming "-mmacosx-version
+# -min=10.9 clang never emits build-version (confirmed empirically)". That
+# was confirmed on 10.9 only, and it is FALSE on the cross/CI runner, whose
+# modern linker emits LC_BUILD_VERSION anyway: the delete then SUCCEEDS, no
+# miss is reported, and all three assertions fail. Green on the target,
+# red on the runner -- the same host-toolchain dependence that bit the
+# rpath -insert headerpad fixture.
+#
+# So stop asserting what a linker emits and MAKE the premise true: strip the
+# kind first, unconditionally. A no-op where it was already absent.
+#
+# This uses macho9 to set up a macho9 test, which is circular only in
+# appearance: if the strip silently did nothing, the delete under test would
+# FIND build-version and report no miss, and the assertions fail loudly. The
+# setup cannot mask the defect it is setting up for.
+build_main_without_build_version() {
+    build_main "$1"
+    "$MACHO9" lc "$1" -delete build-version >/dev/null 2>&1 || true
+    # Assert the precondition rather than trusting the strip. otool, not
+    # macho9, so a macho9 defect cannot certify its own setup. Without this
+    # the test would pass on 10.9 for the OLD reason (the linker never
+    # emitted it) and silently stop testing anything the day it does.
+    if otool -l "$1" 2>/dev/null | grep -q LC_BUILD_VERSION; then
+        bad "fixture setup" "build_main_without_build_version left LC_BUILD_VERSION in $1"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Host capability: can this host run a Mach-O binary that was modified
 # in-place after being signed at link time, AT ALL?
@@ -1277,13 +1307,12 @@ else
 fi
 grep -q "unknown KIND" "$T/lc_bad.err" && ok "lc: bad kind message" \
     || bad "lc: bad kind message" "missing 'unknown KIND'"
-
 # lc -delete naming a KIND the file does not carry: the strip-cmds twin of
-# the dylib -replace miss report above. "build-version" is a kind a plain
-# -mmacosx-version-min=10.9 clang build never emits (confirmed empirically:
-# a fresh build_main-shaped fixture has no LC_BUILD_VERSION), so this is a
-# guaranteed miss, not a maybe.
-build_main "$T/lc_miss_fixture"
+# the dylib -replace miss report above. The absence is MADE true by
+# build_main_without_build_version rather than assumed from what the host's
+# linker happens to emit -- see that helper for why the old assumption was
+# false on the cross runner. So this is a guaranteed miss, not a maybe.
+build_main_without_build_version "$T/lc_miss_fixture"
 "$MACHO9" lc "$T/lc_miss_fixture" -delete build-version \
     >"$T/lc_miss.out" 2>"$T/lc_miss.err" && lc_miss_rc=0 || lc_miss_rc=$?
 [ "$lc_miss_rc" -eq 0 ] && ok "lc: -delete of an absent kind still exits 0" \
@@ -1310,13 +1339,14 @@ fi
 
 # ============================================================================
 # lc --fatal-warnings: the same "matched nothing" report as -delete
-# build-version above (a plain build_main fixture never emits it), turned
+# build-version above (the fixture is stripped of it first, not assumed to
+# lack it), turned
 # into a refusal instead of just a stderr note. EX_REFUSED (2), the same
 # code a deliberate refusal uses elsewhere (cmd_verify, cmd_grow, cmd_minos),
 # because mr_apply_file returns MR_REFUSED for this and MR_REFUSED is
 # defined (src/rewrite.h) to equal EX_REFUSED.
 # ============================================================================
-build_main "$T/lc_fw_fixture"
+build_main_without_build_version "$T/lc_fw_fixture"
 "$MACHO9" lc "$T/lc_fw_fixture" --fatal-warnings -delete build-version \
     >/dev/null 2>"$T/lc_fw.err" && lc_fw_rc=0 || lc_fw_rc=$?
 [ "$lc_fw_rc" -eq 2 ] && ok "lc: --fatal-warnings refuses when a KIND matched nothing (EX_REFUSED)" \
@@ -1326,7 +1356,7 @@ grep -q "no load command of kind build-version to delete" "$T/lc_fw.err" \
     || bad "lc: --fatal-warnings refusal message" "expected 'no load command of kind build-version to delete', got: $(cat "$T/lc_fw.err")"
 # Without --fatal-warnings, the identical invocation still succeeds -- so the
 # flag is what changed the answer, not something else about this fixture.
-build_main "$T/lc_fw_lax_fixture"
+build_main_without_build_version "$T/lc_fw_lax_fixture"
 "$MACHO9" lc "$T/lc_fw_lax_fixture" -delete build-version \
     >/dev/null 2>/dev/null && lc_fw_lax_rc=0 || lc_fw_lax_rc=$?
 [ "$lc_fw_lax_rc" -eq 0 ] && ok "lc: without --fatal-warnings the same unmatched KIND still succeeds" \
