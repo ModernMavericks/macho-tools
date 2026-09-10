@@ -29,13 +29,40 @@
  * /System/Library/PrivateFrameworks on this 10.9 host -- 131 files -- turns
  * up no usable victim. It DID turn one up until src/grow.c's mg_plausible
  * stopped folding "this image declares no function starts" into a refusal:
- * /usr/lib/swift/libswiftObjectiveC.dylib, whose __text has size 0 and whose
- * LC_FUNCTION_STARTS is datasize=8, all eight bytes zero. Note that that file
- * is NOT stock 10.9 -- Swift postdates 10.9 by a year, and this one is
- * shipped by ModernMavericks swift-runtime. So the corpus is this host's
- * system directories INCLUDING what the family has installed into them, not
- * a pristine 10.9; a host with a different set has not been measured and
- * nothing here claims about it.
+ * /usr/lib/swift/libswiftObjectiveC.dylib, __text size 0, LC_FUNCTION_STARTS
+ * datasize=8, all eight bytes zero.
+ *
+ * WHAT THAT ONE VICTIM IS AND IS NOT, measured rather than assumed, because
+ * two earlier drafts of this comment guessed and got it wrong both times:
+ *
+ *   - It is NOT stock 10.9. Swift postdates 10.9 by a year; nothing in
+ *     /usr/lib/swift belongs to the OS.
+ *   - It is NOT a ModernMavericks product either. dev.modernmavericks
+ *     .swift-runtime's BOM carries exactly two files under /usr/lib/swift,
+ *     libswiftCore.dylib and libswiftSwiftOnoneSupport.dylib, and this is
+ *     neither. No receipt on this host owns it: it is one of seven
+ *     unreceipted Swift dylibs sitting in that directory, a development
+ *     leftover.
+ *   - The trigger is __text SIZE 0 -- a dylib with no code at all -- not
+ *     merely a small function-starts blob. Twelve of the 131 images have
+ *     datasize=8, and the other eleven (libpmenergy, libpmsample, eight
+ *     apache2 modules, zsh's cap.so) are all genuinely stock AND all decode
+ *     to ns >= 1, because their first ULEB is nonzero. Only a codeless
+ *     image gives eight zero bytes.
+ *
+ * So: zero stock 10.9 images in the swept corpus exhibit this shape, and
+ * zero shipped ModernMavericks images do. The fix stands on the code being
+ * self-consistent -- an image that declares no function starts is the same
+ * fact as one carrying no LC_FUNCTION_STARTS, which the gate has always
+ * accepted -- and NOT on a claim that 10.9 is full of such images. It is
+ * not. What makes the shape worth handling is the population this toolkit
+ * actually serves: a stub dylib written to satisfy a link is exactly a
+ * dylib with no code, and telling people to build one is this project's
+ * own advice.
+ *
+ * A host with a different set of installed binaries has not been measured
+ * and nothing here claims about it.
+ *
  * That is a second, independent reason to build the input rather than look
  * for one -- and the original reason still stands on its own: a scan
  * passes on the target and silently covers NOTHING on the cross/CI runner,
@@ -75,11 +102,13 @@
  * THE -empty-starts TWIN. Same image, one difference: the 8-byte
  * LC_FUNCTION_STARTS blob is left as the calloc'd zeros instead of holding
  * the ULEB 0x400 entry -- three bytes, `80 08 00` becoming `00 00 00`. That
- * is the shape a real dylib with no functions actually has
- * (/usr/lib/swift/libswiftObjectiveC.dylib, shipped by ModernMavericks
- * swift-runtime -- not a stock 10.9 file), and mg_plausible must ACCEPT
- * it: an image that declares no function starts is the same fact as one with
- * no LC_FUNCTION_STARTS at all, which the gate has always accepted with
+ * is the shape a dylib with NO CODE actually has -- a stub written to
+ * satisfy a link is the everyday example, and the one instance found on
+ * this host is /usr/lib/swift/libswiftObjectiveC.dylib (see the provenance
+ * note above: not stock 10.9, not a shipped product). mg_plausible must
+ * ACCEPT it: an image that declares no function starts is the same fact as
+ * one with no LC_FUNCTION_STARTS at all, which the gate has always
+ * accepted with
  * "nothing to check against". mg_plausible folded the two apart for a while
  * -- ns == 0 fell into a composite `ns <= 0 ||` refusal -- and refused this
  * image contentlessly through `verify` and, through the rewrite path, with a
