@@ -546,46 +546,28 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * Negative-array-size typedef rather than _Static_assert, which is C11 and
  * this project sets no -std=.
  *
- * WHAT IT CATCHES, exactly: any change that moves sizeof(mr_ops), or that
- * moves the offset of the last field. Nothing more -- and the difference
- * matters, because this struct is seven (pointer, int n_*) pairs and therefore
- * full of holes.
+ * What the typedef below actually checks, and no more: it fails to compile
+ * exactly when an edit to mr_ops moves sizeof(mr_ops) or moves the offset of
+ * allow_grow. That is the whole of the mechanism. An edit that changes the
+ * struct while leaving both of those numbers where they are compiles clean
+ * and is invisible to it -- so a change that alters what mr_is_rename_only
+ * above should mean, while happening to preserve the struct's layout, still
+ * needs a human to come here and re-read the conjunction; nothing forces
+ * that to happen. There is no stronger C-level mechanism available: an
+ * offsetof assertion per field would have the identical blind spot, since a
+ * member that fits an existing hole moves no later field either, and a
+ * memcmp-against-zero probe is unreliable, because struct padding is
+ * indeterminate after assignment.
  *
- * WHAT IT MISSES: a member of four bytes or fewer added into any of the EIGHT
- * four-byte padding holes x86_64 alignment already leaves here, which moves
- * neither number. Measured from the actual layout rather than assumed: seven
- * are interior, one after each `n_*` count and before the pointer that follows
- * it (offsets 12, 28, 44, 60, 76, 92, 108), and the eighth is the tail after
- * allow_grow (offset 140). Confirmed by compiling a variant with a bare
- * `int` beside n_dylib_changes: sizeof stayed 144 and offsetof(allow_grow)
- * stayed 136.
- *
- * That blind spot is not exotic, which is exactly why it is stated plainly
- * instead of being covered by a stronger-sounding mechanism: `int n_foo;`
- * written next to its sibling `n_*` is the natural way to add a new count or
- * flag, and it lands in a hole every time. An offsetof assertion PER FIELD
- * does not help -- a member that fits an existing hole moves no later field
- * either, so it is blind to the same case -- and a memcmp-against-zero probe
- * is unreliable, because struct padding is indeterminate after assignment.
- * There is no clean C mechanism for this. So: anything that cannot fit a
- * four-byte hole -- a pointer, a pointer/count pair, any member wider than
- * four bytes -- trips it wherever it is put, and so does a four-byte member
- * put anywhere OTHER than a hole, because that shifts allow_grow. What escapes
- * is a member of four bytes or fewer landing in one of the eight holes. That
- * needs a human to come here and read the paragraph above -- and so does one
- * other case, swapping a pointer and its `int` WITHIN a pair, which moves both
- * members' own offsets while leaving sizeof and allow_grow at 144/136
- * (checked). That one is inert, since the members are the same ones, but it is
- * exactly what a phrase like "and every reordering" would have wrongly
- * promised, and this paragraph carried that phrase until it was disproved.
- *
- * Which is why it is now worded this carefully. THREE confident sentences
- * about this one predicate have now been wrong: that the
- * "everything else is empty" shape had force C does not give it; that this
- * tripwire caught every insertion; and that it caught every reordering. The
- * formal claim above -- moves sizeof, or moves the offset of the last field,
- * nothing more -- is the whole of what the mechanism gives, and anything
- * added here that sounds stronger than that is wrong by construction. */
+ * For example -- one instance, not an inventory -- mr_ops is seven
+ * (pointer, int n_*) pairs and so has eight four-byte padding holes on this
+ * ABI; a new member of four bytes or fewer placed into one of those holes
+ * moves neither number and compiles clean. This paragraph has previously
+ * gone through several versions, each naming a specific set of edits that
+ * get past this check; each was wrong in a new way, because that set is
+ * "every edit that preserves both numbers," which is unbounded and cannot be
+ * enumerated correctly. This version names one member of it as an example of
+ * what "invisible to it" means in practice, and stops there on purpose. */
 typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
     (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 136) ? 1 : -1];
 
