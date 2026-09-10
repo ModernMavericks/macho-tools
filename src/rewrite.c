@@ -781,14 +781,27 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * did; it can only re-decide a property the INPUT already had, and refuse
      * a file the caller never asked it to judge.
      *
-     * That is not hypothetical. mg_plausible's heuristic has false positives
-     * on real, untouched 10.9 system dylibs -- `macho9 lc -delete uuid`
-     * refuses libSystem.B.dylib, libc++.1.dylib, libicucore.A.dylib and
-     * libz.1.dylib on this host and passes /bin/ls, /bin/cat, /usr/bin/grep
-     * and /usr/bin/awk -- so with the gate on this path, `macho9 segment`
-     * refused 14 of the 16 thin binaries in a 120-file /usr/lib corpus
-     * (tests/differential.sh), all of which compat/rename_segment.c renamed
-     * without complaint for as long as it existed.
+     * That is not hypothetical -- but the evidence originally recorded here
+     * for it was. This comment used to say mg_plausible's heuristic has false
+     * positives on real, untouched 10.9 system dylibs, naming
+     * libSystem.B.dylib, libc++.1.dylib, libicucore.A.dylib and libz.1.dylib
+     * as refused by `macho9 lc -delete uuid` where /bin/ls, /bin/cat,
+     * /usr/bin/grep and /usr/bin/awk passed, and 14 of the 16 thin binaries
+     * in a 120-file /usr/lib corpus (tests/differential.sh) as refused by
+     * `macho9 segment`. That split -- every dylib refused, every executable
+     * passed -- was not the heuristic at all: mg_plausible read its image
+     * base from mi_text_base, whose 0 means BOTH "no segment maps the header"
+     * and "the base is 0", and a dylib is linked at base 0. It bailed at the
+     * precondition and never ran the heuristic. mi_image_base tells those
+     * apart now (src/image.h), and all four named dylibs pass. The corpus
+     * count was not re-measured; assume it was the same bug.
+     *
+     * The gate does still have real false positives -- tests/mkimplausible.c
+     * builds one deliberately, at a nonzero base -- and the reasoning above
+     * never depended on how common they are: a rename moves no offset, so the
+     * gate cannot catch anything a rename did, only re-decide a property of
+     * the input. That is why the scoping stands unchanged on the corrected
+     * facts.
      *
      * Scoped by mr_is_rename_only, not by an environment variable: an env var
      * would switch the gate off for the whole macho9 invocation, would keep

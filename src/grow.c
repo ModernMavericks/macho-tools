@@ -199,9 +199,12 @@ int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
     mi_image im;
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
     /* image base first: __TEXT is the segment mapping the header (fileoff 0,
-     * has content) -- exactly what mi_text_base derives. */
-    uint64_t base = mi_text_base(&im);
-    if (!base) return -1;
+     * has content). mi_image_base, not mi_text_base: a dylib is linked at
+     * base 0, and reading that 0 as mi_text_base's "no segment maps the
+     * header" sentinel is what made this refuse every dylib outright. Only
+     * the absence of a header-bearing segment is a refusal here. */
+    uint64_t base;
+    if (mi_image_base(&im, &base) != 0) return -1;
 
     struct mg_collect_ctx ctx = { buf, fsize, base, out, kinds, max, 0 };
     if (!mi_each_lc(&im, mg_collect_cb, &ctx)) return -1;
@@ -674,10 +677,14 @@ static int mg_plausible_find_cb(const struct load_command *lc, void *ctx_) {
 int mg_plausible(const uint8_t *buf, size_t fsize) {
     mi_image im;
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
-    /* image base: exactly mi_text_base's own search (first segment mapping
-     * the header, fileoff 0 with content). */
-    uint64_t base = mi_text_base(&im);
-    if (!base) return -1;
+    /* image base: the first segment mapping the header (fileoff 0 with
+     * content). Via mi_image_base so a base of 0 -- every dylib -- is a
+     * legitimate answer rather than the "not found" sentinel. Reading it as
+     * the sentinel is what made this gate bail at its precondition on every
+     * dylib on the machine, so the LC_FUNCTION_STARTS heuristic below never
+     * ran and `verify` printed a verdict it had not reached. */
+    uint64_t base;
+    if (mi_image_base(&im, &base) != 0) return -1;
 
     struct mg_plausible_find_ctx fctx = { 0, 0 };
     mi_each_lc(&im, mg_plausible_find_cb, &fctx);

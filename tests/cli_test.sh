@@ -931,6 +931,41 @@ else
     ok "verify: refuses a non-Mach-O file"
 fi
 
+# A dylib links at image base 0, and mg_plausible used to read that 0 as
+# mi_text_base's "no segment maps the header" sentinel and refuse before
+# checking anything -- so the gate refused every dylib on the machine for a
+# reason that had nothing to do with plausibility. The tell was
+# `FAILED (see above)` with nothing above it: no entry was ever checked.
+# Built here, not found on the host: a test that scans /usr/lib for a
+# suitable dylib skips itself away on the cross runner, where those dylibs
+# live in the dyld shared cache. FIXTURE_FLAGS for the usual reason, and no
+# -headerpad is needed because neither assertion below grows the header.
+"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/fixture.dylib" \
+    "$T/a.c" -o "$T/fixture.dylib"
+if "$MACHO9" verify "$T/fixture.dylib" >"$T/dylibverify.out" 2>&1; then
+    ok "verify: a dylib gets a real verdict"
+else
+    bad "verify: a dylib gets a real verdict" "refused: $(cat "$T/dylibverify.out")"
+fi
+grep -q "OK" "$T/dylibverify.out" && ok "verify: and says OK" \
+    || bad "verify: and says OK" "missing: $(cat "$T/dylibverify.out")"
+if grep -q "FAILED (see above)" "$T/dylibverify.out"; then
+    bad "verify: not the contentless failure" \
+        "the precondition bail is back: $(cat "$T/dylibverify.out")"
+else
+    ok "verify: not the contentless failure"
+fi
+
+# The gate refusing every dylib meant no dylib could be rewritten at all:
+# mr_process_thin gates on mg_plausible, so macho9 dylib/rpath/lc -- and
+# change_dylib, which is the same code -- refused every dylib outright.
+cp "$T/fixture.dylib" "$T/dylibrw"
+if "$MACHO9" lc "$T/dylibrw" -delete uuid >"$T/dylibrw.out" 2>&1; then
+    ok "lc -delete: a dylib is rewritable"
+else
+    bad "lc -delete: a dylib is rewritable" "refused: $(cat "$T/dylibrw.out")"
+fi
+
 # ============================================================================
 # info
 # ============================================================================

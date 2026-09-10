@@ -124,7 +124,23 @@ struct section_64 *mi_find_section(const mi_image *im, const char *seg, const ch
 /* The image base: the vmaddr of the segment whose file range covers offset 0 --
  * the one the header itself lives in. That is what every base-relative fixup in
  * macho_grow.h means by "base". Usually __TEXT, but derived rather than assumed.
- * Returns 0 if no segment maps the header. */
+ * Returns 0 if no segment maps the header -- which is indistinguishable from
+ * a base that legitimately IS 0 (every dylib and bundle). A caller that uses
+ * the base as a PRECONDITION must call mi_image_base below instead; two that
+ * did not were refusing every dylib on the machine. */
 uint64_t mi_text_base(const mi_image *im);
+
+/* The image's base vmaddr -- the vmaddr of the segment that maps the header,
+ * which is __TEXT in every image this toolkit handles.
+ *
+ * Separate from mi_text_base because that function returns 0 BOTH for "no
+ * segment maps the header" and for "the base is 0", and a dylib's base
+ * legitimately IS 0: dylibs are linked at zero and slid at load time. Callers
+ * that use the base as a precondition need to tell those apart, and the two
+ * that did not were refusing every dylib on the machine.
+ *
+ * Returns 0 with *out set (which may be 0), or -1 if no segment maps the
+ * header. */
+int mi_image_base(const mi_image *im, uint64_t *out);
 
 #endif /* MACHO9_IMAGE_H */

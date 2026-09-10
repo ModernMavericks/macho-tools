@@ -161,7 +161,7 @@ struct section_64 *mi_find_section(const mi_image *im, const char *seg, const ch
     return NULL;
 }
 
-uint64_t mi_text_base(const mi_image *im) {
+int mi_image_base(const mi_image *im, uint64_t *out) {
     /* The segment that maps the header: fileoff 0 with actual file content.
      * The filesize test is what excludes __PAGEZERO, which also has fileoff 0
      * but maps nothing -- taking its vmaddr (0) as the base would make every
@@ -171,9 +171,19 @@ uint64_t mi_text_base(const mi_image *im) {
         struct load_command *lc = (struct load_command *)p;
         if (lc->cmd == LC_SEGMENT_64) {
             struct segment_command_64 *sg = (struct segment_command_64 *)lc;
-            if (sg->fileoff == 0 && sg->filesize > 0) return sg->vmaddr;
+            if (sg->fileoff == 0 && sg->filesize > 0) { *out = sg->vmaddr; return 0; }
         }
         p += lc->cmdsize;
     }
-    return 0;
+    return -1;
+}
+
+uint64_t mi_text_base(const mi_image *im) {
+    /* Exactly mi_image_base's search, with "not found" folded back into 0 --
+     * ONE loop, not a second copy of the same fileoff/filesize rule, which is
+     * this codebase's recurring bug class. Behaviour is bit-identical to what
+     * this function has always returned; only the caller that needs to tell
+     * a real base of 0 from "not found" calls mi_image_base instead. */
+    uint64_t base;
+    return mi_image_base(im, &base) == 0 ? base : 0;
 }

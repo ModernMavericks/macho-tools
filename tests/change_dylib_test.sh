@@ -606,13 +606,17 @@ else
     # (now out of range) and not left pointing at whatever load command
     # happens to occupy slot 1 in a table that disagreed with the map.
     #
-    # This fixture's plain __TEXT layout doesn't satisfy mg_plausible's
-    # LC_FUNCTION_STARTS heuristic (src/grow.h) on this host regardless of
-    # any rewrite -- confirmed by running mg_plausible on a copy of this file
-    # untouched by change_dylib, so it's not something the ordinal fix
-    # introduces. MACHO_NO_VERIFY=1 opts out of that unrelated gate so this
-    # case tests ordinal renumbering, not mg_plausible.
-    MACHO_NO_VERIFY=1 "$CHANGE_DYLIB" "$T/libupd_a.dylib" \
+    # This case used to run with MACHO_NO_VERIFY=1, on the belief that the
+    # fixture's plain __TEXT layout did not satisfy mg_plausible's
+    # LC_FUNCTION_STARTS heuristic (src/grow.h). It did fail regardless of any
+    # rewrite, so the "not something the ordinal fix introduces" half was
+    # right -- but the heuristic was never unsatisfied, it never RAN. This
+    # fixture is a dylib, dylibs are linked at image base 0, and mg_plausible
+    # read that 0 as mi_text_base's "no segment maps the header" sentinel and
+    # bailed at its precondition. It refused every dylib on the machine.
+    # mi_image_base tells the two apart now, so the gate runs here for real
+    # and this case needs no escape hatch: that is the regression test.
+    "$CHANGE_DYLIB" "$T/libupd_a.dylib" \
         -delete "@loader_path/libspare.dylib" \
         -delete "@loader_path/libupd_b.dylib" >/dev/null \
         || bad "tool run" "change_dylib failed on the upward-dylib fixture"
