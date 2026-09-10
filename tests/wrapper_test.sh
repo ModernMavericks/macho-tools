@@ -538,15 +538,16 @@ run retag_swift_classes
 # ---- fix_macho ----------------------------------------------------------
 #
 # The last tool to become a wrapper, and the only one whose wrapper does NOT
-# close its divergences: the repo owner ruled four of them improvements to
-# ADOPT. compat/fix_macho.sh's header states all four with their reasons. This
+# close its divergences: the repo owner ruled five of them improvements to
+# ADOPT. compat/fix_macho.sh's header states all five with their reasons. This
 # block asserts each of the three flags it accepts, a fat container (its
 # headline capability, and the one thing change_dylib could not do), and the
 # two adopted changes that used to be REFUSALS -- a longer replacement path
 # and a chained -rename_seg. Both of those were measured against the
 # pre-wrapper C binary and recorded in tests/compat-matrix.tsv as differences;
 # they are now the expected behaviour, and these are the assertions that say
-# so out loud.
+# so out loud. The fifth adopted change -- -change no longer rewriting a
+# dylib's own LC_ID_DYLIB -- has its own assertion further down.
 
 # -change, the flag with the most reach. Byte-identical to the same operation
 # through macho9 itself, which is the same shape the change_dylib block above
@@ -727,7 +728,7 @@ else
 fi
 
 # A SLICE THAT IS NOT A 64-BIT MACH-O IS LEFT ALONE, and the rest of the file
-# is still rewritten. This is NOT one of the four adopted changes: fix_macho
+# is still rewritten. This is NOT one of the five adopted changes: fix_macho
 # printed "  Skipping arch N" and carried on, and mr_process_fat's MR_SKIP path
 # does the same thing with a different message. Measured, not assumed -- the
 # plan's table describes the fat divergence as "refuses the whole file", which
