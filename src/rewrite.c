@@ -779,24 +779,15 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * it by the 32-byte header and allow a 16-byte overlap into the section. */
     uint32_t need_end = (uint32_t)sizeof(struct mach_header_64) + new_off;
     if (need_end > first_sect_off) {
-        if (!ops->allow_grow) {
-            /* Default, unchanged behavior: refuse rather than resize. */
-            fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail); "
-                            "pass -grow to enlarge it\n", label, new_off, pad_avail);
+        /* Whether there is room, and whether to grow, is mg_ensure_pad's
+         * decision (src/grow.h) -- one place, shared with version-min. It
+         * prints the grow path's stdout lines itself, unchanged. */
+        if (mg_ensure_pad(&buf, &fsize, need_end, ops->allow_grow, label) != 0) {
+            *pbuf = buf; *pfsize = fsize;   /* growth may have realloc'd before failing */
             free(new_lcs);
             return MR_ERROR;
         }
-        uint32_t grow_req = need_end - first_sect_off;
-        printf("%s: load commands need %u more bytes than the %u-byte pad; growing header...\n",
-               label, grow_req, pad_avail);
-        if (mg_grow_header(&buf, &fsize, grow_req) != 0) {
-            fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit and header could not be grown\n",
-                    label, new_off);
-            *pbuf = buf; *pfsize = fsize;
-            free(new_lcs);
-            return MR_ERROR;
-        }
-        *pbuf = buf; *pfsize = fsize;   /* mg_grow_header may have realloc'd */
+        *pbuf = buf; *pfsize = fsize;       /* mg_ensure_pad may have realloc'd */
         hdr = (struct mach_header_64 *)buf;
         first_sect_off = mg_first_sect_off(buf, fsize);
         if (first_sect_off == UINT32_MAX) {
@@ -804,9 +795,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
             free(new_lcs);
             return MR_ERROR;
         }
-        printf("%s: grew header pad: first sect now at %u (%u bytes available)\n",
-               label, first_sect_off, first_sect_off - cur_lc_end);
-        /* mg_grow_header reallocs the raw buffer, not through image.h, so the
+        /* growth (mg_ensure_pad -> mg_grow_header) reallocs the raw buffer, not through image.h, so the
          * `im` wrapped at the top of this function is stale here (it still
          * points at whatever `buf` was before the realloc). Re-wrap it over
          * the relocated buffer -- mi_wrap never allocates or frees (im.owned
