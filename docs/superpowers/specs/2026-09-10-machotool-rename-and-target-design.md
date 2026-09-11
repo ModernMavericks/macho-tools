@@ -47,8 +47,9 @@ stops being accurate when they are gone. The only other deliverable is
 `change_dylib`, `add_version_min`, `fix_macho`, `rename_segment`,
 `retag_swift_classes`. They are the interface callers actually invoke, and
 `mavericksforever.com/claude/install.sh` fetches three of them by name. Module
-prefixes (`mi_`, `mr_`, `mg_`, `mo_`, `mseg_`, `mswift_`, `wa_`) also stay: they
-name modules, not the tool.
+prefixes (`mi_`, `mr_`, `mg_`, `mo_`, `mseg_`, `mswift_`, `wa_`, plus the `ms_`
+and `me_` the edit-script work adds) also stay: they name modules, not the tool.
+That they are hard to read is acknowledged and deferred — see "Out of scope".
 
 ## `target 10.9` — a third kind of line
 
@@ -127,6 +128,20 @@ already how the existing implementation decides which records to touch.
 is to make edits nobody can see afterwards should not have an option to say
 nothing about them.
 
+> **Conflict with the edit-scripts design, and how it resolves.** That document
+> (`2026-09-10-edit-scripts-design.md`) shows `macho9 edit --verbose` in two
+> worked examples, and its plan builds the flag — `me_opts.verbose`, a
+> `--verbose` argument, and assertions on both. Since this design is sequenced
+> *after* that one, as written the sequence builds a flag and then deletes it.
+>
+> **This design removes it**, and that is the resolution of record. But the
+> cheaper fix is available while the edit-scripts plan remains unstarted:
+> **never build it.** `me_opts` keeps its `log` field, the report is
+> unconditional, and the two worked examples drop the flag from their command
+> lines without changing a line of their output. Whoever executes the
+> edit-scripts plan should take that option if it has not yet begun; if it has,
+> the deletion lands here as described.
+
 This is simplification, not just policy: one output path, no flag, no "did they
 pass `-v`" branch to test.
 
@@ -177,34 +192,51 @@ It does **not** affect the adoption path: `install.sh` fetches `patch_macho`,
 `change_dylib` and `add_version_min` by name from Wowfunhappy's repo, and none of
 those names change.
 
-## Execution note: the behaviour matrix must be re-run, not rewritten
+## Execution note: the behaviour matrix is a dated artifact, and is left alone
 
-`tests/compat-matrix.tsv` records 1,227 emitted command lines containing
-`macho9`. It must be **regenerated against two builds**, not `sed`-ed. The sweep
-script once used one bindir for both sides — measuring a build against itself —
-and a mechanical rewrite of the recorded output is exactly the shape that would
-hide that class of problem again.
+**This section previously said the matrix "must be regenerated against two
+builds, not `sed`-ed". That instruction is now unexecutable**, and the reason is
+worth keeping rather than quietly deleting.
 
-## Out of scope — and a gap found while writing this
+`tests/compat-matrix.tsv` records 1,209 emitted command lines containing
+`macho9`. The original instruction existed because the sweep script once used one
+bindir for both sides — measuring a build against itself — so a mechanical
+rewrite of recorded output is exactly the shape that would hide that class of
+problem again. That reasoning still holds; what changed is that **regeneration is
+no longer possible.** The old side of that comparison was the six historical C
+tools, and after the compat retirement `compat/` contains no `.c` file at all. A
+re-run would measure something different and quietly relabel a historical record.
 
-**Release and versioning conformance is its own piece of work.** Consulting the
-family conventions surfaced a real inconsistency that this design does not fix:
+So the matrix is **left exactly as it is**, data rows untouched. Its header
+already carries a dated scope note saying what was measured, against what, and
+which rows are now historical — added when the retirement landed, precisely so a
+reader who arrives after a rename is not misled by command lines naming a binary
+that no longer exists.
 
-- `UPSTREAM_VERSION` holds `0.1.0` and `release.yml` cuts `<upstream>-mavericks.N`
-  — the machinery for a repo that **ports an external upstream**.
-- But `docs/PROPOSAL.md` settled that this repo is **first-party**: *"one repo,
-  first-party, no `UPSTREAM_VERSION`."* The conventions are explicit that a
-  self-upstream repo **drops the `-mavericks` suffix** and versions itself
-  directly (`YYYYMMDD.N` or semver), computes its version in `release.yml`
-  rather than through `resolve-version.sh`, and hand-bumps its own pin because
-  there is nothing external for Renovate to track.
-- Also absent: `renovate.json`, `release-notes/`, and the `build/` script
-  wrappers (`lib.sh`, `version.sh`, `release-notes-file.sh`) the conventions
-  checklist expects.
+**What the rename does to it: nothing.** The `macho9` strings in those rows are
+part of the measurement, not references to a live binary. Renaming them would be
+falsifying a record. If the stale names bother a future reader more than the
+falsification would, the honest options are to delete the file or to write a
+fresh measurement under a new name — not to `sed` this one.
 
-None of this blocks the rename or the `target` statement, and folding it in would
-mix two unrelated concerns. **It does block cutting a release**, which is why it
-is written down here rather than discovered at release time.
+## Out of scope
 
-Also out of scope: any target profile other than 10.9, and `--for`-style
-command-line invocation, which "the script is the plan" rules out.
+**Release and versioning conformance.** Writing this design surfaced that
+`UPSTREAM_VERSION` and `release.yml` carry the machinery for a repo that ports an
+external upstream, while `docs/PROPOSAL.md` settled that this repo is
+first-party. That finding has since become its own design —
+`2026-09-10-release-conformance-design.md` — and is queue item 4, sequenced
+immediately after this one because `release.yml`'s artifact list names all three
+of the files this design renames. It is not restated here; the pointer is the
+whole of it.
+
+**The module prefixes.** `mi_`, `mr_`, `mg_`, `mo_`, `mseg_`, `mswift_`, `wa_`,
+and the `ms_`/`me_` the edit-script work adds, are opaque to a reader who has not
+learned them — the repo owner said so directly. This design deliberately keeps
+them (see "What does NOT change" above) because a rename of the tool is not the
+occasion to relitigate every internal name. The question is logged against queue
+item 6, the human code review and documentation pass, which is where a
+readability decision of that size belongs.
+
+**Any target profile other than 10.9**, and `--for`-style command-line
+invocation, which "the script is the plan" rules out.
