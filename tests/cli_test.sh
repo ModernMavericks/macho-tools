@@ -3139,6 +3139,51 @@ echo "$caps" | grep -q "^verb minos versions=10.9 flags=allow-grow$" \
     && ok "capabilities: minos advertises allow-grow" \
     || bad "capabilities minos" "expected 'verb minos versions=10.9 flags=allow-grow': $(echo "$caps" | grep '^verb minos')"
 
+# ============================================================================
+# edit on a fat file, end to end
+# ============================================================================
+# edit on a fat file, end to end: two build_main executables in one
+# container, the second labelled arm64 in its fat_arch entry (edit names a
+# slice by that entry). allow-grow on the x86_64 slice alone grows it by a
+# page, so the arm64 slice after it has to move -- the one consequence a
+# passed-through slice can have, and --verbose must say so. The appended
+# path is sized from the slice's own pad, not hard-coded, because each
+# host's linker leaves a different pad.
+build_main "$T/fat_s0"
+build_main "$T/fat_s1"
+"$BIN/makefat" "$T/fat_edit" "$T/fat_s0" 0x1000007 3 12 "$T/fat_s1" 0x100000c 0 12
+fat_pad=$("$MACHO9" info "$T/fat_s0" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
+[ -n "$fat_pad" ] || { bad "edit fat: fixture setup" "no header pad reported"; fat_pad=0; }
+fat_path="/$(printf "%${fat_pad}s" '' | tr ' ' f)"
+printf 'arch x86_64\nallow-grow\ndylib append %s\n' "$fat_path" >"$T/fat.edits"
+rc=0
+"$MACHO9" edit --verbose "$T/fat_edit" "$T/fat.edits" >/dev/null 2>"$T/fat.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "edit: a fat file's x86_64 slice is edited, growing it" \
+    || bad "edit fat" "expected 0, got $rc: $(cut -c1-200 "$T/fat.err")"
+grep -q "slice arm64: not selected by arch; passed through unchanged" "$T/fat.err" \
+    && ok "edit: --verbose accounts for the unselected arm64 slice" \
+    || bad "edit fat" "no pass-through line: $(cut -c1-300 "$T/fat.err")"
+grep -q "slice arm64: moved from offset" "$T/fat.err" \
+    && ok "edit: --verbose says the arm64 slice moved when the x86_64 slice grew" \
+    || bad "edit fat" "no moved line: $(cut -c1-300 "$T/fat.err")"
+"$BIN/fatcheck" dump "$T/fat_edit" 0 "$T/fat_out0"
+"$BIN/fatcheck" dump "$T/fat_edit" 1 "$T/fat_out1"
+"$MACHO9" info "$T/fat_out0" | grep -qF "path=$fat_path" \
+    && ok "edit: the x86_64 slice carries the appended dylib" \
+    || bad "edit fat" "the appended dylib is not in slice 0"
+"$MACHO9" verify "$T/fat_out0" >/dev/null 2>"$T/fat_v.err" \
+    && ok "edit: the grown x86_64 slice passes macho9 verify" \
+    || bad "edit fat" "verify refused slice 0: $(cat "$T/fat_v.err")"
+cmp -s "$T/fat_out1" "$T/fat_s1" \
+    && ok "edit: the arm64 slice is byte-identical, though it moved" \
+    || bad "edit fat" "the arm64 slice changed"
+
+printf 'arch amd64\nload-command delete uuid\n' >"$T/fat_bad.edits"
+rc=0
+"$MACHO9" edit "$T/fat_edit" "$T/fat_bad.edits" >/dev/null 2>"$T/fat_bad.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: an unknown arch name is a parse error (2)" \
+    || bad "edit fat" "arch amd64: expected 2, got $rc: $(cat "$T/fat_bad.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]

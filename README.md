@@ -179,6 +179,13 @@ class records it retagged, and for `version-min set` the
 `LC_VERSION_MIN_MACOSX` it appended; then `FILE: verified` and
 `FILE: written (N bytes)` (`OUT: written` with `--output`).
 
+**On a fat file, each slice is accounted for too.** `slice NAME:` before an
+edited slice's statements and `slice NAME: verified` after; `slice NAME: not
+selected by arch; passed through unchanged` or `slice NAME: 32-bit; passed
+through unchanged` for the rest; and, once the slices are laid out again,
+`slice NAME: moved from offset 0x… to 0x…` for any slice an earlier slice's
+growth moved.
+
 **The refusal line on stderr and the exit code are what tell you whether the
 file was written.** The operations still print their own progress to stdout
 as each statement runs — `FILE: updated (sizeofcmds=...)` and the like — but
@@ -242,10 +249,14 @@ B. `rpath insert` works the same way, so dyld searches B before A.
 
 ### Directives
 
-Two, and each must precede every operation in the script — a directive after
-*any* operation, not only the one it would have governed, is a parse error:
+Three, and each must precede every operation in the script — a directive
+after *any* operation, not only the one it would have governed, is a parse
+error:
 
 ```
+arch NAME           apply the script only to the slice named NAME (lipo's
+                    names: x86_64, x86_64h, arm64, arm64e, i386); repeatable.
+                    Without it, every 64-bit slice of a fat file is edited
 allow-grow          permission to enlarge the header pad by lowering the image
                     base if new load commands do not fit; opt-in, and refused
                     by default. MH_EXECUTE + MH_PIE only -- the image-base
@@ -292,8 +303,12 @@ macho9 edit "$REAL" claude.edits --output "$T"
 
 ### Limits
 
-- **Input must be a thin 64-bit Mach-O.** A fat (universal) file is refused;
-  run one script per slice after extracting it (`lipo -thin ARCH`).
+- **A fat (universal) file is edited slice by slice, and kept whole.** With
+  no `arch` directive every 64-bit slice is edited and 32-bit slices pass
+  through; with `arch` directives, exactly the named slices. Naming a slice
+  the file lacks, or a 32-bit one, is refused. `edit` never drops a slice —
+  thin a file with `lipo` if you want one. A 64-bit fat container
+  (`fat_arch_64`) is refused.
 - **`allow-grow` reaches `dylib`, `rpath` and `version-min set`** — the
   statements whose load commands can outgrow the header pad — and only on a
   64-bit PIE executable. It does not reach `fixups set classic`: growth
@@ -310,7 +325,8 @@ macho9 edit "$REAL" claude.edits --output "$T"
   reexport` and `rpath replace/delete` (no command naming that path), and
   `segment rename` (no segment of that name). `append` and `insert` always
   act, and the three `set` statements treat "already so" as success, so none
-  of those can miss.
+  of those can miss. On a fat file, a statement has matched if it matched in
+  any selected slice.
 - **`MACHO_NO_VERIFY` does not affect `edit`'s own final verification.** A
   `dylib`/`rpath`/`load-command` statement still runs the same per-step
   plausibility check `macho9 dylib`/`rpath`/`lc` run (see "Prove it or

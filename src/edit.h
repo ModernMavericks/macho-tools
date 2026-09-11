@@ -39,11 +39,29 @@ typedef struct {
  * NOT MR_ERROR: that is (-1), private to src/rewrite.c, and it is
  * mr_process_fat's per-slice status, not an exit code.
  *
- * INPUT. A thin 64-bit Mach-O only. A fat one is refused (MR_REFUSED), saying
- * so: `fixups set classic` converts one thin image, and applying a whole
- * script to each slice of a fat file is not supported. Anything else that is
- * not a readable 64-bit Mach-O is refused too; an input that cannot be
- * opened or read at all is MR_FAIL.
+ * INPUT. A thin 64-bit Mach-O, or a fat (universal) file -- see FAT FILES,
+ * below. Anything else that is not a readable 64-bit Mach-O is refused too;
+ * an input that cannot be opened or read at all is MR_FAIL.
+ *
+ * FAT FILES. A fat (universal) container is edited slice by slice and kept
+ * whole: no slice is dropped or reordered. With no `arch` directive the
+ * script applies to every 64-bit slice; 32-bit slices pass through. With
+ * `arch` directives it applies to exactly the named slices, and naming one
+ * the file lacks, or a 32-bit one, is refused before any slice is touched.
+ * On a thin file an `arch` directive must name the image's own arch.
+ *
+ * Each selected slice runs every statement, in order, then its own final
+ * verification; any failure refuses the whole run and writes nothing. A
+ * statement that can match nothing (see fatal-warnings) is judged across
+ * the selected slices: it has matched if it matched in any of them, and the
+ * verdict is taken when the last selected slice has run it.
+ *
+ * Under --verbose each slice is accounted for: "slice NAME:" before an
+ * edited slice's statements and "slice NAME: verified" after; "slice NAME:
+ * not selected by arch; passed through unchanged" or "slice NAME: 32-bit;
+ * passed through unchanged" for the rest; and, after the slices are laid out
+ * again, "slice NAME: moved from offset 0x… to 0x…" for any slice an earlier
+ * slice's growth moved. A 64-bit fat container (fat_arch_64) is refused.
  *
  * VERIFY. mg_plausible (src/grow.h) runs over the finished image after the
  * last statement, every time, and a failure is a refusal. There is no
@@ -144,6 +162,11 @@ typedef struct {
  * Every other statement logs only its statement line.
  *
  * DIRECTIVES.
+ *
+ * arch NAME restricts the script to the fat slice(s) named NAME (lipo's
+ * names: x86_64, x86_64h, arm64, arm64e, i386) -- see FAT FILES, above; on a
+ * thin file it must name that file's own arch. Repeatable, to name more than
+ * one slice.
  *
  * allow-grow covers the statements whose load commands can outgrow the
  * header pad: `dylib`, `rpath` and `version-min set`. For them, when the pad
