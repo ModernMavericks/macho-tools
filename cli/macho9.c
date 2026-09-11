@@ -619,10 +619,9 @@ static int cmd_lc(int argc, char **argv) {
             i += 1;
         } else if (strcmp(argv[i], "-delete") == 0 && i + 1 < argc) {
             const char *kind = argv[i + 1];
-            size_t kk;
-            for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++)
-                if (strcmp(kind, LC_STRIP_KINDS[kk].name) == 0) break;
-            if (kk == LC_STRIP_KINDS_COUNT) {
+            uint32_t cmd;
+            if (lc_kind_by_name(kind, &cmd) != 0) {
+                size_t kk;
                 fprintf(stderr, "macho9 lc: unknown KIND '%s' (expected one of:", kind);
                 for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++) fprintf(stderr, " %s", LC_STRIP_KINDS[kk].name);
                 fprintf(stderr, ")\n");
@@ -643,7 +642,7 @@ static int cmd_lc(int argc, char **argv) {
                 fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
                 return EX_FAIL;
             }
-            strip[nstrip++] = LC_STRIP_KINDS[kk].cmd;
+            strip[nstrip++] = cmd;
             i += 2;
         } else {
             fprintf(stderr, "macho9 lc: unknown operation '%s' (only -delete KIND and --fatal-warnings are supported)\n", argv[i]);

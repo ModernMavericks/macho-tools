@@ -1,4 +1,5 @@
 #include "lc_kinds.h"
+#include <string.h>
 #include <mach-o/loader.h>
 #include "mach_compat.h"
 
@@ -21,4 +22,13 @@ const char *lc_kind_name(uint32_t cmd) {
         if (LC_STRIP_KINDS[i].cmd == cmd)
             return LC_STRIP_KINDS[i].name;
     return "unknown";
+}
+
+int lc_kind_by_name(const char *name, uint32_t *cmd) {
+    for (size_t i = 0; i < LC_STRIP_KINDS_COUNT; i++)
+        if (strcmp(name, LC_STRIP_KINDS[i].name) == 0) {
+            *cmd = LC_STRIP_KINDS[i].cmd;
+            return 0;
+        }
+    return -1;
 }

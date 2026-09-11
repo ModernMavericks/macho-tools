@@ -1302,10 +1302,14 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
         /* Unreachable from mr_apply_file: its mi_open already validated this
          * exact buffer with the identical algorithm mr_process_thin's own
          * mi_wrap runs on it, so mi_wrap cannot disagree. From src/edit.c
-         * the buffer is whatever the previous statement left, which every
-         * operation validates before it hands it back, so it is unreachable
-         * there in practice too -- but not by the same proof, which is one
-         * more reason this stays a refusal rather than an assertion. The
+         * the buffer is whatever the previous statement left, and not every
+         * operation validates what it hands back (mv_add_version_min_image,
+         * mswift_retag_image and md_declassify_buf do not). What keeps this
+         * unreachable there in practice is that each of those writes
+         * well-formed load commands, and that this very mi_wrap -- or the
+         * next statement's, in src/edit.c's me_view -- re-validates the
+         * image before anything walks it. That is not the same proof, which
+         * is one more reason this stays a refusal rather than an assertion. The
          * detailed three-way diagnostic lives at mr_apply_file's mi_open
          * failure site, where it is actually reachable. */
         fprintf(stderr, "%s: not a 64-bit Mach-O (rejected during processing)\n", label);

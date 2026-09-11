@@ -63,8 +63,10 @@ typedef struct {
  * REPORT, to o->log. Always printed: a statement's refusal,
  *   "macho9 edit: refused at statement K of N (line L); DEST left unmodified"
  * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L
- * is the statement's line in the script), a refusal at the final verify, and
- * a dry run's
+ * is the statement's line in the script), a refusal at the final verify, a
+ * failed write,
+ *   "macho9 edit: DEST left unmodified (write failed)",
+ * and a dry run's
  *   "DEST: NOT written (--dry-run) -- would be N bytes".
  * Under o->verbose, each statement is also logged as
  * "  <kind> <op> <operands>" before it runs, and a run that gets that far
@@ -73,9 +75,28 @@ typedef struct {
  * stdout and their own refusals to stderr, exactly as they do for the CLI
  * verbs.
  *
- * fatal-warnings: an operation that matched nothing -- the same misses the
- * dylib/rpath/lc verbs report under their --fatal-warnings -- refuses the
- * run. Without it the miss is reported on stderr and the run continues.
+ * DIRECTIVES.
+ *
+ * allow-grow covers only `dylib` and `rpath` statements: they are the ones
+ * whose load commands can outgrow the header pad, and for them it lets the
+ * rewrite enlarge the pad (mg_grow_header) instead of refusing.
+ * `version-min set` is not covered -- it refuses with "no room for
+ * LC_VERSION_MIN_MACOSX" even under allow-grow, because
+ * mv_add_version_min_image has no grow path. `segment rename` and
+ * `load-command delete` never add bytes to the load commands, so they never
+ * need it.
+ *
+ * fatal-warnings turns a statement that matched nothing from a report into a
+ * refusal of the whole run. The statements that can miss are the ones that
+ * name something the image must already have: `load-command delete` (no
+ * command of that kind), `dylib replace/delete/reexport` and `rpath
+ * replace/delete` (no command naming that path), and `segment rename` (no
+ * segment of that name). Each miss is reported on stderr as a
+ * "macho9: ... matched nothing" line (for load-command delete, "macho9: no
+ * load command of kind KIND to delete"); without fatal-warnings that is all
+ * that happens and the run continues. `append` and `insert` always act, and
+ * the three `set` statements (version-min, swift-abi, fixups) set a state,
+ * so for them "already so" or "nothing to retag" is success, never a miss.
  */
 int me_run(const char *path, const char *out, const ms_script *s,
            const me_opts *o);

@@ -86,18 +86,15 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     switch (st->kind) {
     case MS_LOAD_COMMAND: {
         /* ms_parse has already refused a KIND outside LC_STRIP_KINDS; this
-         * is the same table's other column, as cmd_lc reads it. */
+         * is the same lookup, as cmd_lc makes it. */
         uint32_t cmd = 0;
-        size_t k;
-        for (k = 0; k < LC_STRIP_KINDS_COUNT; k++)
-            if (strcmp(st->a, LC_STRIP_KINDS[k].name) == 0) { cmd = LC_STRIP_KINDS[k].cmd; break; }
-        if (k == LC_STRIP_KINDS_COUNT) break;
+        if (lc_kind_by_name(st->a, &cmd) != 0) break;
         ops.strip_cmds = &cmd;
         ops.n_strip_cmds = 1;
         return me_rewrite(pbuf, psize, path, &ops);
     }
 
-    case MS_SEGMENT:
+    case MS_SEGMENT: {
         /* The same pre-check cmd_segment makes: a segname field is 16 bytes,
          * and mseg_rename_lc would truncate a longer name silently. */
         if (!mseg_name_fits(st->b)) {
@@ -105,9 +102,21 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
                          "a segname field holds\n", st->b, MSEG_NAME_MAX);
             return MR_REFUSED;
         }
+        /* A rename has no hit array for mr_unmatched_verdict to read; its
+         * match count comes back through segment_renamed, as it does for
+         * cmd_segment. Zero is this statement's miss: reported on stderr in
+         * the shape of the other "matched nothing" lines, and a refusal
+         * under fatal-warnings -- before anything is written, because
+         * nothing is written until after the last statement. */
+        int renamed = 0;
         ops.segment_rename_old = st->a;
         ops.segment_rename_new = st->b;
-        return me_rewrite(pbuf, psize, path, &ops);
+        ops.segment_renamed = &renamed;
+        int rc = me_rewrite(pbuf, psize, path, &ops);
+        if (rc != 0 || renamed > 0) return rc;
+        fprintf(stderr, "macho9: segment %s matched nothing\n", st->a);
+        return s->fatal_warnings ? MR_REFUSED : 0;
+    }
 
     case MS_DYLIB:
     case MS_RPATH: {

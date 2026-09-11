@@ -30,4 +30,13 @@ extern const size_t LC_STRIP_KINDS_COUNT;
  * table. */
 const char *lc_kind_name(uint32_t cmd);
 
+/* The forward direction: the LC_* value a KIND name (as typed: "uuid",
+ * "codesig", ...) stands for. Returns 0 and sets *cmd if `name` is one of
+ * LC_STRIP_KINDS's entries; returns -1 and leaves *cmd alone otherwise.
+ * Every front-end that accepts a KIND -- cli/macho9.c's `lc -delete`,
+ * src/script.c's `load-command delete`, and src/edit.c's lowering of it --
+ * asks this, so none of them carries its own copy of the lookup; each still
+ * words its own refusal. */
+int lc_kind_by_name(const char *name, uint32_t *cmd);
+
 #endif

@@ -63,13 +63,13 @@ struct cf_import {
  * gets there.
  *
  * The refusal is DEFERRED rather than immediate: ob_byte drops the byte and
- * sets a sticky `overflow`, and md_declassify turns that into MDCL_REFUSED
+ * sets a sticky `overflow`, and md_declassify_buf turns that into MDCL_REFUSED
  * once the walk is over. Deferring keeps the bound out of the hot path's
  * control flow (ob_uleb/ob_str emit through ob_byte and would each need their
  * own abort otherwise) and keeps the diagnostic in one place; nothing is
  * written to disk on that path, so a truncated stream can never escape.
  * ob_init's malloc is checked the same way, with `cap = 0` making every
- * subsequent ob_byte a no-op -- but md_declassify checks for it immediately,
+ * subsequent ob_byte a no-op -- but md_declassify_buf checks for it immediately,
  * because an allocation failure is not the same kind of answer as "this file
  * needs more opcodes than we buffer" (see MDCL_ERROR vs MDCL_REFUSED). */
 #define OB_CAP (1024*1024)
@@ -479,15 +479,17 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len) {
     /* Append data at end of file (aligned).
      *
      * Both streams and both 8-byte alignment roundings have to fit in the
-     * slack mi_open_slack reserved: the worst case is 7 wasted bytes before
-     * the rebase stream and 7 more before the bind stream, hence the 14. The
-     * two memcpys below had no bound of any kind before this -- and note that
-     * the per-stream OB_CAP check above does NOT subsume this one: it bounds
-     * each stream at 1MB, which two of them plus alignment can only just fit
-     * in 2MB of slack. Today those constants make this check unreachable, so
-     * it is a backstop rather than a live refusal -- exactly the property that
-     * would evaporate silently if someone raised OB_CAP or lowered the slack,
-     * which is why it is a check and not a comment. */
+     * slack past the image -- the `cap - fsize` bytes the caller provided:
+     * the worst case is 7 wasted bytes before the rebase stream and 7 more
+     * before the bind stream, hence the 14. The two memcpys below had no
+     * bound of any kind before this, and the per-stream OB_CAP check above
+     * does NOT subsume it: that bounds each stream at 1MB, not their sum
+     * against whatever room the caller gave. It is a LIVE refusal, and the
+     * one declassify.h promises md_declassify_buf's callers: a caller that
+     * passes less than MDCL_SLACK is refused here when the streams do not
+     * fit, never written past. Through md_declassify, which always reserves
+     * MDCL_SLACK (2MB), it fires only when the two streams together come
+     * closer than 14 bytes to their combined 2MB cap. */
     if (rebase.len + bind.len + 14 > slack) {
         fprintf(stderr, "ERROR: the rebuilt rebase (%zu bytes) and bind (%zu bytes) streams "
                         "do not fit in the %zu bytes of slack reserved past the file; "

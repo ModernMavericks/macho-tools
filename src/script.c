@@ -269,11 +269,8 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
             int kind = MS_TABLE[found].k, op = MS_TABLE[found].o;
 
             if (kind == MS_LOAD_COMMAND && op == MS_DELETE) {
-                size_t k;
-                int ok = 0;
-                for (k = 0; k < LC_STRIP_KINDS_COUNT; k++)
-                    if (strcmp(fields[2], LC_STRIP_KINDS[k].name) == 0) { ok = 1; break; }
-                if (!ok)
+                uint32_t cmd;
+                if (lc_kind_by_name(fields[2], &cmd) != 0)
                     return ms_failf(stmts, text, out, err, errsz, lineno,
                         "load-command delete: unknown kind '%s'", fields[2]);
             } else if (kind == MS_VERSION_MIN && op == MS_SET &&

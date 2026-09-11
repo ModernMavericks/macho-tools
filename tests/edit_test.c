@@ -537,6 +537,40 @@ static void test_fatal_warnings_refuses_an_unmatched_operation(void) {
     rm_dir();
 }
 
+/* A segment rename that renames nothing is a miss too. It has no hit array
+ * for the dylib/rpath/lc report to read, so it needs its own, and under
+ * fatal-warnings it must refuse the run -- after an earlier statement has
+ * already changed the in-memory image, and without writing it. */
+static void test_fatal_warnings_refuses_an_unmatched_segment_rename(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "img");
+    uint8_t *img = build_image(0);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+
+    snap before = take(path);
+    int rc = run(path, NULL,
+                 "fatal-warnings\n"
+                 "load-command delete uuid\n"
+                 "segment rename __NOPE __X\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fatal-warnings: a rename that matched nothing refuses (got %d)", rc);
+    check_untouched("fatal-warnings, rename", path, &before);
+    CHECK(strstr(g_log, "refused at statement 2 of 2 (line 3)") != NULL,
+          "fatal-warnings: the refusal names the rename (log: %s)", g_log);
+
+    rc = run(path, NULL,
+             "load-command delete uuid\n"
+             "segment rename __NOPE __X\n", 0, 0);
+    CHECK(rc == 0, "without fatal-warnings: an unmatched rename is reported and the run "
+          "succeeds (got %d)", rc);
+    CHECK(count_lc(path, LC_UUID, NULL) == 0,
+          "without fatal-warnings: the statement before the rename was applied");
+    CHECK(has_segment(path, "__DATA", NULL) && !has_segment(path, "__X", NULL),
+          "without fatal-warnings: no segment was renamed");
+    rm_dir();
+}
+
 /* version-min, swift-abi and fixups were reachable only through file-level
  * entry points; each must run against the in-memory image. */
 static void test_the_file_level_operations_run_in_memory(void) {
@@ -650,6 +684,7 @@ int main(void) {
     test_the_final_verify_ignores_MACHO_NO_VERIFY();
     test_later_statements_see_earlier_ones();
     test_fatal_warnings_refuses_an_unmatched_operation();
+    test_fatal_warnings_refuses_an_unmatched_segment_rename();
     test_the_file_level_operations_run_in_memory();
     test_output_leaves_the_input_alone();
     test_only_a_thin_image_is_accepted();
