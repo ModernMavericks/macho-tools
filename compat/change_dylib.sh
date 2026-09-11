@@ -55,10 +55,15 @@
 # mr_apply_file lists the cases, and this was ALWAYS true of mr_apply_file's
 # behavior, just not numerically visible under the scheme that shipped
 # first -- or MR_FAIL (2) for a genuine open/fstat/read/write/malloc
-# failure. A considered refusal still exits 1 here, matching the C tool by
-# coincidence, not construction; an operational failure now exits 2, where
-# the C tool always exited a flat 1 -- see compat/README.md's "drop-in"
-# section for this as a named exception.
+# failure. ONE EXCEPTION this wrapper can reach: `-grow` becomes
+# `--allow-grow`, and a realloc/malloc failure INSIDE mg_grow_header
+# (src/grow.c, reached only through `--allow-grow`) is folded into
+# MR_REFUSED, not MR_FAIL, same as every other reason mg_grow_header
+# refuses -- rewrite.c's own comment on that fold has the full reasoning.
+# Apart from that one case, a considered refusal still exits 1 here,
+# matching the C tool by coincidence, not construction; an operational
+# failure now exits 2, where the C tool always exited a flat 1 -- see
+# compat/README.md's "drop-in" section for this as a named exception.
 #
 # --fatal-warnings is a SEPARATE fact, not what makes the paragraph above
 # true or conditional: this translation never emits that flag -- change_
@@ -77,12 +82,13 @@
 # mw_run_atomic hands straight to mw_run and returns its raw exit code
 # unmapped. A run needing more than one family (`-change` AND `-strip-lc`
 # together, say) goes through mw_run_atomic's copy-aside-and-install dance
-# instead, which has TWO hardcoded `return 1`s of its own (a failed `cp`
-# aside, or a failed install back over the original) that are NOT macho9's
-# exit code at all -- they fire before or after macho9 ever runs. An absent
-# FILE is the case where this is visible: single-verb, it reaches
-# mr_apply_file's own open() and exits 2 (MR_FAIL); multi-verb, `cp -p`
-# fails on the same absent file BEFORE any macho9 command runs, and
+# instead, which has THREE hardcoded `return 1`s of its own that are NOT
+# macho9's exit code at all -- a failed `cp` aside, an unstable
+# re-translation under the temp file's name, or a failed install back over
+# the original -- and the first two fire before macho9 ever runs, the last
+# one after. An absent FILE is the case where this is visible: single-verb,
+# it reaches mr_apply_file's own open() and exits 2 (MR_FAIL); multi-verb,
+# `cp -p` fails on the same absent file BEFORE any macho9 command runs, and
 # mw_run_atomic's hardcoded path returns 1. Not a bug to fix here --
 # mw_run_atomic's own `return 1`s are exactly right for the historical-
 # mapping wrappers (fix_macho.sh) that share it -- just a real seam this

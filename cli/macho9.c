@@ -222,7 +222,10 @@ static void print_ops_csv(int is_rpath) {
  *       version, a grow mg_grow_header itself refused, new load commands
  *       that don't fit and can't be grown, an unmatched --fatal-warnings
  *       operation, and more (rewrite.h's own comment on mr_apply_file has
- *       the full list); failed=EX_FAIL is everything else (syscall/malloc
+ *       the full list, including the one exception -- a realloc/malloc
+ *       failure inside mg_grow_header or mg_plausible themselves stays
+ *       refused=EX_REFUSED, not failed, same as every other reason either
+ *       one refuses); failed=EX_FAIL is everything else (syscall/malloc
  *       failure, usage error). The two numbers are 1 and 2, not the reverse
  *       -- see EX_REFUSED's own comment above for why this repo deliberately
  *       does not match what it originally shipped. A caller checking only
@@ -501,9 +504,11 @@ static int cmd_grow(const char *path, const char *n_str) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        /* The open()/fstat() above already proved this path opens; reaching
-         * here is a TOCTOU race (mi_open does its own, independent open),
-         * not a considered refusal. */
+        /* The open()/fstat() above only proved this path opens, not that
+         * mi_open's own independent open, read of the whole file, or the
+         * malloc it reads into will succeed too -- any of those, or an
+         * actual TOCTOU race, land here. Not a considered refusal either
+         * way. */
         fprintf(stderr, "macho9 grow: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
@@ -518,8 +523,13 @@ static int cmd_grow(const char *path, const char *n_str) {
         /* mg_grow_header's whole design is "refuse rather than guess" (a
          * global rule -- see EX_REFUSED's own comment) -- growth that would
          * need a real __LINKEDIT resize, a non-PIE image, an unsupported
-         * ULEB re-encode -- so a failure here is a refusal, not an
-         * operational error. */
+         * ULEB re-encode -- so a failure here is a refusal. That includes
+         * the two cases where mg_grow_header's OWN failure is actually a
+         * realloc of the whole image failing (grow.c): this verb cannot
+         * tell that apart from every other reason mg_grow_header declines,
+         * and by deliberate choice does not try to -- see rewrite.c's
+         * comment on the identical fold in mr_apply_file for why. So a
+         * failed grow always exits here, on this path, never EX_FAIL. */
         fprintf(stderr, "macho9 grow: %s left unmodified\n", path);
         free(buf);
         return EX_REFUSED;
@@ -955,8 +965,9 @@ static int cmd_retag_swift(const char *path) {
  *     LIMITS section lists them all: too many segments or strippable
  *     commands, more fixups than the opcode buffers hold, an unknown pointer
  *     format, no room for the 48-byte LC_DYLD_INFO_ONLY, no __LINKEDIT --
- *     and EX_FAIL only for an operational failure, which here means an
- *     allocation md_declassify could not make, or writing OUT. That is what
+ *     and EX_FAIL only for an operational failure, which here means IN
+ *     could not even be opened or read, an allocation md_declassify could
+ *     not make, or writing OUT failed. That is what
  *     EX_REFUSED's contract above asks for, and this verb is free to use it:
  *     unlike dylib/rpath/lc/minos it has never forwarded another program's
  *     exit code, so there is nothing to preserve. A wrapper that must look
@@ -996,10 +1007,11 @@ static int cmd_declassify(const char *in, const char *out) {
         return EX_REFUSED;
     }
     if (rc == MDCL_REFUSED) return EX_REFUSED;  /* md_declassify already said why */
-    /* An allocation md_declassify could not make. Also already reported, but
-     * NOT a refusal: EX_REFUSED's contract above rules out using it for "a
-     * malloc that failed", and a caller scripting around "this file just isn't
-     * one macho9 will touch" would be told the wrong thing. */
+    /* IN could not even be opened or read, or an allocation md_declassify
+     * could not make -- md_declassify already reported which. NOT a
+     * refusal either way: EX_REFUSED's contract above rules out using it
+     * for any of those, and a caller scripting around "this file just
+     * isn't one macho9 will touch" would be told the wrong thing. */
     if (rc == MDCL_ERROR) return EX_FAIL;
     if (rc != MDCL_CONVERTED && rc != MDCL_PASSTHROUGH) {
         /* A code declassify.h grew that this verb has not been taught. Refuse

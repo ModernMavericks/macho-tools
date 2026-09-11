@@ -34,16 +34,21 @@ typedef struct {
  * EX_REFUSED/EX_FAIL split, and src/rewrite.c's/src/version_min.c's
  * MR_REFUSED/MR_FAIL, both need exactly this distinction and used to have no
  * way to get it from these two functions). Both are negative so 0 stays
- * success and neither collides with a caller's own error vocabulary.
- * MI_IO_ERROR covers open, fstat, the size-overflow guard on `slack`,
- * malloc and read; MI_NOT_MACHO covers every case mi_validate rejects
- * (too short, wrong magic, load commands failing validation) -- "too short"
- * is grouped with the latter, not the former: it is a decision about what
- * the file's own size says, not a syscall failing. mi_wrap, which never
- * touches a syscall, only ever returns MI_NOT_MACHO. A caller that only
- * checks `!= 0` (most of them) is entirely unaffected by this -- both
- * values are still nonzero -- and Ruling 9 required exactly this smallest
- * change, not a same-caller behavior change for anyone who does not ask. */
+ * success. -1 and -2 are NOT reserved values -- they equal, among others,
+ * declassify.h's MDCL_NOT_MACHO/MDCL_REFUSED, swift_retag.h's MSWIFT_ERROR/
+ * MSWIFT_NOT_MACHO, and src/rewrite.c's own private MR_ERROR/MR_SKIP -- but
+ * that never matters, because every caller of any of these tests its
+ * result BY NAME, never by comparing the raw number, so which small
+ * negative integer any one module happens to pick is not a namespace two
+ * modules could actually collide in. MI_IO_ERROR covers open, fstat, the
+ * size-overflow guard on `slack`, malloc and read; MI_NOT_MACHO covers
+ * every case mi_validate rejects (too short, wrong magic, load commands
+ * failing validation) -- "too short" is grouped with the latter, not the
+ * former: it is a decision about what the file's own size says, not a
+ * syscall failing. mi_wrap, which never touches a syscall, only ever
+ * returns MI_NOT_MACHO. A caller
+ * that only checks `!= 0` (most of them) is entirely unaffected by adding
+ * this distinction -- both values are still nonzero. */
 #define MI_IO_ERROR   (-1)
 #define MI_NOT_MACHO  (-2)
 

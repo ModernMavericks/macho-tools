@@ -74,7 +74,7 @@ machine-readably in `--capabilities`' `exitcodes` line:
 |---|---|
 | `0` | success |
 | `1` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or (`dylib`/`rpath`/`lc` only, and only with `--fatal-warnings`) an operation that matched nothing. This last case never rolls back a write it made: if some OTHER operation in the same run matched, that write already happened; if every operation matched nothing, there was no write to roll back in the first place, same as any other all-miss run |
-| `2` (`EX_FAIL`) | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal |
+| `2` (`EX_FAIL`) | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal. ONE EXCEPTION: a realloc/malloc failure INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into `1` instead, same as every other reason either one refuses — see `src/rewrite.c`'s comment on that fold |
 
 The numbering is deliberately backwards from what first shipped (`0` ok, `1`
 failed, `2` refused): `diff`, `grep` and `cmp` all reserve their highest code

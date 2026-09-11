@@ -18,14 +18,19 @@
 # function had no finer answer than); this wrapper forwards the SAME
 # function's return today too, but its vocabulary is no longer that flat 0/1
 # (src/rewrite.h): 0 ok, MR_REFUSED (1) for a considered refusal -- "not a
-# readable 64-bit Mach-O", the race guard, "no room for
-# LC_VERSION_MIN_MACOSX" -- or MR_FAIL (2) for a genuine open/fstat/write
-# failure. A considered refusal still exits 1 here, matching the C tool by
-# coincidence, not construction; an operational failure now exits 2, where
-# the C tool always exited a flat 1 -- see compat/README.md's "drop-in"
-# section for this as a named exception. `macho9 minos`' one exit code of
-# its own (EX_REFUSED=1, for a version other than 10.9) is unreachable from
-# here, since this wrapper only ever emits 10.9.
+# readable 64-bit Mach-O" (including mi_open's own MI_NOT_MACHO) or "no room
+# for LC_VERSION_MIN_MACOSX" -- or MR_FAIL (2) for a genuine open/fstat/
+# write failure, mi_open's own I/O errors (a second, independent open of
+# the same path, which can fail on its own even though this function's own
+# earlier open succeeded), OR the race guard (a changed inode mid-run is an
+# environment condition, not a judgement about the file, the same call
+# src/swift_retag.c's identical guard makes). A considered refusal still
+# exits 1 here, matching the C tool by coincidence, not construction; an
+# operational failure now exits 2, where the C tool always exited a flat 1
+# -- see compat/README.md's "drop-in" section for this as a named
+# exception. `macho9 minos`' one exit code of its own (EX_REFUSED=1, for a
+# version other than 10.9) is unreachable from here, since this wrapper
+# only ever emits 10.9.
 #
 # STDOUT. Byte-identical, and not by construction alone -- every one of the
 # five add_version_min rows in tests/compat-matrix.tsv compared equal on

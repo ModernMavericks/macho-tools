@@ -97,13 +97,21 @@ for why it would be rare:
   * `change_dylib` and `add_version_min` are the two wrappers that forward
     the shared rewrite drivers' (`mr_apply_file`, `mv_add_version_min`) own
     exit code verbatim, with no mapping at all -- unlike `fix_macho`,
-    `patch_macho` and `rename_segment`, which translate to their own
-    historical codes and are unaffected by this. A CONSIDERED refusal (the
-    input examined and declined) still exits 1, matching the C tool by
+    `patch_macho` and `rename_segment`, which translate every nonzero
+    macho9 exit to one flat historical code, and `retag_swift_classes`,
+    which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
+    header has it) and is likewise unaffected by this. A CONSIDERED refusal
+    (the input examined and declined) still exits 1, matching the C tool by
     coincidence, not by construction; but a genuine operational failure
-    (open/fstat/read/write/malloc) now exits 2, where the C tool always
-    exited a flat 1. `compat/change_dylib.sh` and `compat/add_version_min.sh`'s
-    own headers have the detail.
+    (open, fstat, read, write, or a malloc `mr_apply_file`/
+    `mv_add_version_min` or `mi_open`/`mfat_parse` makes directly for the
+    file) now exits 2, where the C tool always exited a flat 1. ONE
+    EXCEPTION reachable through `change_dylib -grow`: a realloc/malloc
+    failure INSIDE `mg_grow_header` (reached only via `--allow-grow`) stays
+    a considered refusal, exit 1, same as every other reason that function
+    refuses -- `src/rewrite.c`'s own comment on that fold has the reasoning.
+    `compat/change_dylib.sh` and `compat/add_version_min.sh`'s own headers
+    have the rest of the detail.
 
 There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises

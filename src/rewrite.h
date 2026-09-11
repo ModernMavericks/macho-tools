@@ -268,9 +268,9 @@ typedef struct {
  *     here. ONE EXCEPTION: mg_grow_header and mg_plausible each fold a
  *     realloc/malloc failure of their own into the same signal they use for
  *     every other refusal (grow.c), and this function cannot tell that case
- *     apart from the rest -- see the comment where mr_process_thin's
- *     MR_ERROR becomes MR_REFUSED, below, for why that stays folded in
- *     rather than being split out to MR_FAIL.
+ *     apart from the rest -- see src/rewrite.c, the comment where
+ *     mr_process_thin's MR_ERROR becomes this function's own MR_REFUSED,
+ *     for why that stays folded in rather than being split out to MR_FAIL.
  *   MR_FAIL (2) -- a genuine operational failure: open, fstat, read or write
  *     failing (this function's own, or mi_open's/mfat_parse's), or a malloc
  *     mi_open/mfat_parse makes directly for the file/table itself. Nothing

@@ -1426,10 +1426,9 @@ longpath="@loader_path/$(printf 'x%.0s' $(seq 1 3500)).dylib"
 rc=0
 "$MACHO9" dylib "$T/dylib_grow_fixture" -replace "@loader_path/liba.dylib" "$longpath" \
     >/dev/null 2>"$T/dylib_grow.err" || rc=$?
-# Exactly the "no room, no --allow-grow" case Ruling 9's new-tests
-# requirement names: a considered refusal (mr_process_thin examined the
-# header pad, decided the new load commands do not fit, and declined without
-# --allow-grow to widen it) is MR_REFUSED, forwarded verbatim as EX_REFUSED.
+# A considered refusal (mr_process_thin examined the header pad, decided
+# the new load commands do not fit, and declined without --allow-grow to
+# widen it) is MR_REFUSED, forwarded verbatim as EX_REFUSED.
 [ "$rc" -eq 1 ] && ok "dylib: long path without --allow-grow is refused (EX_REFUSED)" \
     || bad "dylib: long path without --allow-grow" "expected exit 1, got $rc: $(cat "$T/dylib_grow.err")"
 if "$MACHO9" dylib "$T/dylib_grow_fixture" --allow-grow -replace "@loader_path/liba.dylib" "$longpath" \
@@ -1446,8 +1445,9 @@ echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: --allow-grow result
 # dylib: pinning the MR_REFUSED/MR_FAIL split (rewrite.h) through mr_apply_file
 # and mi_open, which reaching this verb from macho9's own EX_REFUSED/EX_FAIL
 # checks never exercised. Without these, reverting the reclassification in
-# src/rewrite.c leaves this whole suite green -- see the round-2 fix report
-# for the mutation that proved it.
+# src/rewrite.c leaves this whole suite green -- confirmed by temporarily
+# reverting the 64-bit-fat classification below and watching this section's
+# own assertion catch it, then reverting the mutation.
 # ============================================================================
 
 # A non-Mach-O file: mi_open reads it fine (no I/O failure at all) and
@@ -2473,6 +2473,35 @@ rc=0
 [ "$rc" -eq 2 ] \
     && ok "retag-swift: an unopenable path is a failure (2), not a refusal (1) and not silent success" \
     || bad "retag-swift: missing path" "expected exit 2, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
+# MSWIFT_ERROR's own contract (swift_retag.h) is "already reported" --
+# cmd_retag_swift relies on that and prints nothing itself for this code, so
+# a silent exit 2 here would mean the contract broke (exactly what happened
+# when the MI_IO_ERROR branch inside mswift_retag_file's mi_open call was
+# added without a print of its own). Assert stderr is not empty, not just
+# that the exit code is right.
+[ -s "$T/retag_missing.err" ] \
+    && ok "retag-swift: an unopenable path prints something, per MSWIFT_ERROR's contract" \
+    || bad "retag-swift: missing path stderr" "exit 2 but stderr was empty -- MSWIFT_ERROR's 'already reported' contract broke"
+
+# The MI_IO_ERROR branch inside mi_open specifically (not mswift_retag_file's
+# own earlier open()/fstat(), which the absent-file case above already
+# exercises): verify and declassify are equally cheap to check on an absent
+# path, and neither had a numeric-exit-code assertion for one before.
+rc=0
+"$MACHO9" verify "$T/no-such-file-for-verify" >"$T/verify_missing.out" 2>"$T/verify_missing.err" || rc=$?
+[ "$rc" -eq 2 ] && [ -s "$T/verify_missing.err" ] \
+    && ok "verify: an absent file is a failure (2), not a refusal, and says something" \
+    || bad "verify: missing path" "expected exit 2 with nonempty stderr, got $rc: $(cat "$T/verify_missing.err")"
+
+rc=0
+"$MACHO9" declassify "$T/no-such-file-for-declassify" "$T/declassify_missing.out" \
+    >/dev/null 2>"$T/declassify_missing.err" || rc=$?
+[ "$rc" -eq 2 ] && [ -s "$T/declassify_missing.err" ] \
+    && ok "declassify: an absent IN is a failure (2), not a refusal, and says something" \
+    || bad "declassify: missing IN" "expected exit 2 with nonempty stderr, got $rc: $(cat "$T/declassify_missing.err")"
+[ -e "$T/declassify_missing.out" ] \
+    && bad "declassify: missing IN" "wrote an output file for an IN it could not even open" \
+    || ok "declassify: an absent IN produces no output file"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"

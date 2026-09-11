@@ -62,9 +62,11 @@ int mv_add_version_min(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        /* The open()/fstat() above already proved this path opens; reaching
-         * here is a TOCTOU race (mi_open does its own, independent open),
-         * not a considered refusal. */
+        /* The open()/fstat() above only proved this path opens, not that
+         * mi_open's own independent open, read of the whole file, or the
+         * malloc it reads into will succeed too -- any of those, or an
+         * actual TOCTOU race, land here. Not a considered refusal either
+         * way. */
         fprintf(stderr, "%s: cannot open or read\n", path);
         close(fd);
         return MR_FAIL;

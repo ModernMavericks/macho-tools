@@ -18,8 +18,9 @@
  *                     the C tool did -- no message, no had_error, loop
  *                     continues. Nothing observable moved.
  *   MSWIFT_RACED      NOT reproduced. It reaches the wrapper as macho9's exit
- *                     1, indistinguishable there from MSWIFT_ERROR, so it
- *                     becomes had_error and the run exits 1 where the C tool
+ *                     2, indistinguishable there from MSWIFT_ERROR, so it
+ *                     becomes had_error and the run exits 1 (the wrapper's
+ *                     own historical had_error code) where the C tool
  *                     exited 0. That is a real exit-code divergence, and the
  *                     intended one: the race means NOTHING was written, and
  *                     reporting success for work that did not happen is the
@@ -146,11 +147,15 @@ int mswift_retag_file(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        /* The open()/fstat() above already proved this path opens; reaching
-         * here is a TOCTOU race (mi_open does its own, independent open),
-         * not a judgement about the file's content -- MSWIFT_ERROR, the
-         * same code this function's own open()/fstat() failures above use,
-         * not MSWIFT_NOT_MACHO. */
+        /* Not only a TOCTOU race (the open()/fstat() above proved this path
+         * opens, but mi_open's own whole-file malloc or its read can still
+         * fail on their own) -- either way this is MSWIFT_ERROR, the same
+         * code this function's own open()/fstat() failures above use, not
+         * MSWIFT_NOT_MACHO. MSWIFT_ERROR's contract (swift_retag.h) is
+         * "already reported", which cmd_retag_swift relies on to stay
+         * silent for this code -- so, unlike MSWIFT_NOT_MACHO just below,
+         * this prints before returning. */
+        fprintf(stderr, "%s: cannot open or read\n", path);
         close(fd);
         return MSWIFT_ERROR;
     }

@@ -1026,17 +1026,21 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
         return MR_FAIL;
     }
 
-    /* 0 means no abort. Not a bool: the two ways this loop can abort are a
-     * per-slice malloc failure (MR_FAIL) and mr_process_thin refusing a
-     * slice's edit (MR_ERROR, defined above with MR_SKIP -- that comment
-     * describes MR_ERROR purely as a per-slice signal, "fatal to the whole
-     * operation", and says nothing about an exit code, which is correct: it
-     * is private to this file and never one, per the brief's own warning not
-     * to touch it. This function's job is exactly that translation -- an
-     * MR_ERROR slice becomes THIS function's own MR_REFUSED, per MR_REFUSED's
-     * contract in rewrite.h, not MR_ERROR's), and the return below has to
-     * tell the two abort reasons apart rather than collapsing both into one
-     * flag the way an `aborted` bool would. */
+    /* 0 means no abort. Not a bool: the two ways this loop can abort are
+     * THIS function's own per-slice copy-buffer malloc failing (MR_FAIL --
+     * `sbuf[i] = malloc(...)` below, nothing to do with any allocation
+     * mr_process_thin or a primitive it calls may have already made and
+     * folded into its own MR_ERROR, per that exception's own comment where
+     * this function's MR_ERROR->MR_REFUSED translation happens, below) and
+     * mr_process_thin refusing a slice's edit (MR_ERROR, defined above with
+     * MR_SKIP -- that comment describes MR_ERROR purely as a per-slice
+     * signal, "fatal to the whole operation", and says nothing about an
+     * exit code: MR_ERROR is private to this file and is never one. This
+     * function's job is exactly that translation -- an MR_ERROR slice
+     * becomes THIS function's own MR_REFUSED, per MR_REFUSED's contract in
+     * rewrite.h, not MR_ERROR's), and the return below has to tell the two
+     * abort reasons apart rather than collapsing both into one flag the way
+     * an `aborted` bool would. */
     int abort_rc = 0;
     uint32_t i;
     for (i = 0; i < narch; i++) {
@@ -1363,13 +1367,14 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
         mi_image im;
         int mo_rc = mi_open(path, &im);
         if (mo_rc == MI_IO_ERROR) {
-            /* Only reachable via a TOCTOU race: this function's own open/
-             * fstat/read above, just before this branch, already proved the
-             * path opens and reads -- so mi_open's independent, SECOND open
-             * of the same path can only fail here if something replaced or
-             * removed it in between. Rare enough that no test stages it
-             * (same class as the MR_SKIP fallback below), but a real
-             * environment failure, never a considered refusal, so MR_FAIL. */
+            /* Not only a TOCTOU race, though that is one way here: this
+             * function's own open/fstat/read above, just before this
+             * branch, only proved the path opens and its first 4 bytes
+             * read -- mi_open's independent, SECOND open reads the WHOLE
+             * file into a fresh malloc, either of which (the read, or the
+             * allocation) can fail on its own even with nothing racing.
+             * Either way this is a real environment failure, never a
+             * considered refusal, so MR_FAIL. */
             fprintf(stderr, "%s: cannot open or read\n", path);
             return MR_FAIL;
         }
@@ -1414,19 +1419,21 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
             /* MR_ERROR here means mr_process_thin (or a primitive it called
              * -- see the list in this function's own rewrite.h comment)
              * examined the bytes and declined, so this is MR_REFUSED, never
-             * MR_FAIL -- with one folded-in exception, by controller ruling,
-             * not an oversight: mg_grow_header and mg_plausible each have a
+             * MR_FAIL -- with one folded-in exception, deliberate, not an
+             * oversight: mg_grow_header and mg_plausible each have a
              * realloc/malloc failure buried among their own content checks
-             * (grow.c), and mr_process_thin's single MR_ERROR return from
-             * either one cannot tell that failure apart from every other
-             * reason those two functions refuse. Splitting it would mean
-             * widening mg_grow_header's and mg_plausible's own return
-             * contracts (both currently a flat "0 or -1") to say which,
-             * for tables sized in the kilobytes, not the sites (open, fstat,
-             * read, write, single small mallocs) this task's MR_FAIL/
-             * MR_REFUSED line otherwise turns on -- so an allocation failure
-             * inside either helper is reported as MR_REFUSED (1), same as
-             * every other reason they refuse. */
+             * (grow.c:1075's `realloc(buf, fsize + grow)` and grow.c:1268
+             * both reallocate the WHOLE image, not some small side table),
+             * and mr_process_thin's single MR_ERROR return from either one
+             * cannot tell that failure apart from every other reason those
+             * two functions refuse. Splitting it would mean widening
+             * mg_grow_header's and mg_plausible's own return contracts
+             * (both currently a flat "0 or -1") to say which -- a change
+             * later work already plans to make when it restructures those
+             * two functions, not one to fold in here as a side effect. So,
+             * plainly: an allocation failure while growing a large binary
+             * exits 1 (MR_REFUSED), not 2, same as every other reason
+             * mg_grow_header or mg_plausible refuses. */
             rc = (po == MR_ERROR) ? MR_REFUSED : 0;
         }
     }
