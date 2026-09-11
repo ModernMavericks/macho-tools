@@ -88,11 +88,14 @@ if [ $# -eq 0 ]; then
     echo "change_dylib_test: no bindir given -- compiling standalone from source"
     mkdir -p "$T/bin"
     "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/macho9" "$ROOT_DIR/cli/macho9.c" "$SRC_DIR"/*.c
+    "$CC" -O2 -o "$T/bin/makefat" "$SCRIPT_DIR/makefat.c"
+    "$CC" -O2 -o "$T/bin/fatcheck" "$SCRIPT_DIR/fatcheck.c"
     cp "$COMPAT_DIR/change_dylib.sh" "$T/bin/change_dylib"
     cp "$COMPAT_DIR/fix_macho.sh" "$T/bin/fix_macho"
     cp "$COMPAT_DIR/macho9-compat.sh" "$T/bin/macho9-compat.sh"
     cp "$COMPAT_DIR/translate.sh" "$T/bin/macho9-translate.sh"
     chmod +x "$T/bin/change_dylib" "$T/bin/fix_macho"
+    BIN="$T/bin"
     CHANGE_DYLIB="$T/bin/change_dylib"
     FIX_MACHO="$T/bin/fix_macho"
     MACHO9="$T/bin/macho9"
@@ -221,166 +224,8 @@ EOF
 "$CC" -O2 -o "$T/has_bytes" "$T/has_bytes.c"
 
 # makefat/fatcheck: build and inspect a fat (universal) Mach-O without
-# depending on system lipo, whose accepted architecture list is not this
-# suite's to pin -- a hand-crafted fat container is something we control
-# completely, on either host. Reads/writes the on-disk convention every real
-# fat file uses (big-endian fat_header/fat_arch, i.e. FAT_CIGAM as observed
-# from a little-endian x86_64/arm64 host), by construction, not detection.
-cat > "$T/makefat.c" <<'EOF'
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <mach-o/fat.h>
-static uint8_t *readfile(const char *path, size_t *outsz) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) { perror(path); exit(2); }
-    struct stat st; fstat(fd, &st);
-    uint8_t *buf = malloc((size_t)st.st_size);
-    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
-    close(fd);
-    *outsz = (size_t)st.st_size;
-    return buf;
-}
-static uint32_t sw32(uint32_t v) {
-    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
-}
-int main(int argc, char **argv) {
-    if (argc != 10) { fprintf(stderr, "usage: %s out s0 ct0 cs0 al0 s1 ct1 cs1 al1\n", argv[0]); return 2; }
-    size_t sz0, sz1;
-    uint8_t *b0 = readfile(argv[2], &sz0);
-    uint32_t ct0 = (uint32_t)strtoul(argv[3], NULL, 0);
-    uint32_t cs0 = (uint32_t)strtoul(argv[4], NULL, 0);
-    uint32_t al0 = (uint32_t)strtoul(argv[5], NULL, 0);
-    uint8_t *b1 = readfile(argv[6], &sz1);
-    uint32_t ct1 = (uint32_t)strtoul(argv[7], NULL, 0);
-    uint32_t cs1 = (uint32_t)strtoul(argv[8], NULL, 0);
-    uint32_t al1 = (uint32_t)strtoul(argv[9], NULL, 0);
-    uint32_t hdrlen = (uint32_t)(sizeof(struct fat_header) + 2 * sizeof(struct fat_arch));
-    uint32_t a0mask = (1u << al0) - 1;
-    uint32_t off0 = (hdrlen + a0mask) & ~a0mask;
-    uint32_t a1mask = (1u << al1) - 1;
-    uint32_t off1 = (uint32_t)((off0 + sz0 + a1mask) & ~(uint64_t)a1mask);
-    uint32_t total = (uint32_t)(off1 + sz1);
-    uint8_t *out = calloc(1, total);
-    struct fat_header *fh = (struct fat_header *)out;
-    fh->magic = sw32(FAT_MAGIC);
-    fh->nfat_arch = sw32(2);
-    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
-    ar[0].cputype = (cpu_type_t)sw32(ct0);
-    ar[0].cpusubtype = (cpu_subtype_t)sw32(cs0);
-    ar[0].offset = sw32(off0);
-    ar[0].size = sw32((uint32_t)sz0);
-    ar[0].align = sw32(al0);
-    ar[1].cputype = (cpu_type_t)sw32(ct1);
-    ar[1].cpusubtype = (cpu_subtype_t)sw32(cs1);
-    ar[1].offset = sw32(off1);
-    ar[1].size = sw32((uint32_t)sz1);
-    ar[1].align = sw32(al1);
-    memcpy(out + off0, b0, sz0);
-    memcpy(out + off1, b1, sz1);
-    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (ofd < 0) { perror("open out"); return 2; }
-    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
-    close(ofd);
-    return 0;
-}
-EOF
-"$CC" -O2 -o "$T/makefat" "$T/makefat.c"
-
-cat > "$T/fatcheck.c" <<'EOF'
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <mach-o/loader.h>
-#include <mach-o/fat.h>
-static uint8_t *readfile(const char *path, size_t *outsz) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) { perror("open"); exit(2); }
-    struct stat st; fstat(fd, &st);
-    uint8_t *buf = malloc((size_t)st.st_size);
-    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
-    close(fd);
-    *outsz = (size_t)st.st_size;
-    return buf;
-}
-static uint32_t sw32(uint32_t v) {
-    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
-}
-static void locate_arch(const uint8_t *buf, size_t sz, int idx, uint32_t *off, uint32_t *size,
-                         uint32_t *align) {
-    uint32_t magic = *(const uint32_t *)buf;
-    if (magic != FAT_MAGIC && magic != FAT_CIGAM) { fprintf(stderr, "not a fat file\n"); exit(2); }
-    int swap = (magic == FAT_CIGAM);
-    const struct fat_header *fh = (const struct fat_header *)buf;
-    uint32_t narch = swap ? sw32(fh->nfat_arch) : fh->nfat_arch;
-    if ((uint32_t)idx >= narch) { fprintf(stderr, "arch %d out of range (narch=%u)\n", idx, narch); exit(2); }
-    const struct fat_arch *ar = (const struct fat_arch *)(buf + sizeof(struct fat_header));
-    uint32_t o = swap ? sw32((uint32_t)ar[idx].offset) : (uint32_t)ar[idx].offset;
-    uint32_t s = swap ? sw32((uint32_t)ar[idx].size)   : (uint32_t)ar[idx].size;
-    uint32_t a = swap ? sw32(ar[idx].align) : ar[idx].align;
-    if ((size_t)o + s > sz) { fprintf(stderr, "arch %d out of bounds\n", idx); exit(2); }
-    *off = o; *size = s; *align = a;
-}
-static void dump_dylibs(const uint8_t *p, size_t sz) {
-    if (sz < sizeof(struct mach_header_64)) { fprintf(stderr, "slice too small\n"); exit(2); }
-    const struct mach_header_64 *hdr = (const struct mach_header_64 *)p;
-    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "slice not 64-bit Mach-O (magic=0x%x)\n", hdr->magic); exit(2); }
-    const uint8_t *lcp = p + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)lcp;
-        if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_ID_DYLIB ||
-            lc->cmd == LC_LOAD_WEAK_DYLIB || lc->cmd == LC_REEXPORT_DYLIB) {
-            const struct dylib_command *dc = (const struct dylib_command *)lcp;
-            printf("%s\n", (const char *)lcp + dc->dylib.name.offset);
-        }
-        lcp += lc->cmdsize;
-    }
-}
-int main(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: fatcheck <mode> <file> [args...]\n"); return 2; }
-    const char *mode = argv[1];
-    size_t sz; uint8_t *buf = readfile(argv[2], &sz);
-    if (strcmp(mode, "archinfo") == 0) {
-        uint32_t magic = *(uint32_t *)buf;
-        if (magic != FAT_MAGIC && magic != FAT_CIGAM) { fprintf(stderr, "not a fat file\n"); return 2; }
-        int swap = (magic == FAT_CIGAM);
-        const struct fat_header *fh = (const struct fat_header *)buf;
-        uint32_t narch = swap ? sw32(fh->nfat_arch) : fh->nfat_arch;
-        printf("narch=%u\n", narch);
-        for (uint32_t i = 0; i < narch; i++) {
-            uint32_t o, s, a; locate_arch(buf, sz, (int)i, &o, &s, &a);
-            printf("%u %u %u %u\n", i, o, s, a);
-        }
-        return 0;
-    } else if (strcmp(mode, "dump") == 0) {
-        if (argc != 5) { fprintf(stderr, "usage: fatcheck dump <file> <idx> <outfile>\n"); return 2; }
-        int idx = atoi(argv[3]);
-        uint32_t o, s, a; locate_arch(buf, sz, idx, &o, &s, &a);
-        int ofd = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (ofd < 0) { perror("open out"); return 2; }
-        if (write(ofd, buf + o, s) != (ssize_t)s) { perror("write"); return 2; }
-        close(ofd);
-        return 0;
-    } else if (strcmp(mode, "dylibs") == 0) {
-        if (argc != 4) { fprintf(stderr, "usage: fatcheck dylibs <file> <idx>\n"); return 2; }
-        int idx = atoi(argv[3]);
-        uint32_t o, s, a; locate_arch(buf, sz, idx, &o, &s, &a);
-        dump_dylibs(buf + o, s);
-        return 0;
-    }
-    fprintf(stderr, "unknown mode: %s\n", mode);
-    return 2;
-}
-EOF
-"$CC" -O2 -o "$T/fatcheck" "$T/fatcheck.c"
+# depending on system lipo. See tests/makefat.c and tests/fatcheck.c -- CMake
+# builds both beside macho9, and $BIN is that directory.
 
 # --- fixtures: three dylibs, and a main that calls into two of them ----------
 cat > "$T/a.c" <<'EOF'
@@ -863,29 +708,29 @@ EOF
 "$T/mkslice32" "$T/slice32b.bin" 0x7B
 
 # --- 10. a plain -change on a fat input: both slices land correctly ---------
-"$T/makefat" "$T/main_fat" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
-arch1_before=$("$T/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
+"$BIN/makefat" "$T/main_fat" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
+arch1_before=$("$BIN/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
 "$CHANGE_DYLIB" "$T/main_fat" -change "@loader_path/liba.dylib" "@loader_path/liba_fat.dylib" >/dev/null \
     || bad "fat tool run" "change_dylib failed on a fat input"
 
-narch=$("$T/fatcheck" archinfo "$T/main_fat" | head -1)
+narch=$("$BIN/fatcheck" archinfo "$T/main_fat" | head -1)
 [ "$narch" = "narch=2" ] && ok "fat: narch unchanged (2)" || bad "fat narch" "got '$narch'"
 
-dylibs0=$("$T/fatcheck" dylibs "$T/main_fat" 0)
+dylibs0=$("$BIN/fatcheck" dylibs "$T/main_fat" 0)
 if echo "$dylibs0" | grep -q '^@loader_path/liba_fat\.dylib$'; then
     ok "fat: the x86_64 slice's dylib path was actually changed"
 else
     bad "fat dylib change" "x86_64 slice does not name the new path: $dylibs0"
 fi
 
-"$T/fatcheck" dump "$T/main_fat" 1 "$T/fat_slice1_after.bin"
+"$BIN/fatcheck" dump "$T/main_fat" 1 "$T/fat_slice1_after.bin"
 if cmp -s "$T/slice32.bin" "$T/fat_slice1_after.bin"; then
     ok "fat: the slice this tool cannot understand is preserved byte-for-byte"
 else
     bad "fat slice preserved" "the 32-bit slice's bytes changed"
 fi
 
-arch1_after=$("$T/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
+arch1_after=$("$BIN/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
 [ "$arch1_before" = "$arch1_after" ] \
     && ok "fat: unmoved slice keeps its original offset and size ($arch1_after)" \
     || bad "fat offset preserved" "arch 1 was '$arch1_before', now '$arch1_after'"
@@ -897,8 +742,8 @@ arch1_after=$("$T/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
 # overflows, same idiom as the capacity cases above) so the x86_64 slice's
 # size actually changes, and checks the 32-bit slice both moves out of the
 # way and still arrives byte-for-byte intact at its new offset.
-"$T/makefat" "$T/main_fat_grow" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
-before_arch0=$("$T/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
+"$BIN/makefat" "$T/main_fat_grow" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
+before_arch0=$("$BIN/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
 before_arch0_size=$(echo "$before_arch0" | awk '{print $3}')
 
 set -- ; i=0
@@ -909,8 +754,8 @@ done
 "$CHANGE_DYLIB" "$T/main_fat_grow" -grow "$@" >/dev/null 2>"$T/fatgrow.err" \
     || bad "fat grow tool run" "change_dylib failed: $(head -1 "$T/fatgrow.err")"
 
-after_arch0=$("$T/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
-after_arch1=$("$T/fatcheck" archinfo "$T/main_fat_grow" | sed -n '3p')
+after_arch0=$("$BIN/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
+after_arch1=$("$BIN/fatcheck" archinfo "$T/main_fat_grow" | sed -n '3p')
 after_arch0_size=$(echo "$after_arch0" | awk '{print $3}')
 after_arch0_off=$(echo "$after_arch0" | awk '{print $2}')
 after_arch1_off=$(echo "$after_arch1" | awk '{print $2}')
@@ -941,7 +786,7 @@ else
     bad "fat+grow alignment" "arch1 at $after_arch1_off is not aligned to 2^$after_arch1_align"
 fi
 
-"$T/fatcheck" dump "$T/main_fat_grow" 1 "$T/fat_slice1_after_grow.bin"
+"$BIN/fatcheck" dump "$T/main_fat_grow" 1 "$T/fat_slice1_after_grow.bin"
 if cmp -s "$T/slice32.bin" "$T/fat_slice1_after_grow.bin"; then
     ok "fat+grow: the 32-bit slice's bytes are still exactly preserved at its new offset"
 else
@@ -1035,14 +880,14 @@ else
     bad "fat descending-offset size" "input was $before_size bytes, output is only $after_size -- TRUNCATED"
 fi
 
-dylibs_hi=$("$T/fatcheck" dylibs "$T/main_descfat" 0)
+dylibs_hi=$("$BIN/fatcheck" dylibs "$T/main_descfat" 0)
 if echo "$dylibs_hi" | grep -q '^@loader_path/liba_desc\.dylib$'; then
     ok "fat descending-offset: the high-offset slice's dylib path was actually changed"
 else
     bad "fat descending-offset dylib" "high-offset slice does not name the new path: $dylibs_hi"
 fi
 
-"$T/fatcheck" dump "$T/main_descfat" 1 "$T/descfat_lo_after.bin"
+"$BIN/fatcheck" dump "$T/main_descfat" 1 "$T/descfat_lo_after.bin"
 if cmp -s "$T/slice32.bin" "$T/descfat_lo_after.bin"; then
     ok "fat descending-offset: the low-offset slice is still preserved byte-for-byte"
 else

@@ -255,6 +255,15 @@ target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(linkedit_test PRIVATE macho9core)
 add_test(NAME linkedit_test COMMAND linkedit_test)
 
+# Fixture helpers, not tests: build and inspect a fat container without
+# system lipo, whose accepted architectures are not the suites' to pin.
+# Built beside macho9 so every CLI suite finds them in the directory it is
+# already given.
+add_executable(makefat tests/makefat.c)
+add_executable(fatcheck tests/fatcheck.c)
+target_compile_options(makefat PRIVATE -O2)
+target_compile_options(fatcheck PRIVATE -O2)
+
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Now
 # matches chained-fixups.sh/characterize.sh/cli_test.sh/leaf-tool-crashes.sh:
