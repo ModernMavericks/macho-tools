@@ -42,6 +42,10 @@ bad()  { echo "FAIL $1: $2"; fails=$((fails + 1)); }
 # loudly and distinctly from PASS/FAIL, per-assertion, rather than silently
 # omitted -- a silent skip is how coverage rots. Does not touch $fails.
 skip() { echo "SKIP $1: $2"; }
+# A file's content digest, for "untouched"/"unchanged" assertions -- the same
+# shasum invocation already used a few times below, named once so the `edit`
+# section (which needs it three times) doesn't repeat the pipeline.
+sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
 # `set -e` means any bare command that exits nonzero kills the WHOLE script
 # immediately -- which has already happened for real (a helper's exit
@@ -269,7 +273,7 @@ rc=0
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 1" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 1"
 
-for v in verify info grow minos lc dylib rpath segment retag-swift declassify; do
+for v in verify info grow minos lc dylib rpath segment retag-swift declassify edit; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
@@ -292,6 +296,9 @@ if grep -q "declassify" "$T/usage.err"; then
 else
     bad "usage: declassify" "not mentioned at all"
 fi
+grep -q "edit" "$T/usage.err" \
+    && ok "usage: edit listed" \
+    || bad "usage: edit" "not mentioned at all"
 # rpath -insert IS implemented now; capabilities must claim it. A wrapper has
 # no other way to learn this build can place a search path FIRST, which
 # docs/PROPOSAL.md calls a new capability change_dylib never had.
@@ -300,6 +307,17 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
+# edit's own flags= line: only the CLI flags this task actually adds
+# (--dry-run is a later task and must not appear yet).
+if echo "$caps" | grep "^verb edit" | grep -q "flags=.*output" \
+    && echo "$caps" | grep "^verb edit" | grep -q "flags=.*verbose"; then
+    ok "capabilities: edit advertises output and verbose flags"
+else
+    bad "capabilities: edit flags" "expected output,verbose: $(echo "$caps" | grep '^verb edit')"
+fi
+echo "$caps" | grep "^verb edit" | grep -q "dry-run" \
+    && bad "capabilities: edit flags" "advertises dry-run, which this task does not add" \
+    || ok "capabilities: edit does not yet advertise dry-run"
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The spec's statement vocabulary
@@ -2526,6 +2544,119 @@ rc=0
 [ -e "$T/declassify_missing.out" ] \
     && bad "declassify: missing IN" "wrote an output file for an IN it could not even open" \
     || ok "declassify: an absent IN produces no output file"
+
+# ============================================================================
+# edit: parses a script and applies it through me_run in one pass -- the
+# three shapes the spec names, plus the property the whole design exists for
+# (a parse error costs nothing: the file is never opened for writing).
+# ============================================================================
+
+# edit: the production case -- what install.sh does with three tools and
+# three full writes of a 208MB binary, in one write. build_main's fixture
+# records the install name literally as "@loader_path/liba.dylib"
+# (see build_main above), not a path under $T, so the script names that
+# install name directly rather than substituting one in -- the same 23
+# bytes both before and after, so the replacement fits without growth.
+build_main "$T/edit_fixture"
+cat >"$T/prod.edits" <<'EOF'
+# a comment, and a blank line follow
+
+load-command  delete   uuid
+dylib         replace  @loader_path/liba.dylib  @loader_path/../S.dylib
+EOF
+"$MACHO9" edit "$T/edit_fixture" "$T/prod.edits" >"$T/edit.out" 2>"$T/edit.err" \
+    && edit_rc=0 || edit_rc=$?
+[ "$edit_rc" -eq 0 ] && ok "edit: the production script succeeds" \
+    || bad "edit" "expected 0, got $edit_rc: $(cat "$T/edit.err")"
+otool -l "$T/edit_fixture" 2>/dev/null | grep -q LC_UUID \
+    && bad "edit" "LC_UUID survived the edit script" \
+    || ok "edit: applied the load-command delete"
+otool -L "$T/edit_fixture" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
+    && ok "edit: applied the dylib replace" \
+    || bad "edit" "the dylib replace did not land: $(otool -L "$T/edit_fixture")"
+
+# edit --output leaves the input alone.
+build_main "$T/edit_src"
+before=$(sha "$T/edit_src")
+"$MACHO9" edit "$T/edit_src" "$T/prod.edits" --output "$T/edit_dst" \
+    >/dev/null 2>"$T/edit_out.err" || bad "edit --output" "$(cat "$T/edit_out.err")"
+[ "$(sha "$T/edit_src")" = "$before" ] && ok "edit --output: input untouched" \
+    || bad "edit --output" "the input file was modified"
+[ -f "$T/edit_dst" ] && ok "edit --output: wrote the output" \
+    || bad "edit --output" "no output file"
+
+# edit FILE - reads the script from stdin, so a generated script needs no
+# temp file.
+build_main "$T/edit_stdin"
+printf 'load-command delete uuid\n' | "$MACHO9" edit "$T/edit_stdin" - \
+    >/dev/null 2>"$T/edit_stdin.err" || bad "edit -" "$(cat "$T/edit_stdin.err")"
+otool -l "$T/edit_stdin" 2>/dev/null | grep -q LC_UUID \
+    && bad "edit -" "LC_UUID survived the stdin script" \
+    || ok "edit: reads a script from stdin"
+
+# --verbose and --output may appear anywhere among the arguments, not just
+# after SCRIPT.
+build_main "$T/edit_anywhere"
+"$MACHO9" edit --verbose "$T/edit_anywhere" "$T/prod.edits" \
+    >"$T/edit_anywhere.out" 2>"$T/edit_anywhere.err" \
+    || bad "edit: flags before FILE" "$(cat "$T/edit_anywhere.err")"
+[ -s "$T/edit_anywhere.out" ] \
+    && ok "edit: --verbose before FILE is accepted and logs something" \
+    || bad "edit: flags before FILE" "no verbose output: $(cat "$T/edit_anywhere.out")"
+
+# A parse error is reported BEFORE the file is opened for writing, and names
+# the line. This is what makes a typo in statement 9 of 9 cost nothing.
+build_main "$T/edit_bad"
+bad_before=$(sha "$T/edit_bad")
+printf 'load-command delete uuid\nfrobnicate everything\n' \
+    >"$T/bad.edits"
+"$MACHO9" edit "$T/edit_bad" "$T/bad.edits" >/dev/null 2>"$T/editbad.err" \
+    && editbad_rc=0 || editbad_rc=$?
+[ "$editbad_rc" -eq 2 ] && ok "edit: a parse error is an error (2), not a refusal" \
+    || bad "edit parse error" "expected 2, got $editbad_rc"
+grep -q "line 2" "$T/editbad.err" && ok "edit: names the offending line" \
+    || bad "edit parse error" "no line number: $(cat "$T/editbad.err")"
+[ "$(sha "$T/edit_bad")" = "$bad_before" ] \
+    && ok "edit: a parse error left the file untouched" \
+    || bad "edit parse error" "the file was modified despite a parse error"
+grep -q "^macho9 edit: " "$T/editbad.err" \
+    && ok "edit: parse error is prefixed like every other verb's diagnostics" \
+    || bad "edit parse error" "no 'macho9 edit: ' prefix: $(cat "$T/editbad.err")"
+
+# Usage errors: an unknown flag, a missing positional, an extra positional,
+# and a missing OUT after --output are all EX_FAIL (2) with a usage message
+# -- never a crash, never silently accepted.
+build_main "$T/edit_usage"
+rc=0
+"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --bogus-flag \
+    >/dev/null 2>"$T/edit_usage1.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: an unknown flag is a usage error (2)" \
+    || bad "edit usage" "unknown flag: expected 2, got $rc"
+rc=0
+"$MACHO9" edit "$T/edit_usage" >/dev/null 2>"$T/edit_usage2.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: a missing SCRIPT positional is a usage error (2)" \
+    || bad "edit usage" "missing positional: expected 2, got $rc"
+rc=0
+"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" extra \
+    >/dev/null 2>"$T/edit_usage3.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: an extra positional is a usage error (2)" \
+    || bad "edit usage" "extra positional: expected 2, got $rc"
+rc=0
+"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --output \
+    >/dev/null 2>"$T/edit_usage4.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: --output with no OUT is a usage error (2)" \
+    || bad "edit usage" "missing OUT: expected 2, got $rc"
+
+# A script file that cannot be read at all -- as opposed to one that parses
+# badly -- is also EX_FAIL, reported with the path.
+rc=0
+"$MACHO9" edit "$T/edit_usage" "$T/no-such-script-for-edit" \
+    >/dev/null 2>"$T/edit_noscript.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: an unreadable SCRIPT path is a failure (2)" \
+    || bad "edit: unreadable script" "expected 2, got $rc"
+grep -q "no-such-script-for-edit" "$T/edit_noscript.err" \
+    && ok "edit: names the unreadable script path" \
+    || bad "edit: unreadable script" "path not named: $(cat "$T/edit_noscript.err")"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"

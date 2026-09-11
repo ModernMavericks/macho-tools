@@ -132,6 +132,129 @@ That gate exists because every defect ever found in this code has been a silent
 success: the tool reported OK and the binary died in the loader — or worse,
 didn't.
 
+## `macho9 edit` — edit scripts
+
+`install.sh`-style porting runs several rewrites in sequence — strip a load
+command, then repoint a handful of dylibs — each of which is normally its own
+`macho9` invocation and its own full write of the file. `edit` takes a script
+naming every statement instead, applies them all to one in-memory copy, and
+writes once:
+
+```sh
+macho9 edit FILE SCRIPT                 # rewrite FILE in place
+macho9 edit FILE SCRIPT --output OUT    # write elsewhere; FILE untouched
+macho9 edit FILE -                      # read the script from stdin
+```
+
+`--output` and `--verbose` may appear anywhere among the arguments, not only
+after `SCRIPT`.
+
+**Edit writes nothing unless every statement succeeded.** The whole script is
+parsed before `FILE` is ever opened for writing, so a typo in the last line of
+a long script costs nothing. Each statement then runs against the image in
+memory, in the order written; if any statement is refused, `FILE` (or
+`--output`'s target) is left exactly as it was found. The finished image is
+verified — mandatorily, after the last statement and before the write, with no
+opt-out — and only then written, once.
+
+### File format
+
+One statement per line. Fields are whitespace-separated, with single- and
+double-quote grouping and backslash escapes — shell word rules. `#` begins a
+comment except inside quotes, and blank lines are ignored.
+
+### Statements
+
+```
+load-command  delete    KIND        uuid | codesig | source-version
+                                    | build-version | code-sign-drs
+segment       rename    OLD NEW
+version-min   set       10.9
+swift-abi     set       legacy
+fixups        set       classic
+dylib         replace   OLD NEW
+dylib         append    PATH
+dylib         insert    PATH
+dylib         delete    PATH
+dylib         reexport  PATH
+rpath         replace   OLD NEW
+rpath         delete    PATH
+rpath         append    PATH
+rpath         insert    PATH
+```
+
+Every rewriting operation `macho9` has, spelled as the existing verb with the
+`FILE` argument dropped — `macho9 dylib FILE -replace A B` is the same edit as
+the line `dylib replace A B`.
+
+### Directives
+
+Two, and each must precede every operation in the script — a directive after
+the first statement it would have governed is a parse error:
+
+```
+allow-grow          permission to enlarge the header pad by lowering the image
+                    base if new load commands do not fit; opt-in, and refused
+                    by default
+fatal-warnings      an operation that matched nothing is an error, not just a
+                    report
+```
+
+### Worked example
+
+What `install.sh` does today as three tools and three full writes of a ~200MB
+binary:
+
+```sh
+patch_macho     "$REAL" "$T"
+add_version_min "$T"
+change_dylib    "$T" -strip-lc uuid -strip-lc codesig \
+    -change "/usr/lib/libSystem.B.dylib"  "@loader_path/../S.dylib" \
+    -change "/usr/lib/libicucore.A.dylib" "@loader_path/../I.dylib" \
+    -change "/usr/lib/libc++.1.dylib"     "@loader_path/../c++.1.dylib"
+```
+
+becomes one script, `claude.edits`:
+
+```
+# Claude Code -> 10.9
+fixups        set      classic
+version-min   set      10.9
+load-command  delete   uuid
+load-command  delete   codesig
+dylib         replace  /usr/lib/libSystem.B.dylib   @loader_path/../S.dylib
+dylib         replace  /usr/lib/libicucore.A.dylib  @loader_path/../I.dylib
+dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
+```
+
+and one invocation:
+
+```sh
+macho9 edit "$REAL" claude.edits --output "$T"
+```
+
+### Limits
+
+- **Input must be a thin 64-bit Mach-O.** A fat (universal) file is refused;
+  run one script per slice after extracting it (`lipo -thin ARCH`).
+- **`allow-grow` reaches only `dylib` and `rpath` statements** — the ones whose
+  load commands can outgrow the header pad. `version-min set` refuses with "no
+  room" even under `allow-grow`; `segment rename` and `load-command delete`
+  never need it, since neither adds bytes to the load commands.
+- **`fatal-warnings` covers the statements that can match nothing:**
+  `load-command delete` (no command of that kind), `dylib replace/delete/
+  reexport` and `rpath replace/delete` (no command naming that path), and
+  `segment rename` (no segment of that name). `append` and `insert` always
+  act, and the three `set` statements treat "already so" as success, so none
+  of those can miss.
+- **`MACHO_NO_VERIFY` does not affect `edit`'s own final verification.** A
+  `dylib`/`rpath`/`load-command` statement still runs the same per-step
+  plausibility check `macho9 dylib`/`rpath`/`lc` run (see "Prove it or
+  refuse" above), and that per-step check still honours the variable. But
+  the mandatory check `edit` runs after the *last* statement, before the
+  single write, has no such escape hatch, by design — no opt-out was
+  reintroduced at this higher level.
+
 ## Notes
 
 - Not yet a drop-in replacement for `insert_dylib` on 32-bit or fat inputs, or on

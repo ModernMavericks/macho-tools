@@ -61,6 +61,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -79,6 +80,7 @@
 #include "version_min.h"
 #include "mach_compat.h"
 #include "script.h"
+#include "edit.h"
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
@@ -281,7 +283,13 @@ static void print_ops_csv(int is_rpath) {
  *                        whole argument.
  *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
  *                         verb prints on success, by key -- today only
- *                         `segment reports=renamed`
+ *                         `segment reports=renamed`. `edit`'s own flags=
+ *                         entry is unrelated to the fatal-warnings paragraph
+ *                         above -- `output` and `verbose` are plain CLI
+ *                         switches (--output OUT, --verbose), not a
+ *                         match-reporting mode -- listed so a wrapper can
+ *                         tell whether this build accepts them before
+ *                         passing either.
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the edit-script
  *       statement vocabulary the `edit` verb's parser (ms_parse) accepts.
@@ -330,6 +338,11 @@ static int print_capabilities(void) {
     printf("verb rpath ops=");
     print_ops_csv(1);
     printf(" flags=allow-grow,fatal-warnings\n");
+    /* flags=output,verbose: the two CLI flags `edit` accepts today.
+     * --dry-run is a later task's addition and stays off this list until it
+     * lands, per this function's own "never advertise one that errors out"
+     * contract. */
+    printf("verb edit flags=output,verbose\n");
     {
         int i;
         const char *kind, *op;
@@ -361,8 +374,11 @@ static void usage(const char *prog) {
         "       %s grow FILE N\n"
         "       %s minos FILE 10.9\n"
         "       %s info FILE\n"
-        "       %s verify FILE\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        "       %s verify FILE\n"
+        "       %s edit FILE SCRIPT [--output OUT] [--verbose]\n"
+        "                                                    apply an edit script to FILE (see README);\n"
+        "                                                    SCRIPT may be '-' for stdin\n",
+        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* ---- verify: a thin shell over mg_plausible -----------------------------
@@ -1070,6 +1086,132 @@ static int cmd_declassify(const char *in, const char *out) {
     return 0;
 }
 
+/* ---- edit: parse an edit script and run it through me_run --------------
+ *
+ * The one verb whose positionals aren't at fixed argv indices: --output and
+ * --verbose may appear anywhere among the arguments (a controller ruling
+ * settled this after the design doc's own examples put --output after
+ * SCRIPT and a later task's own examples put flags before FILE), so this
+ * scans every token once instead of assuming a position. The two tokens
+ * that are not "--output", its OUT, or "--verbose" -- in the order seen --
+ * are FILE and SCRIPT; SCRIPT alone is allowed to start with '-' without
+ * being mistaken for an unrecognized flag, because it names stdin.
+ *
+ * ms_parse runs, and can fail, before FILE is ever opened for writing (see
+ * me_run's own comment on step 1 of its execution model) -- a parse error is
+ * reported here, prefixed the same way every other verb's own diagnostics
+ * are, and returns EX_FAIL: an unparseable script is an operational failure
+ * (a typo in the script), not a considered refusal about what FILE
+ * contains. me_run's own return (0 / MR_REFUSED / MR_FAIL, forwarded
+ * verbatim exactly as dylib/rpath/lc/minos already forward mr_apply_file's)
+ * is everything past that point.
+ */
+enum { ME_READ_OK = 0, ME_READ_IO = -1, ME_READ_MEM = -2 };
+
+/* Reads all of `f` into a malloc'd buffer, growing as needed. There is no
+ * size cap -- an edit script can be as long as its author wrote, same as
+ * ms_parse's own contract. */
+static int me_read_all(FILE *f, uint8_t **out, size_t *outlen) {
+    size_t cap = 65536, len = 0;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return ME_READ_MEM;
+    for (;;) {
+        if (len == cap) {
+            size_t ncap = cap * 2;
+            uint8_t *nbuf = realloc(buf, ncap);
+            if (!nbuf) { free(buf); return ME_READ_MEM; }
+            buf = nbuf;
+            cap = ncap;
+        }
+        size_t n = fread(buf + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) {
+            if (ferror(f)) { free(buf); return ME_READ_IO; }
+            break;   /* EOF */
+        }
+    }
+    *out = buf;
+    *outlen = len;
+    return ME_READ_OK;
+}
+
+static int cmd_edit_usage(const char *prog) {
+    fprintf(stderr, "usage: %s edit FILE SCRIPT [--output OUT] [--verbose]\n", prog);
+    return EX_FAIL;
+}
+
+static int cmd_edit(int argc, char **argv) {
+    const char *prog = argv[0];
+    const char *file = NULL, *script_path = NULL, *out = NULL;
+    int verbose = 0;
+    int npos = 0;
+
+    for (int i = 2; i < argc; i++) {
+        const char *tok = argv[i];
+        if (strcmp(tok, "--output") == 0) {
+            if (i + 1 >= argc) return cmd_edit_usage(prog);
+            out = argv[++i];
+        } else if (strcmp(tok, "--verbose") == 0) {
+            verbose = 1;
+        } else if (tok[0] == '-' && strcmp(tok, "-") != 0) {
+            fprintf(stderr, "macho9 edit: unknown flag '%s'\n", tok);
+            return EX_FAIL;
+        } else if (npos == 0) {
+            file = tok;
+            npos++;
+        } else if (npos == 1) {
+            script_path = tok;
+            npos++;
+        } else {
+            return cmd_edit_usage(prog);
+        }
+    }
+    if (npos != 2) return cmd_edit_usage(prog);
+
+    FILE *f;
+    if (strcmp(script_path, "-") == 0) {
+        f = stdin;
+    } else {
+        f = fopen(script_path, "rb");
+        if (!f) {
+            fprintf(stderr, "macho9 edit: %s: %s\n", script_path, strerror(errno));
+            return EX_FAIL;
+        }
+    }
+
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    int rrc = me_read_all(f, &buf, &len);
+    if (f != stdin) fclose(f);
+    if (rrc == ME_READ_MEM) {
+        fprintf(stderr, "macho9 edit: %s: out of memory\n", script_path);
+        return EX_FAIL;
+    }
+    if (rrc == ME_READ_IO) {
+        fprintf(stderr, "macho9 edit: %s: %s\n", script_path, strerror(errno));
+        return EX_FAIL;
+    }
+
+    ms_script s;
+    char perr[256];
+    if (ms_parse((const char *)buf, len, &s, perr, sizeof perr) != 0) {
+        fprintf(stderr, "macho9 edit: %s: %s\n", script_path, perr);
+        free(buf);
+        return EX_FAIL;
+    }
+    free(buf);
+
+    me_opts o;
+    memset(&o, 0, sizeof o);
+    o.verbose = verbose;
+    o.dry_run = 0;   /* --dry-run is a later task's addition */
+    o.log = stderr;
+
+    int rc = me_run(file, out, &s, &o);
+    ms_free(&s);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--capabilities") == 0)
         return print_capabilities();
@@ -1116,6 +1258,12 @@ int main(int argc, char **argv) {
     if (strcmp(verb, "declassify") == 0) {
         if (argc != 4) { fprintf(stderr, "usage: %s declassify IN OUT\n", argv[0]); return EX_FAIL; }
         return cmd_declassify(argv[2], argv[3]);
+    }
+    if (strcmp(verb, "edit") == 0) {
+        /* Flags may appear anywhere among the arguments, so there is no
+         * fixed argc this dispatch can check up front -- cmd_edit's own scan
+         * validates the positional count (and everything else) itself. */
+        return cmd_edit(argc, argv);
     }
 
     fprintf(stderr, "macho9: unknown verb '%s'\n", verb);
