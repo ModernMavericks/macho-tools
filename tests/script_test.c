@@ -11,6 +11,7 @@
  *   src/script.c && /tmp/scripttest
  */
 #include "script.h"
+#include "arch_names.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -373,6 +374,41 @@ static void test_capabilities_table_round_trips(void) {
     CHECK(n_rows == 14, "the statement table has 14 rows (got %d)", n_rows);
 }
 
+static void test_arch_directive_names_rows(void) {
+    static const char src[] = "arch x86_64\narch arm64\narch x86_64\nload-command delete uuid\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "arch: parses (%s)", err);
+    CHECK(s.arch_mask == ((1u << ma_lookup("x86_64")) | (1u << ma_lookup("arm64"))),
+          "arch: the mask names x86_64 and arm64, a repeat harmlessly (got 0x%x)", s.arch_mask);
+    CHECK(s.n == 1, "arch: directives are not statements (got %d)", s.n);
+    ms_free(&s);
+}
+
+static void test_no_arch_directive_is_an_empty_mask(void) {
+    static const char src[] = "load-command delete uuid\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "no arch: parses (%s)", err);
+    CHECK(s.arch_mask == 0, "no arch: the mask is empty (got 0x%x)", s.arch_mask);
+    ms_free(&s);
+}
+
+static void test_arch_directive_errors(void) {
+    ms_script s; char err[256];
+    static const char bad1[] = "arch amd64\n";
+    err[0] = 0;
+    CHECK(ms_parse(bad1, sizeof bad1 - 1, &s, err, sizeof err) == -1, "arch amd64 is refused");
+    CHECK(strstr(err, "line 1") && strstr(err, "amd64") && strstr(err, "x86_64, x86_64h"),
+          "and names the line, the name, and what is accepted (got: %s)", err);
+    static const char bad2[] = "arch\n";
+    CHECK(ms_parse(bad2, sizeof bad2 - 1, &s, err, sizeof err) == -1, "arch with no name is refused");
+    static const char bad3[] = "arch x86_64 arm64\n";
+    CHECK(ms_parse(bad3, sizeof bad3 - 1, &s, err, sizeof err) == -1, "arch with two names is refused");
+    static const char bad4[] = "load-command delete uuid\narch x86_64\n";
+    CHECK(ms_parse(bad4, sizeof bad4 - 1, &s, err, sizeof err) == -1,
+          "arch after an operation is refused");
+    CHECK(strstr(err, "line 2") != NULL, "and names line 2 (got: %s)", err);
+}
+
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -400,6 +436,9 @@ int main(void) {
     test_extra_fields_report_arity_not_overflow();
     test_first_error_reported_is_earliest_in_line_order();
     test_capabilities_table_round_trips();
+    test_arch_directive_names_rows();
+    test_no_arch_directive_is_an_empty_mask();
+    test_arch_directive_errors();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

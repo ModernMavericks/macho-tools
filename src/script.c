@@ -1,4 +1,5 @@
 #include "script.h"
+#include "arch_names.h"
 #include "lc_kinds.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -201,6 +202,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
      * position (they're all on the same line). */
     int n_stmts = 0;
     int allow_grow = 0, fatal_warnings = 0, seen_operation = 0;
+    unsigned arch_mask = 0;
     size_t i = 0;
     int lineno = 0;
     while (i < len) {
@@ -231,6 +233,24 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
         if (n < 0)
             return ms_failf(stmts, text, out, err, errsz, lineno, "%s", lerr);
         if (n == 0) continue;   /* blank or comment */
+
+        if (strcmp(fields[0], "arch") == 0) {
+            if (n != 2)
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "directive 'arch' takes exactly one operand, an arch name");
+            if (seen_operation)
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "directive 'arch' must precede every operation");
+            int row = ma_lookup(fields[1]);
+            if (row < 0) {
+                char names[128];
+                ma_list(names, sizeof names);
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "unknown arch '%s' (expected one of: %s)", fields[1], names);
+            }
+            arch_mask |= 1u << row;
+            continue;
+        }
 
         if (strcmp(fields[0], "allow-grow") == 0 ||
             strcmp(fields[0], "fatal-warnings") == 0) {
@@ -301,6 +321,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
     out->n = n_stmts;
     out->allow_grow = allow_grow;
     out->fatal_warnings = fatal_warnings;
+    out->arch_mask = arch_mask;
     out->text = text;
     return 0;
 }

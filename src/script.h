@@ -43,12 +43,17 @@ enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
 typedef struct { int kind, op; const char *a, *b; int line; } ms_stmt;
 
 /* A parsed edit script: every operation line (not directive lines -- those
- * only set the two flags below) in source order. */
+ * only set the three fields below) in source order. Every directive --
+ * `allow-grow`, `fatal-warnings`, `arch NAME` -- is repeatable and must
+ * precede every operation. */
 typedef struct {
     ms_stmt *stmts;
     int      n;
     int      allow_grow;
     int      fatal_warnings;
+    unsigned arch_mask;   /* bit r set when an `arch` directive named row r of
+                           * src/arch_names.h's table; 0 when the script names
+                           * no arch, which means every 64-bit slice */
     char    *text;      /* owns every operand's storage */
 } ms_script;
 
