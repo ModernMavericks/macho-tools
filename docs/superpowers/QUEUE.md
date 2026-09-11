@@ -6,7 +6,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 |---|---|---|---|---|
 | 1 | Report what macho9 did | — | `plans/2026-09-10-report-what-macho9-did.md` | **done**, pushed, CI green at `77f076a` |
 | 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | plan written; execution paused for owner review |
-| 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | — | spec revised 2026-09-10; plan next |
+| 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; shelved until item 2 merges |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | — | spec written, awaiting review |
 | 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written; shelved until item 2 merges |
 | 6 | **Human code review + excellent documentation** | — | — | not started |
