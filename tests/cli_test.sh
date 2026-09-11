@@ -301,6 +301,15 @@ else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
 
+# Every row of the statement table must appear in --capabilities, and
+# --capabilities must advertise nothing the table lacks. The point of
+# generating one from the other is that this can never go stale; this
+# assertion is what makes that claim testable rather than aspirational.
+"$MACHO9" --capabilities >"$T/caps2.out" 2>&1
+grep -q "statement dylib replace 2" "$T/caps2.out" \
+    && ok "capabilities: statement table is advertised" \
+    || bad "capabilities statements" "no 'statement dylib replace 2' line: $(cat "$T/caps2.out")"
+
 # --fatal-warnings promotes "an operation matched nothing" from a stderr
 # report to a refusal (dylib/rpath/lc only -- segment and retag-swift take no
 # list of operations that could miss). A wrapper has no other way to learn

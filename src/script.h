@@ -26,4 +26,63 @@
  * silent-success class this toolkit exists to eliminate. */
 int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
 
+/* The statement vocabulary an edit script's operation lines are drawn from.
+ * See src/script.c's MS_TABLE for the kind/op pairs actually accepted --
+ * these enums just name the values ms_parse fills into an ms_stmt, and the
+ * values a `switch` on .kind/.op matches against. */
+enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
+       MS_FIXUPS, MS_DYLIB, MS_RPATH };
+enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
+       MS_INSERT, MS_REEXPORT };
+
+/* One operation line from an edit script. `a`/`.b` (NULL when the
+ * statement's arity doesn't use them) point into the owning ms_script's
+ * `text`, not into separately allocated storage. `line` is the 1-based
+ * source line, for diagnostics raised later (e.g. by whatever applies the
+ * script) that still need to name where a statement came from. */
+typedef struct { int kind, op; const char *a, *b; int line; } ms_stmt;
+
+/* A parsed edit script: every operation line (not directive lines -- those
+ * only set the two flags below) in source order. */
+typedef struct {
+    ms_stmt *stmts;
+    int      n;
+    int      allow_grow;
+    int      fatal_warnings;
+    char    *text;      /* owns every operand's storage */
+} ms_script;
+
+/* Parses a whole edit script from `buf`/`len` (need not be NUL-terminated;
+ * a final line with no trailing newline is fine, and there is no fixed cap
+ * on the number of statements -- the array is sized from the script itself).
+ *
+ * On success, returns 0, fills `*out`, and the caller must eventually call
+ * ms_free(out). On error, returns -1, and (if `err` and `errsz` are
+ * non-zero) sets `err` to a message that names the offending 1-based source
+ * line as "line N". On error, ms_parse has already freed everything it
+ * allocated and zeroed `*out` -- so ms_free(out) is not necessary after a
+ * failed ms_parse, though it remains safe (a no-op) if called anyway. */
+int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errsz);
+
+/* Frees an ms_script filled by a successful ms_parse. Safe to call on an
+ * ms_script that is all-zero (never parsed, or left by a failed ms_parse --
+ * see ms_parse's own comment). */
+void ms_free(ms_script *s);
+
+/* Names an MS_* kind/op constant for diagnostics, e.g. ms_kind_name(MS_DYLIB)
+ * -> "dylib". Returns "unknown" for a value outside the table -- defensive
+ * only, since every kind/op a caller has came from this table in the first
+ * place (either MS_TABLE's own constants, or an ms_stmt ms_parse filled). */
+const char *ms_kind_name(int kind);
+const char *ms_op_name(int op);
+
+/* Enumerates the statement table row by row (0-based `i`), for a caller like
+ * --capabilities that must generate its advertised vocabulary from the same
+ * data ms_parse matches statements against, rather than maintaining a
+ * second, hand-copied list that can drift out of agreement with this one.
+ * Fills `*kind`, `*op`, `*nargs` and returns 1 for a valid row index;
+ * returns 0 once `i` is past the last row, so a caller can loop
+ * `for (i = 0; ms_table_row(i, &k, &o, &n); i++)`. */
+int ms_table_row(int i, const char **kind, const char **op, int *nargs);
+
 #endif
