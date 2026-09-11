@@ -13,11 +13,16 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
 | 9 | `edit` skips the write when nothing changed | — | — | queued; bounded (in place only, byte-compare against FILE) |
-| 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | — | spec written; awaiting owner review |
-| 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | — | spec written; awaiting owner review |
+| 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | plan written |
+| 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | plan written |
 
-Items 9–11 follow from item 2 and have no agreed slot yet. All three change
-code item 6's review should see, so they belong before item 6.
+Items 9–11 follow from item 2 and run **before item 3**. Their plans are
+written against today's names (`macho9`, `cli/macho9.c`) and today's
+`--verbose` flag. Item 3 renames the product by sweeping the tree, which
+picks up whatever 9–11 added, and its Task 6 ("always verbose, on stderr")
+deletes the flag -- turning every verbose-only line 9–11 add, such as the
+per-slice lines, into always-on output in the same pass. Running item 3
+first would mean rebasing all three plans onto the new names.
 
 ## Why this order
 

@@ -39,22 +39,31 @@ script can say.
 ### One split-and-reassemble, in `src/fat.c`
 
 ```c
-/* One selected slice, split out as its own buffer. The callback may grow it:
- * reallocate *pbuf and update *psize. */
-typedef int (*mfat_slice_fn)(uint8_t **pbuf, size_t *psize,
-                             const mfat_arch *a, uint32_t index, void *ctx);
+/* One slice, split out as its own buffer. The callback may change it, grow
+ * it (reallocating *pbuf, updating *psize), or leave it alone; it sets
+ * *changed when the slice differs. Returns 0 or a positive failure code. */
+typedef int (*mfat_slice_fn)(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
+                             uint32_t index, int *changed, void *ctx);
 
-/* Split a 32-bit-header fat file, call `fn` for each slice `select` accepts,
- * and reassemble. Every slice keeps its offset until an earlier one grows;
- * later slices then shift, each keeping its own alignment. Slices `select`
- * rejects, and 32-bit slices, pass through byte-identical.
- * Returns 0 (with *modified set if anything changed), or the first non-zero
- * code a callback returned. On any non-zero return the input is untouched
- * and every split buffer freed. */
-int mfat_rewrite(uint8_t **pbuf, size_t *psize,
-                 int (*select)(const mfat_arch *a, void *ctx),
-                 mfat_slice_fn fn, void *ctx, int *modified);
+/* After the new layout is fixed: where each slice landed. */
+typedef void (*mfat_placed_fn)(const mfat_arch *a, uint32_t index,
+                               uint64_t new_offset, uint64_t new_size, void *ctx);
+
+/* Split a 32-bit-header fat file (already validated by mfat_parse), call `fn`
+ * on every slice, and, if any changed, reassemble: every slice keeps its
+ * offset until an earlier one grows; later slices then shift, each keeping
+ * its own alignment. Then `placed` hears where each landed.
+ * Returns 0 (with *modified set if anything changed), a callback's positive
+ * code, or a negative code of its own (an allocation, an overlapping
+ * layout). On any non-zero return the input is untouched and every split
+ * buffer freed. */
+int mfat_rewrite(uint8_t **pbuf, size_t *psize, uint32_t narch, int swapped,
+                 mfat_slice_fn fn, mfat_placed_fn placed, void *ctx, int *modified);
 ```
+
+Every slice goes to the callback, which decides whether to touch it, rather
+than a separate predicate choosing slices: `edit` has to log the slices it
+passes through, so it has to see them.
 
 - **Moved out of `mr_process_fat`, not copied:** the slice loop, the per-slice
   copies, and the layout -- including the refusal when a grown slice on a
@@ -63,11 +72,12 @@ int mfat_rewrite(uint8_t **pbuf, size_t *psize,
 - **Left in `mr_process_fat`:** only what is rewrite-specific -- the thin
   rewrite as its callback, and the hit arrays it accumulates across slices,
   through `ctx`.
-- **Labels belong to the callback.** The verb path's per-slice stdout --
+- **Output belongs to the callers.** The verb path's per-slice stdout --
   `arch N (cputype 0x…): …`, "not a 64-bit Mach-O; leaving this slice
-  unchanged", "Nothing to change." -- is on `change_dylib`'s fat path, whose
-  stdout is a byte-identical contract. The verb callback keeps building those
-  labels; `edit`'s builds its own.
+  unchanged", "Nothing to change.", and the reassembly's "arch N: placed at
+  OFF (SIZE bytes)" -- is on `change_dylib`'s fat path, whose stdout is a
+  byte-identical contract. The verb's two callbacks keep printing exactly
+  those lines; `edit`'s print its own.
 - **A slice failing refuses the whole file,** as today ("a partial rewrite
   would leave its slices inconsistent"), and writes nothing.
 - **`FAT_MAGIC_64` stays refused** by `mfat_parse`, as everywhere today.
@@ -118,9 +128,12 @@ editing nothing -- the version-churn case the edit-scripts spec calls normal.
 selected slice.** This is what `mr_process_fat` already does for the verbs,
 and slices usually share their load commands. Requiring a match in every slice
 would refuse universal apps whose arm64 slice legitimately links something
-different. The miss verdict is therefore taken after every slice has run,
-rather than right after the statement. On a thin file that is unobservable,
-and nothing is written either way.
+different. Each statement's counts are summed across the slices that run
+it, and its verdict is taken when the last selected slice has run it. On a
+thin file the one image is the last, so the verdict comes right after the
+statement exactly as today; and nothing is written either way. A refusal
+for a statement that matched in no slice says so: `…: it matched nothing in
+any selected slice; FILE left unmodified`.
 
 ### Reporting
 
@@ -137,10 +150,12 @@ the fat header lists them:
 | 32-bit | `slice i386: 32-bit; passed through unchanged` |
 
 A passed-through slice can still move: when an earlier slice grew, a later
-untouched one shifts to keep its alignment. Its line then ends `(moved from
-offset 0x8000 to 0x9000)` -- its bytes are identical, but where it lives is
-not, and that is the kind of consequence the log exists to show. Thin-file
-output is unchanged.
+untouched one shifts to keep its alignment. After the slices are laid out
+again, every slice that moved gets `slice arm64: moved from offset 0x8000 to
+0x9000` -- its bytes are identical, but where it lives is not, and that is
+the kind of consequence the log exists to show. It is a line of its own,
+after the slices' other lines, because no slice's new offset is known until
+every slice has run. Thin-file output is unchanged.
 
 The "fat file refused" message goes away. `FAT_MAGIC_64` keeps its own
 refusal. The README and `src/edit.h` document the directive, the table above,
