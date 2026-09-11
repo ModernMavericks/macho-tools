@@ -781,16 +781,29 @@ static uint8_t *build_minimal_pie(size_t *fsize_out, int with_pagezero,
     return buf;
 }
 
+static int stderr_contains_during(int (*call)(uint8_t **, size_t *, uint32_t),
+                                   uint8_t **pbuf, size_t *pfsize, uint32_t grow,
+                                   const char *needle, int *ret_out);
+
+/* `needle`, when not NULL, is the reason the refusal must give. Without one
+ * these tests went on passing when a refusal earlier in mg_grow_header began
+ * catching their fixture first, and so stopped reaching the check each exists
+ * for. */
 static void check_grow_precondition_refused(const char *what, int with_pagezero,
-                                             uint64_t pagezero_vmsize, uint64_t text_fileoff) {
+                                             uint64_t pagezero_vmsize, uint64_t text_fileoff,
+                                             const char *needle) {
     size_t fsize;
     uint8_t *buf = build_minimal_pie(&fsize, with_pagezero, pagezero_vmsize, text_fileoff);
     size_t fsize0 = fsize;
     uint8_t *before = (uint8_t *)malloc(fsize0);
     memcpy(before, buf, fsize0);
 
-    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+                                      needle ? needle : "", &r);
     CHECK(r == -1, "%s: mg_grow_header refuses (got %d)", what, r);
+    if (needle)
+        CHECK(said, "%s: the refusal says '%s'", what, needle);
     CHECK(fsize == fsize0, "%s: size unchanged on refusal (got %zu want %zu)",
           what, fsize, fsize0);
     if (fsize == fsize0)
@@ -800,11 +813,13 @@ static void check_grow_precondition_refused(const char *what, int with_pagezero,
 }
 
 static void test_grow_refuses_missing_pagezero(void) {
-    check_grow_precondition_refused("no __PAGEZERO at all", 0, 0, 0);
+    check_grow_precondition_refused("no __PAGEZERO at all", 0, 0, 0,
+                                     "need a __PAGEZERO >= 4096 bytes");
 }
 
 static void test_grow_refuses_undersized_pagezero(void) {
-    check_grow_precondition_refused("__PAGEZERO smaller than grow", 1, 0x800, 0);
+    check_grow_precondition_refused("__PAGEZERO smaller than grow", 1, 0x800, 0,
+                                     "need a __PAGEZERO >= 4096 bytes");
 }
 
 /* Unlike the two __PAGEZERO cases above, mutating away mg_grow_header's own
@@ -826,7 +841,7 @@ static void test_grow_refuses_undersized_pagezero(void) {
  * than MH_EXECUTE well above this point. */
 static void test_grow_refuses_no_text_segment(void) {
     check_grow_precondition_refused("no segment maps the header (fileoff 0)",
-                                     1, 0x100000000ull, 0x1000);
+                                     1, 0x100000000ull, 0x1000, NULL);
 }
 
 /* ---- mg_verify: the grow must move nothing ----
@@ -1201,7 +1216,14 @@ static int stderr_contains_during(int (*call)(uint8_t **, size_t *, uint32_t),
 
     fflush(stderr);
     int saved_fd = dup(fileno(stderr));
-    if (!freopen(path, "w", stderr)) { *ret_out = call(pbuf, pfsize, grow); return 0; }
+    if (!freopen(path, "w", stderr)) {
+        /* Nothing captured means nothing can be said about what was printed:
+         * fail, so that neither a test expecting a message nor one expecting
+         * silence passes without having looked. */
+        CHECK(0, "could not capture stderr to %s", path);
+        *ret_out = call(pbuf, pfsize, grow);
+        return 0;
+    }
 
     *ret_out = call(pbuf, pfsize, grow);
 
@@ -1335,9 +1357,10 @@ static void check_ensure_refuses_unchanged(const char *what, int opts,
 
 /* A PIE executable of `fsize` bytes whose one LC_SEGMENT_64 has no sections:
  * nothing in it has section data, so nothing bounds the header pad. At 104
- * bytes -- a header and the segment command, nothing else -- this is
- * tests/leaf-tool-crashes.sh's nosect shape; larger, the bytes past the load
- * commands are 0xAB, so a write into them shows. */
+ * bytes -- a header and the segment command, nothing else -- it has the load
+ * command and size of tests/leaf-tool-crashes.sh's nosect, as a PIE executable;
+ * larger, the bytes past the load commands are 0xAB, so a write into them
+ * shows. */
 static uint8_t *build_sectionless_image(size_t fsize) {
     uint8_t *buf = (uint8_t *)calloc(1, fsize);
     struct mach_header_64 *h = (struct mach_header_64 *)buf;
@@ -1374,6 +1397,10 @@ static void test_first_sect_off_reports_no_section_data(void) {
         size_t fsize = sizes[i];
         uint8_t *buf = build_sectionless_image(fsize);
         int r;
+        /* The empty needle matches any line (strstr(line, "") is never NULL),
+         * so `said` is "anything at all reached stderr". A capture that fails
+         * fails the test inside stderr_contains_during, so silence here is
+         * observed, not assumed. */
         int said = stderr_contains_during(first_sect_thunk, &buf, &fsize, 0, "", &r);
         CHECK(g_first == MG_NO_SECTION_DATA,
               "first_sect_off on a %zu-byte image with no section data: "
@@ -1460,11 +1487,11 @@ static void test_ensure_pad_refuses_a_section_past_the_image(void) {
         g_ensure_need = lc_end + 16; g_ensure_allow = allow;
         int r;
         int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
-                                          "no section data within the image; refusing", &r);
+                                          "lies past the end of the image", &r);
         CHECK(r == -1, "ensure_pad on a section past the image (allow_grow=%d): refused, "
               "though 0x7000 would 'fit' (got %d)", allow, r);
         CHECK(said, "ensure_pad on a section past the image (allow_grow=%d): the refusal "
-              "says there is no section data within the image", allow);
+              "says the first section lies past the end of the image", allow);
         CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
               "ensure_pad on a section past the image (allow_grow=%d): the image is "
               "byte-identical and not reallocated", allow);

@@ -713,7 +713,8 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     /* Otherwise it is read from the file (mi_wrap does not check section
      * file ranges), and past the buffer's end it bounds nothing. */
     if (first_sect_off > fsize) {
-        fprintf(stderr, "ERROR: %s: no section data within the image; refusing\n", label);
+        fprintf(stderr, "ERROR: %s: the first section's file offset (%u) lies past the end "
+                        "of the image (%zu bytes); refusing\n", label, first_sect_off, fsize);
         return MR_ERROR;
     }
     uint32_t cur_lc_end = sizeof(struct mach_header_64) + hdr->sizeofcmds;

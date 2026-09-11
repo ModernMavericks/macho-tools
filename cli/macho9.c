@@ -481,6 +481,11 @@ static int cmd_info(const char *path) {
          * be true; the rewriting verbs refuse such an image for the same
          * reason. */
         printf("header pad: unknown (no section data bounds it)\n");
+    } else if (first_sect_off != UINT32_MAX && first_sect_off > im.size) {
+        /* The offset is read from the file, and a pad measured to a point
+         * past the end of the image would be a number no write could use;
+         * the rewriting verbs refuse this image too. */
+        printf("header pad: unknown (the first section lies past the end of the image)\n");
     } else if (first_sect_off != UINT32_MAX) {
         uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) + im.hdr->sizeofcmds;
         uint32_t pad = first_sect_off > lc_end ? first_sect_off - lc_end : 0;

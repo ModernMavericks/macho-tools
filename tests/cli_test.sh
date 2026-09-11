@@ -931,7 +931,7 @@ for dcl_mode in nosect sectpast; do
         && rc=0 || rc=$?
     case $dcl_mode in
         nosect)   dcl_why="no section data bounds the header pad" ;;
-        sectpast) dcl_why="lies past the end of the" ;;
+        sectpast) dcl_why="lies past the end of the image" ;;
     esac
     [ "$rc" -eq 1 ] && grep -q "$dcl_why" "$T/$dcl_mode.err" \
         && ok "declassify: $dcl_mode: refuses (1), saying '$dcl_why'" \

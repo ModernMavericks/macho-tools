@@ -111,9 +111,10 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * no pad boundary to check against: when no section has file data
  * (mg_first_sect_off's MG_NO_SECTION_DATA; "no section data bounds the header
  * pad; refusing rather than guess where it ends"), and when the first
- * section's file offset lies past the end of the buffer ("no section data
- * within the image; refusing"). That offset is the bound on every write into
- * the pad, and past the buffer's end it bounds nothing. If growth was
+ * section's file offset lies past the end of the buffer ("the first section's
+ * file offset (N) lies past the end of the image (M bytes); refusing"). That
+ * offset is the bound on every write into the pad, and past the buffer's end
+ * it bounds nothing. If growth was
  * refused on a precondition (not a PIE executable, chained fixups, a load
  * command whose payload grow cannot re-base) the image is untouched; a
  * failure partway through growing can leave it modified. Either way the

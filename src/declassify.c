@@ -5,9 +5,10 @@
  * move it has gained refusals of its own -- the opcode buffers' bound, the
  * append slack's, and the header pad's -- each commented where it fires. Only
  * the driver (parse two arguments, open the output, write it, decide an exit
- * code) stayed behind in that tool. The static helpers below kept their bodies too; the pm_ ones took
- * this module's md_ prefix on the way in, and ob_ stayed as it was -- it is
- * the opcode buffer's own prefix, not the tool's.
+ * code) stayed behind in that tool. The static helpers below kept their
+ * bodies too; the pm_ ones took this module's md_ prefix on the way in, and
+ * ob_ stayed as it was -- it is the opcode buffer's own prefix, not the
+ * tool's.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -533,7 +534,7 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
      * section file ranges), and past the end of the image it is no bound. */
     if (first_sect_off > fsize) {
         fprintf(stderr, "ERROR: the first section's file offset (%u) lies past the end "
-                        "of the %zu-byte image; refusing rather than guess where the "
+                        "of the image (%zu bytes); refusing rather than guess where the "
                         "header pad ends\n", first_sect_off, fsize);
         goto refuse;
     }

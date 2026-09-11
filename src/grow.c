@@ -65,7 +65,8 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
      * buffer's end it is no bound: answering "fits" against it would let a
      * caller write past the end of the buffer. */
     if (first > *pfsize) {
-        fprintf(stderr, "ERROR: %s: no section data within the image; refusing\n", label);
+        fprintf(stderr, "ERROR: %s: the first section's file offset (%u) lies past the end "
+                        "of the image (%zu bytes); refusing\n", label, first, *pfsize);
         return -1;
     }
     if (need_end <= first) return 0;

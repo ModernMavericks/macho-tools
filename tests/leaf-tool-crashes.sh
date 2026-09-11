@@ -8,30 +8,43 @@
 # LC_SEGMENT_64/nsects agreement) but nothing about a SECTION's file range,
 # and nothing about an address later derived from one -- that was never its
 # job (see image.h's own file header: "what is in here?", nothing about
-# what a section's bytes point at). Both fixtures below are built to pass
-# mi_open, and `macho9 verify`, cleanly, while still containing an
-# out-of-bounds reference these tools used to dereference unconditionally:
+# what a section's bytes point at). Every fixture below is built to pass
+# mi_open cleanly while still containing an out-of-bounds reference, or a
+# missing bound, that a tool used to trust:
 #
-#   nosect.macho      one LC_SEGMENT_64, nsects=0 -- no section anywhere has
-#                      a nonzero file offset, so add_version_min's "is there
-#                      room before the first section" check never found a
-#                      bound and wrote LC_VERSION_MIN_MACOSX 16 bytes past a
-#                      buffer whose allocation was exactly file-sized. The
-#                      load-command rewriter (`macho9 dylib`) had the same
-#                      blind spot: it took 4096 as the first-section offset
-#                      of an image with no section data, and its commit
-#                      cleared the pad up to 4096, past the end of this
-#                      104-byte buffer.
-#   oobsection.macho   one LC_SEGMENT_64/__DATA with one section,
+#   nosect.macho       filetype 0, one LC_SEGMENT_64/__DATA, nsects=0; 104
+#                      bytes -- no section anywhere has a nonzero file
+#                      offset, so add_version_min's "is there room before the
+#                      first section" check never found a bound and wrote
+#                      LC_VERSION_MIN_MACOSX 16 bytes past a buffer whose
+#                      allocation was exactly file-sized. The load-command
+#                      rewriter (`macho9 dylib`) had the same blind spot: it
+#                      took 4096 as the first-section offset of an image with
+#                      no section data, and its commit cleared the pad up to
+#                      4096, past the end of this 104-byte buffer.
+#   oobsection.macho   filetype 0, one LC_SEGMENT_64/__DATA with one section,
 #                      __objc_classlist, whose offset/size (0x7000/0x8000)
-#                      point entirely past this tiny file -- retag_swift_
-#                      classes indexed the class list at that offset
-#                      directly, with no check against the file's actual
-#                      size.
+#                      point entirely past this 184-byte file --
+#                      retag_swift_classes indexed the class list at that
+#                      offset directly, with no check against the file's
+#                      actual size. `macho9 dylib` cleared its load-command
+#                      area up to that same 0x7000, and `macho9 info`
+#                      measured a pad against it.
+#   oobgrow.macho      oobsection's out-of-bounds offset in an image `macho9
+#                      grow` accepts until it uses it: a PIE MH_EXECUTE with
+#                      __PAGEZERO and a __TEXT at file offset 0 whose one
+#                      section lies at 0x7000, in 256 bytes. grow moved
+#                      everything from that offset to the end of the file,
+#                      a length that wrapped around.
+#   sectionless.macho  a PIE MH_EXECUTE of 8192 bytes: one LC_SEGMENT_64/__TEXT
+#                      covering the file, nsects=0, and an LC_UUID. No
+#                      section data, like nosect, but here the assumed 4096
+#                      lay inside the buffer: no crash, but the rewriters'
+#                      commit zeroed real data up to it.
 #
-# A third, sectionless.macho, is nosect's shape at 8192 bytes, where that
-# same 4096 lies inside the buffer: no crash, but the clearing zeroed real
-# data. It is exercised with the macho9 cases below.
+# nosect and oobsection fail `macho9 verify` (no segment maps the header);
+# oobgrow and sectionless pass it, so nothing upstream of the tools stops
+# them.
 #
 # Host-portability: every fixture is hand-built byte-for-byte (no compiler
 # invoked to produce Mach-O structure, just a throwaway C helper -- same
@@ -375,6 +388,52 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
         bad "$what" "the file changed"
     fi
 done
+
+# --- macho9 dylib and info: a first section past the end of the image --------
+# mr_process_thin's commit memset clears the load-command area up to the first
+# section's file offset. On oobsection.macho that offset is 0x7000 and the file
+# is 184 bytes, so trusting it clears roughly 28 KB past the buffer (SIGSEGV
+# under libgmalloc). It must refuse (1), with or without --allow-grow, before
+# anything uses the offset, and leave the file as it was. `macho9 info` must
+# not report a pad measured against that offset either.
+for grow in "" --allow-grow; do
+    for gm in "" /usr/lib/libgmalloc.dylib; do
+        what="macho9 dylib -append${grow:+ $grow}: oobsection fixture${gm:+ (libgmalloc)}"
+        if [ -n "$gm" ] && [ ! -f "$gm" ]; then
+            skip "$what" "no $gm on this host"
+            continue
+        fi
+        cp "$T/oobsection.macho" "$T/od.macho"
+        rc=0
+        if [ -n "$gm" ]; then
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/od.macho" -append /x $grow \
+                >"$T/od.out" 2>"$T/od.err" || rc=$?
+        else
+            "$BIN/macho9" dylib "$T/od.macho" -append /x $grow \
+                >"$T/od.out" 2>"$T/od.err" || rc=$?
+        fi
+        if [ "$rc" -gt 127 ]; then
+            bad "$what" "killed by a signal (exit $rc) -- the out-of-bounds clear this fixture exists to catch"
+        elif [ "$rc" -eq 1 ] && grep -qF "lies past the end of the image" "$T/od.err"; then
+            ok "$what: refuses (1), naming the section past the end of the image"
+        else
+            bad "$what" "expected exit 1 + 'lies past the end of the image', got exit $rc: $(cat "$T/od.err")"
+        fi
+        if cmp -s "$T/oobsection.macho" "$T/od.macho"; then
+            ok "$what: leaves the file byte-identical"
+        else
+            bad "$what" "the file changed"
+        fi
+    done
+done
+
+info_rc=0
+"$BIN/macho9" info "$T/oobsection.macho" >"$T/oi.out" 2>&1 || info_rc=$?
+if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (the first section lies past the end of the image)$" "$T/oi.out"; then
+    ok "macho9 info: oobsection fixture: the header pad is reported unknown, not a number"
+else
+    bad "macho9 info: oobsection fixture" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/oi.out")"
+fi
 
 # --- retag_swift_classes ----------------------------------------------------
 cp "$T/oobsection.macho" "$T/rt.macho"
