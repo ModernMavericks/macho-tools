@@ -103,6 +103,11 @@ rather than refuse on allocation failure; `src/swift_retag.h`'s "only
 MSWIFT_ERROR is a failure of the tool itself" is false since `MSWIFT_RACED`
 also exits 2; about 87 older comments across the tree still name plan
 artifacts ("Task N", briefs, rounds) — all predate item 2.
+In `md_declassify_buf` (`src/declassify.c`), the first-section walk and the
+`__LINKEDIT` extension go through `segs[]` pointers taken before the loop that
+`memmove`s the removed load commands out, and never refreshed: in a crafted
+file where a removed command precedes a segment command, both would read and
+write shifted content.
 
 ## Carried out of item 10
 
@@ -122,6 +127,9 @@ fixed in item 10 (`34a3187`). `66ca5ce` stops treating "no sections" as
 "4096": `mg_first_sect_off` answers `MG_NO_SECTION_DATA`, every caller that
 writes into the pad refuses it (declassify also refuses a first section past
 the end of the image), and `macho9 info` reports the pad as unknown.
+`7ea664a` makes `mg_grow_header` refuse a first section whose file offset lies
+past the end of the image, the bound every other caller already had; before
+it, `macho9 grow` on such an image died of SIGSEGV.
 
 **Four wording overclaims for item 6's documentation pass**, two of them
 resolved by `66ca5ce`, which rewrote both passages: `src/grow.h:99-101` (an
