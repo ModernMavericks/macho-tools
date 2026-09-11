@@ -32,6 +32,7 @@
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
 #include <libkern/OSByteOrder.h>
+#include <assert.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -261,10 +262,14 @@ static void check_untouched(const char *what, const char *path, snap *before) {
 /* A fat container of n slices, each at a 0x1000-aligned offset in the order
  * given, big-endian as every real fat file is. ct/cs label the fat_arch
  * entry; edit names a slice by its fat_arch entry, so an x86_64 image can
- * stand in for arm64 without its own header saying so. */
+ * stand in for arm64 without its own header saying so.
+ *
+ * n is at most 8 -- the callers here pass 2 or 3 -- because the offsets are
+ * held in a fixed array. */
 static uint8_t *build_fat(int n, uint8_t *const *slice, const size_t *len,
                           const uint32_t *ct, const uint32_t *cs, size_t *outlen) {
     size_t off[8], total = 0x1000;
+    assert(n > 0 && n <= (int)(sizeof off / sizeof *off));
     for (int i = 0; i < n; i++) { off[i] = total; total += (len[i] + 0xfff) & ~(size_t)0xfff; }
     uint8_t *buf = (uint8_t *)calloc(1, total);
     struct fat_header *fh = (struct fat_header *)buf;
@@ -836,6 +841,9 @@ static void test_arch_on_a_thin_file(void) {
     free(img);
     int rc = run(path, NULL, "arch x86_64\nload-command delete uuid\n", 0, 0);
     CHECK(rc == 0, "thin, arch x86_64: runs on an x86_64 image (got %d; log: %s)", rc, g_log);
+    /* Not just "returned 0": a match must let the statements RUN. */
+    CHECK(count_lc(path, LC_UUID, NULL) == 0,
+          "thin, arch x86_64: the statements ran on the named image");
     img = build_image(0);
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
@@ -891,16 +899,70 @@ static void test_fat_fatal_warnings_counts_a_match_in_any_slice(void) {
     rm_dir();
 }
 
+/* Anything refusing in any slice refuses the whole run, and nothing is
+ * written. Two refusals reach that over one fixture whose arm64 slice is the
+ * implausible twin, by different routes:
+ *
+ *   `load-command delete uuid` is refused inside the REWRITE's own
+ *   plausibility gate (src/rewrite.c), so the statement itself fails and the
+ *   refusal names the statement and the slice it was running in;
+ *
+ *   `segment rename __DATA __DATX` skips that gate -- which is exactly what
+ *   the thin tests above rely on to reach me_run's own verify -- so every
+ *   statement succeeds and what refuses is the SLICE's own final
+ *   verification.
+ *
+ * Both must leave the container byte-identical. */
 static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
     fresh_dir();
     char path[512];
     in_dir(path, sizeof path, "fat");
-    write_fat(path, 0, IMPLAUSIBLE, 0);   /* slice 1 fails its final verification */
+    write_fat(path, 0, IMPLAUSIBLE, 0);   /* the arm64 slice is the implausible twin */
+
     snap before = take(path);
     int rc = run(path, NULL, "load-command delete uuid\n", 0, 0);
-    CHECK(rc == MR_REFUSED, "fat: the second slice's verification refuses the run (got %d)", rc);
+    CHECK(rc == MR_REFUSED, "fat: a statement refused in the second slice refuses the "
+          "run (got %d)", rc);
     check_untouched("fat, second slice refused", path, &before);
-    CHECK(strstr(g_log, "slice arm64") != NULL, "fat: the refusal names the slice (log: %s)", g_log);
+    CHECK(strstr(g_log, "in slice arm64") != NULL,
+          "fat: the refusal names the slice the statement was running in (log: %s)", g_log);
+
+    before = take(path);
+    rc = run(path, NULL, "segment rename __DATA __DATX\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fat: the second slice's own verification refuses the run "
+          "(got %d)", rc);
+    check_untouched("fat, second slice failed verification", path, &before);
+    CHECK(strstr(g_log, "refused at verification of slice arm64") != NULL,
+          "fat: the refusal names verification and the slice (log: %s)", g_log);
+    rm_dir();
+}
+
+/* Without `arch`, the default selection is every 64-bit slice -- and a
+ * container that has none leaves the script nothing to apply to. Only
+ * reachable without `arch`: a named row has already been proved present and
+ * 64-bit by the time this check runs. */
+static void test_fat_with_no_64bit_slice_is_refused(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat32");
+    uint8_t *s[2]; size_t l[2];
+    uint32_t ct[2] = { (uint32_t)CPU_TYPE_I386, (uint32_t)CPU_TYPE_I386 };
+    uint32_t cs[2] = { (uint32_t)CPU_SUBTYPE_I386_ALL, (uint32_t)CPU_SUBTYPE_I386_ALL };
+    size_t flen;
+    uint8_t *fat;
+    s[0] = build_i386_stub(&l[0]);
+    s[1] = build_i386_stub(&l[1]);
+    fat = build_fat(2, s, l, ct, cs, &flen);
+    write_file(path, fat, flen, 0755);
+    free(s[0]); free(s[1]); free(fat);
+
+    snap before = take(path);
+    int rc = run(path, NULL, "load-command delete uuid\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fat, all 32-bit: a container with no 64-bit slice is "
+          "refused (got %d)", rc);
+    check_untouched("fat, all 32-bit", path, &before);
+    CHECK(strstr(g_log, "has no 64-bit slice to edit (it has: i386, i386)") != NULL,
+          "fat, all 32-bit: the refusal says so and lists the slices (log: %s)", g_log);
     rm_dir();
 }
 
@@ -951,6 +1013,7 @@ int main(void) {
     test_fat_missing_or_32bit_arch_is_refused();
     test_fat_fatal_warnings_counts_a_match_in_any_slice();
     test_fat_a_refusal_in_the_second_slice_writes_nothing();
+    test_fat_with_no_64bit_slice_is_refused();
     test_fat_verbose_accounts_for_every_slice();
     test_fat_dry_run_writes_nothing();
 
