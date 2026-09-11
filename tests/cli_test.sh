@@ -2998,6 +2998,60 @@ echo "$grow_info" | grep -q "LC_UUID" \
     && ok "edit: allow-grow: the result passes macho9 verify" \
     || bad "edit allow-grow" "verify refused the result: $(cat "$T/grow_verify.err")"
 
+# version-min set and allow-grow. LC_VERSION_MIN_MACOSX needs 16 bytes of
+# header pad, and build_main's pad is far larger, so a fixture that is
+# genuinely short has to be made: strip any LC_VERSION_MIN_MACOSX the
+# linker emitted (strip_version_min, above), then fill the pad with a dylib
+# append whose LC_LOAD_DYLIB is the largest multiple of 8 that fits. An
+# LC_LOAD_DYLIB is 24 bytes plus the path and its NUL, rounded up to 8, so a
+# path of C-25 bytes makes a command of exactly C, leaving pad % 8 bytes --
+# fewer than 16. Sized from `macho9 info`, not hard-coded, because each
+# host's linker leaves a different pad.
+vm_pad_of() {
+    "$MACHO9" info "$1" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p'
+}
+build_main "$T/vm_tight"
+"$T/strip_version_min" "$T/vm_tight" >/dev/null \
+    || bad "version-min allow-grow: fixture setup" "strip_version_min failed"
+vm_pad=$(vm_pad_of "$T/vm_tight")
+if [ -z "$vm_pad" ] || [ "$vm_pad" -lt 32 ]; then
+    bad "version-min allow-grow: fixture setup" "pad '$vm_pad' too small to size a filler"
+    vm_pad=32
+fi
+vm_cmd=$((vm_pad - vm_pad % 8))
+vm_fill="/$(printf "%$((vm_cmd - 26))s" '' | tr ' ' v)"
+"$MACHO9" dylib "$T/vm_tight" -append "$vm_fill" >/dev/null 2>"$T/vm_fill.err" \
+    || bad "version-min allow-grow: fixture setup" "filler append failed: $(cut -c1-160 "$T/vm_fill.err")"
+vm_left=$(vm_pad_of "$T/vm_tight")
+[ -n "$vm_left" ] && [ "$vm_left" -lt 16 ] \
+    && ok "version-min allow-grow: fixture has ${vm_left} bytes of pad, fewer than the 16 needed" \
+    || bad "version-min allow-grow: fixture setup" "expected fewer than 16 bytes of pad, got '$vm_left'"
+
+cp "$T/vm_tight" "$T/vm_e"
+vm_before=$(sha "$T/vm_e"); vm_ino=$(stat -f %i "$T/vm_e")
+printf 'version-min set 10.9\n' >"$T/vm_no.edits"
+printf 'allow-grow\nversion-min set 10.9\n' >"$T/vm_yes.edits"
+rc=0
+"$MACHO9" edit "$T/vm_e" "$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "edit: version-min set without allow-grow is refused (1) when the pad is short" \
+    || bad "edit version-min" "without the directive: expected 1, got $rc: $(cat "$T/vm_no.err")"
+[ "$(sha "$T/vm_e")" = "$vm_before" ] && [ "$(stat -f %i "$T/vm_e")" = "$vm_ino" ] \
+    && ok "edit: ... and the refused run left the file unchanged" \
+    || bad "edit version-min" "the refused run modified the file"
+grep -q "growing the header needs allow-grow" "$T/vm_no.err" \
+    && ok "edit: ... and the refusal names allow-grow as the remedy" \
+    || bad "edit version-min" "no allow-grow remedy in: $(cat "$T/vm_no.err")"
+rc=0
+"$MACHO9" edit "$T/vm_e" "$T/vm_yes.edits" >/dev/null 2>"$T/vm_yes.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
+    || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
+"$MACHO9" info "$T/vm_e" | grep -q "LC_VERSION_MIN_MACOSX" \
+    && ok "edit: allow-grow: LC_VERSION_MIN_MACOSX is in the written image" \
+    || bad "edit version-min" "no LC_VERSION_MIN_MACOSX after the grow"
+"$MACHO9" verify "$T/vm_e" >/dev/null 2>"$T/vm_verify.err" \
+    && ok "edit: allow-grow: the grown image passes macho9 verify" \
+    || bad "edit version-min" "verify refused: $(cat "$T/vm_verify.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]

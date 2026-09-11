@@ -299,11 +299,13 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
 
     case MS_VERSION_MIN: {
         /* ms_parse accepts only 10.9, and 10.9 is the only floor this core
-         * writes; the parser's value check is the one place that says so. */
+         * writes; the parser's value check is the one place that says so.
+         * allow-grow reaches this statement: when the pad is short, growing
+         * it is mg_ensure_pad's decision, the same as for dylib and rpath. */
         mi_image im;
         int added = 0;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        int rc = mv_add_version_min_image(&im, &added);
+        int rc = mv_add_version_min_image(pbuf, psize, s->allow_grow, &added);
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
          * stdout, where the core has always printed it; the append prints

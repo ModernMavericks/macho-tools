@@ -143,12 +143,15 @@ typedef struct {
  *
  * DIRECTIVES.
  *
- * allow-grow covers only `dylib` and `rpath` statements: they are the ones
- * whose load commands can outgrow the header pad, and for them it lets the
- * rewrite enlarge the pad (mg_grow_header) instead of refusing.
- * `version-min set` is not covered -- it refuses with "no room for
- * LC_VERSION_MIN_MACOSX" even under allow-grow, because
- * mv_add_version_min_image has no grow path. `segment rename` and
+ * allow-grow covers the statements whose load commands can outgrow the
+ * header pad: `dylib`, `rpath` and `version-min set`. For them, when the pad
+ * is short, growing it is mg_ensure_pad's decision (src/grow.h) instead of a
+ * refusal. It does not cover `fixups set classic`: growth refuses an image
+ * that still has chained fixups, since chained pointers encode offsets from
+ * the image base that growing moves -- and the conversion removes three
+ * commands (up to 56 bytes) before adding its 48. So on a chained image
+ * nothing can grow until `fixups set classic` has run: put it first.
+ * Growth works only on a 64-bit PIE executable. `segment rename` and
  * `load-command delete` never add bytes to the load commands, so they never
  * need it.
  *

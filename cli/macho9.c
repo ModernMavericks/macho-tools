@@ -581,7 +581,7 @@ static int cmd_minos(const char *path, const char *version) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
     }
-    return mv_add_version_min(path);
+    return mv_add_version_min(path, 0);
 }
 
 /* ---- lc -delete: a thin shell over mr_apply_file's strip_cmds -----------

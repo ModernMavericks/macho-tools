@@ -20,30 +20,33 @@
 /*
  * Append LC_VERSION_MIN_MACOSX 10.9 to the thin 64-bit Mach-O at `path`,
  * writing the result back in place. Returns 0 on success -- including the
- * "already has one, nothing to do" case -- or 1 with a message already
- * printed on stderr.
+ * "already has one, nothing to do" case -- or MR_REFUSED/MR_FAIL with a
+ * message already printed on stderr.
  *
- * The new command goes in the header pad, so no file data moves and no offset
- * anywhere needs fixing up; if the pad cannot hold it, this refuses rather
- * than resize (use `macho9 grow` / change_dylib -grow first). Fat containers
- * are not handled: add_version_min never did.
+ * The new command goes in the header pad. If the pad cannot hold it, this
+ * refuses -- unless `allow_grow` is set and the image can be grown (a 64-bit
+ * PIE executable without chained fixups; see mg_ensure_pad in src/grow.h),
+ * in which case the pad is enlarged and the file written back grows with it.
+ * Fat containers are not handled: add_version_min never did.
  */
-int mv_add_version_min(const char *path);
+int mv_add_version_min(const char *path, int allow_grow);
 
 /*
  * mv_add_version_min's edit, without the file: append LC_VERSION_MIN_MACOSX
- * 10.9 to the image `im` views (from mi_open or mi_wrap), in place, and
- * nothing else -- no open, no race guard, no write. mv_add_version_min is
- * this plus those; src/edit.c calls it for `version-min set 10.9` against the
- * image it writes once, itself, after the last statement.
+ * 10.9 to the image in *pbuf, and nothing else -- no open, no race guard, no
+ * write. src/edit.c calls it for `version-min set 10.9` against the image it
+ * writes once, itself, after the last statement.
  *
  * Returns 0 with *out_added = 1 if it appended the command, 0 with
  * *out_added = 0 if the image already had one (after printing "already
  * present; nothing to do." on stdout, as mv_add_version_min always has), or
- * MR_REFUSED (src/rewrite.h) with "no room for LC_VERSION_MIN_MACOSX" on
- * stderr when the header pad cannot hold the 16 bytes. The appended command
- * lives in the header pad, so im->size does not change.
+ * MR_REFUSED with "no room for LC_VERSION_MIN_MACOSX" on stderr when the
+ * command cannot be placed. When the pad is short and `allow_grow` is set,
+ * growing it is mg_ensure_pad's decision; if it grows, *pbuf is reallocated,
+ * *psize is larger, and every pointer the caller held into the buffer is
+ * stale.
  */
-int mv_add_version_min_image(mi_image *im, int *out_added);
+int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
+                             int *out_added);
 
 #endif /* MACHO9_VERSION_MIN_H */
