@@ -132,7 +132,7 @@ int main(int argc, char **argv) {
         return write_sectionless(argv[2], (size_t)n);
     }
     if (argc != 3) {
-        fprintf(stderr, "usage: %s nosect|oobsection out | %s sectionless out N\n",
+        fprintf(stderr, "usage: %s nosect|oobsection|oobgrow out | %s sectionless out N\n",
                 argv[0], argv[0]);
         return 1;
     }
@@ -165,6 +165,37 @@ int main(int argc, char **argv) {
         s->offset = 0x7000;
         s->size   = 0x8000;
         fsize = sizeof(*h) + seg->cmdsize;
+    } else if (strcmp(argv[1], "oobgrow") == 0) {
+        /* oobsection's out-of-bounds section, in an image `macho9 grow`
+         * accepts up to the point where it uses that offset: a PIE executable
+         * with a __PAGEZERO to donate from, and a __TEXT at file offset 0
+         * whose one section lies at 0x7000, past the end of this 256-byte
+         * file. (oobsection itself is not an executable, so grow refuses it
+         * on its filetype before looking at any section.) */
+        h->cputype = CPU_TYPE_X86_64;
+        h->filetype = MH_EXECUTE;
+        h->flags = MH_PIE;
+        h->ncmds = 2;
+        set_name16(seg->segname, "__PAGEZERO");
+        seg->cmdsize = sizeof(*seg);
+        seg->vmsize = 0x100000000ULL;
+        struct segment_command_64 *tx =
+            (struct segment_command_64 *)((uint8_t *)seg + seg->cmdsize);
+        tx->cmd = LC_SEGMENT_64;
+        tx->cmdsize = sizeof(*tx) + sizeof(struct section_64);
+        set_name16(tx->segname, "__TEXT");
+        tx->vmaddr = 0x100000000ULL;
+        tx->vmsize = 0x8000;
+        tx->nsects = 1;
+        struct section_64 *s = (struct section_64 *)((uint8_t *)tx + sizeof *tx);
+        set_name16(s->sectname, "__text");
+        set_name16(s->segname, "__TEXT");
+        s->addr   = tx->vmaddr + 0x7000;
+        s->offset = 0x7000;
+        s->size   = 0x10;
+        h->sizeofcmds = seg->cmdsize + tx->cmdsize;
+        fsize = sizeof(*h) + h->sizeofcmds;
+        tx->filesize = fsize;
     } else {
         fprintf(stderr, "unknown kind: %s\n", argv[1]);
         return 1;
@@ -181,6 +212,7 @@ EOF
 
 "$T/mkfixture" nosect "$T/nosect.macho"
 "$T/mkfixture" oobsection "$T/oobsection.macho"
+"$T/mkfixture" oobgrow "$T/oobgrow.macho"
 
 # --- add_version_min -------------------------------------------------------
 cp "$T/nosect.macho" "$T/av.macho"
@@ -308,6 +340,41 @@ if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (no section data bounds
 else
     bad "macho9 info: sectionless image" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/sl_info.out")"
 fi
+
+# --- macho9 grow: a first section past the end of the image ------------------
+# mg_grow_header inserts its new page at the first section's file offset and
+# moves everything from there to the end of the file up by a page. With that
+# offset past the end, the length of that move (fsize - insert, a size_t)
+# wraps around: `macho9 grow` on oobgrow.macho died of SIGSEGV (exit 139),
+# with or without libgmalloc. It must refuse (1), saying why, and leave every
+# byte as it was.
+for gm in "" /usr/lib/libgmalloc.dylib; do
+    what="macho9 grow 4096: oobgrow fixture${gm:+ (libgmalloc)}"
+    if [ -n "$gm" ] && [ ! -f "$gm" ]; then
+        skip "$what" "no $gm on this host"
+        continue
+    fi
+    cp "$T/oobgrow.macho" "$T/og.macho"
+    rc=0
+    if [ -n "$gm" ]; then
+        DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" grow "$T/og.macho" 4096 \
+            >"$T/og.out" 2>"$T/og.err" || rc=$?
+    else
+        "$BIN/macho9" grow "$T/og.macho" 4096 >"$T/og.out" 2>"$T/og.err" || rc=$?
+    fi
+    if [ "$rc" -gt 127 ]; then
+        bad "$what" "killed by a signal (exit $rc) -- the out-of-bounds move this fixture exists to catch"
+    elif [ "$rc" -eq 1 ] && grep -qF "lies past the end of the image" "$T/og.err"; then
+        ok "$what: refuses (1), naming the section past the end of the image"
+    else
+        bad "$what" "expected exit 1 + 'lies past the end of the image', got exit $rc: $(cat "$T/og.err")"
+    fi
+    if cmp -s "$T/oobgrow.macho" "$T/og.macho"; then
+        ok "$what: leaves the file byte-identical"
+    else
+        bad "$what" "the file changed"
+    fi
+done
 
 # --- retag_swift_classes ----------------------------------------------------
 cp "$T/oobsection.macho" "$T/rt.macho"

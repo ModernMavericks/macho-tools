@@ -307,9 +307,13 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
 
 /*
  * Grow the header pad by at least `grow_req` bytes (rounded up to a page).
- * pbuf is realloc'd, pfsize updated. Returns 0 on success, -1 if the
- * precondition (PIE-style __PAGEZERO large enough) isn't met — in which case
- * the buffer and size are left unchanged.
+ * pbuf is realloc'd, pfsize updated. Returns 0 on success, -1 on refusal. A
+ * refusal on a precondition, checked before anything moves, leaves the buffer
+ * and size unchanged. Among those: an image that is not a PIE executable with
+ * a large enough __PAGEZERO; one with no section data to insert the new space
+ * at (mg_first_sect_off's MG_NO_SECTION_DATA); and one whose first section's
+ * file offset lies past the end of the image. A failure partway through
+ * growing can leave the buffer modified (see mg_ensure_pad).
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);
 

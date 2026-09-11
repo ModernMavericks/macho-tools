@@ -1494,6 +1494,35 @@ static void test_grow_refuses_an_image_with_no_section_data(void) {
     free(buf);
 }
 
+/* mg_grow_header moves everything from the first section's file offset to
+ * the end of the image up by a page; with that offset past the end, the
+ * length of the move (fsize - insert) wraps around, and the grow died of
+ * SIGSEGV. build_minimal_pie's image is otherwise one it grows, so only the
+ * section's offset is moved past the end. Refused, image untouched. */
+static void test_grow_refuses_a_section_past_the_image(void) {
+    size_t fsize;
+    uint8_t *buf = build_minimal_pie(&fsize, 1, 0x100000000ull, 0);
+    struct section_64 *ts = (struct section_64 *)(buf + sizeof(struct mach_header_64)
+                                                  + 2 * sizeof(struct segment_command_64));
+    ts->offset = (uint32_t)fsize + 0x1000;
+    CHECK(mg_first_sect_off(buf, fsize) == (uint32_t)fsize + 0x1000,
+          "grow past-the-image fixture: the first section lies past the end (got %u)",
+          mg_first_sect_off(buf, fsize));
+    uint8_t *before = (uint8_t *)malloc(fsize);
+    memcpy(before, buf, fsize);
+    size_t got_fsize = fsize;
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &got_fsize, 0x1000,
+                                      "lies past the end of the image", &r);
+    CHECK(r == -1, "grow refuses a first section past the end of the image (got %d)", r);
+    CHECK(said, "grow's refusal says the first section lies past the end of the image");
+    CHECK(got_fsize == fsize, "size unchanged on refusal (got %zu want %zu)", got_fsize, fsize);
+    if (got_fsize == fsize)
+        CHECK(memcmp(before, buf, fsize) == 0, "buffer byte-identical on refusal");
+    free(before);
+    free(buf);
+}
+
 static void test_ensure_pad_refuses_what_cannot_grow(void) {
     check_ensure_refuses_unchanged("a dylib", 0, MH_DYLIB, MH_PIE,
                                    "cannot grow a dylib or bundle");
@@ -1675,6 +1704,7 @@ int main(void) {
     test_ensure_pad_refuses_an_image_with_no_section_data();
     test_ensure_pad_refuses_a_section_past_the_image();
     test_grow_refuses_an_image_with_no_section_data();
+    test_grow_refuses_a_section_past_the_image();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

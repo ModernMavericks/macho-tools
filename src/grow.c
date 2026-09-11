@@ -995,6 +995,16 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                         "grow it rather than guess where it ends\n");
         return -1;
     }
+    /* `insert` is read from the file (mi_wrap validates load commands, not
+     * section file ranges). Everything from it to the end of the image moves
+     * up by `grow`, and past the end that length, fsize - insert, wraps: a
+     * 256-byte image whose one section claimed offset 0x7000 died of SIGSEGV
+     * (tests/leaf-tool-crashes.sh). */
+    if (insert > fsize) {
+        fprintf(stderr, "macho_grow: the first section's file offset (%u) lies past the end "
+                        "of the image (%zu bytes); refusing to grow it\n", insert, fsize);
+        return -1;
+    }
 
     /* We insert space at `insert` (the first section's file offset) and shift
      * everything from there onward. That point must be at/after the end of the
