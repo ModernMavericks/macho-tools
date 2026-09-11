@@ -216,8 +216,21 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
      * why the read lives in here rather than in either front-end -- the
      * requirement travels with the code that depends on it. */
     mi_image im;
-    if (mi_open_slack(path, 2*1024*1024, &im) != 0)
-        return MDCL_NOT_MACHO;
+    {
+        int mo_rc = mi_open_slack(path, 2*1024*1024, &im);
+        if (mo_rc == MI_IO_ERROR) {
+            /* An operational failure (couldn't open/read/allocate for the
+             * file itself), not a judgement about its content -- MDCL_ERROR,
+             * matching this function's other operational failures below, not
+             * MDCL_NOT_MACHO. MDCL_ERROR's own contract requires this
+             * function to have already printed something; MDCL_NOT_MACHO's
+             * requires the opposite (see declassify.h), so this is the one
+             * place that boundary is decided. */
+            fprintf(stderr, "%s: cannot open or read\n", path);
+            return MDCL_ERROR;
+        }
+        if (mo_rc != 0) return MDCL_NOT_MACHO;
+    }
     size_t fsize = im.size;
     /* Writable bytes past the end of the file, captured HERE because
      * mi_release empties the image a few dozen lines down and this is the only

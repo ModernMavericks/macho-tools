@@ -28,10 +28,29 @@ typedef struct {
                                      * a buffer mi_wrap merely views */
 } mi_image;
 
+/* mi_open/mi_open_slack's two failure reasons -- distinguishable so a caller
+ * that wants to tell "the file couldn't even be opened or read" apart from
+ * "it opened fine and just isn't a valid 64-bit Mach-O" can (cli/macho9.c's
+ * EX_REFUSED/EX_FAIL split, and src/rewrite.c's/src/version_min.c's
+ * MR_REFUSED/MR_FAIL, both need exactly this distinction and used to have no
+ * way to get it from these two functions). Both are negative so 0 stays
+ * success and neither collides with a caller's own error vocabulary.
+ * MI_IO_ERROR covers open, fstat, the size-overflow guard on `slack`,
+ * malloc and read; MI_NOT_MACHO covers every case mi_validate rejects
+ * (too short, wrong magic, load commands failing validation) -- "too short"
+ * is grouped with the latter, not the former: it is a decision about what
+ * the file's own size says, not a syscall failing. mi_wrap, which never
+ * touches a syscall, only ever returns MI_NOT_MACHO. A caller that only
+ * checks `!= 0` (most of them) is entirely unaffected by this -- both
+ * values are still nonzero -- and Ruling 9 required exactly this smallest
+ * change, not a same-caller behavior change for anyone who does not ask. */
+#define MI_IO_ERROR   (-1)
+#define MI_NOT_MACHO  (-2)
+
 /* Read `path` whole, validate it is a 64-bit Mach-O whose load commands fit
- * inside the file, and populate *out. Returns 0 on success, non-zero otherwise
- * (unreadable, too short, wrong magic, load commands running past the end).
- * On failure *out is untouched and nothing is allocated. */
+ * inside the file, and populate *out. Returns 0 on success, MI_IO_ERROR or
+ * MI_NOT_MACHO otherwise (see those constants above). On failure *out is
+ * untouched and nothing is allocated. */
 int mi_open(const char *path, mi_image *out);
 
 /* As mi_open, but allocate `slack` writable bytes beyond the file, for a caller
@@ -45,11 +64,12 @@ int mi_open_slack(const char *path, size_t slack, mi_image *out);
  * no file, no read, no allocation. Runs the same validation mi_open does
  * (magic, load commands fitting inside `size`, no cmdsize striding past the
  * end, and each LC_SEGMENT_64's cmdsize actually covering the section_64
- * array its own nsects claims) and returns non-zero on failure, leaving *out
- * untouched. `cap` is set to `size`. This is how a synthetic, in-memory
- * Mach-O (macho_grow_test.c builds several) gets the same validated view
- * mi_open gives a file -- without a file to read. mi_close on a wrapped image
- * never frees `buf`: the caller still owns it. */
+ * array its own nsects claims) and returns MI_NOT_MACHO on failure (never
+ * MI_IO_ERROR: there is no I/O here to fail), leaving *out untouched. `cap`
+ * is set to `size`. This is how a synthetic, in-memory Mach-O
+ * (macho_grow_test.c builds several) gets the same validated view mi_open
+ * gives a file -- without a file to read. mi_close on a wrapped image never
+ * frees `buf`: the caller still owns it. */
 int mi_wrap(uint8_t *buf, size_t size, mi_image *out);
 
 /* Free the buffer and zero the struct -- but only if the image owns it: a

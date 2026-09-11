@@ -77,23 +77,26 @@ int mi_open(const char *path, mi_image *out) {
 
 int mi_open_slack(const char *path, size_t slack, mi_image *out) {
     int fd = open(path, O_RDONLY);
-    if (fd < 0) return 1;
+    if (fd < 0) return MI_IO_ERROR;
 
     struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); return 1; }
-    if (st.st_size < (off_t)sizeof(struct mach_header_64)) { close(fd); return 1; }
+    if (fstat(fd, &st) != 0) { close(fd); return MI_IO_ERROR; }
+    /* A decision about what the file's own size says, not a syscall failing
+     * -- MI_NOT_MACHO, not MI_IO_ERROR (see that constant's own comment in
+     * image.h). */
+    if (st.st_size < (off_t)sizeof(struct mach_header_64)) { close(fd); return MI_NOT_MACHO; }
 
     size_t cap = (size_t)st.st_size + slack;
-    if (cap < (size_t)st.st_size) { close(fd); return 1; }   /* overflow */
+    if (cap < (size_t)st.st_size) { close(fd); return MI_IO_ERROR; }   /* overflow */
     uint8_t *buf = (uint8_t *)malloc(cap);
-    if (!buf) { close(fd); return 1; }
+    if (!buf) { close(fd); return MI_IO_ERROR; }
     if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
-        free(buf); close(fd); return 1;
+        free(buf); close(fd); return MI_IO_ERROR;
     }
     close(fd);
 
     struct mach_header_64 *hdr;
-    if (mi_validate(buf, (size_t)st.st_size, &hdr) != 0) { free(buf); return 1; }
+    if (mi_validate(buf, (size_t)st.st_size, &hdr) != 0) { free(buf); return MI_NOT_MACHO; }
 
     out->buf   = buf;
     out->size  = (size_t)st.st_size;
@@ -105,7 +108,7 @@ int mi_open_slack(const char *path, size_t slack, mi_image *out) {
 
 int mi_wrap(uint8_t *buf, size_t size, mi_image *out) {
     struct mach_header_64 *hdr;
-    if (mi_validate(buf, size, &hdr) != 0) return 1;
+    if (mi_validate(buf, size, &hdr) != 0) return MI_NOT_MACHO;
 
     out->buf   = buf;
     out->size  = size;

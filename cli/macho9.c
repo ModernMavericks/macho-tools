@@ -108,21 +108,26 @@
  *
  * EX_REFUSED is used ONLY at a point where macho9 itself examined the input
  * and made that call; it is never used for a genuine operational failure (a
- * syscall that failed, a malloc that failed, a bad number of command-line
- * arguments) -- EX_FAIL is that catch-all, named the same way as EX_REFUSED
- * so a future change to either touches one place. That includes the shared
- * rewrite drivers (mr_apply_file, mv_add_version_min) that dylib/rpath/lc/
- * minos hand back: they now draw the SAME line themselves (rewrite.h's own
- * comment on mr_apply_file has the full classification), returning
- * MR_REFUSED (== EX_REFUSED, enforced below) for a considered refusal --
- * "not a 64-bit Mach-O" in any of its forms, no room to grow, a rewrite's
- * own cross-check failing, and more -- and MR_FAIL (== EX_FAIL, enforced
- * below) only for open/fstat/read/write/malloc itself failing. Forwarding
- * either verbatim is exact, not an approximation: this binary and those two
- * drivers now share one vocabulary, not two that happen to overlap. A caller
- * that only checks "== 0" or "!= 0" still needs no changes; --capabilities
- * documents all three codes (see print_capabilities below) and tests/
- * README.md repeats it for humans. */
+ * syscall that failed, a bad number of command-line arguments) -- EX_FAIL is
+ * that catch-all, named the same way as EX_REFUSED so a future change to
+ * either touches one place. That includes the shared rewrite drivers
+ * (mr_apply_file, mv_add_version_min) that dylib/rpath/lc/minos hand back:
+ * they now draw the SAME line themselves (rewrite.h's own comment on
+ * mr_apply_file has the full classification), returning MR_REFUSED
+ * (== EX_REFUSED, enforced below) for a considered refusal -- "not a 64-bit
+ * Mach-O" in any of its forms, no room to grow, a rewrite's own cross-check
+ * failing, and more -- and MR_FAIL (== EX_FAIL, enforced below) for
+ * open/fstat/read/write/malloc itself failing. Forwarding either verbatim is
+ * exact, not an approximation, with one deliberate exception those two
+ * drivers' own comments carry: a malloc INSIDE mg_grow_header or
+ * mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every other
+ * reason either one refuses, not split out to MR_FAIL -- so "a malloc that
+ * failed" is EX_FAIL only when it is macho9's, mi_open's, or mfat_parse's
+ * own; one made by a primitive those two drivers call is not, by design (see
+ * rewrite.h's MR_FAIL comment for why). A caller that only checks "== 0" or
+ * "!= 0" still needs no changes; --capabilities documents all three codes
+ * (see print_capabilities below) and tests/README.md repeats it for
+ * humans. */
 #define EX_REFUSED 1
 #define EX_FAIL    2
 
@@ -335,7 +340,12 @@ static void usage(const char *prog) {
  */
 static int cmd_verify(const char *path) {
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        fprintf(stderr, "macho9 verify: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "macho9 verify: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
@@ -429,7 +439,12 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
 
 static int cmd_info(const char *path) {
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        fprintf(stderr, "macho9 info: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "macho9 info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
@@ -484,7 +499,15 @@ static int cmd_grow(const char *path, const char *n_str) {
     close(fd);
 
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        /* The open()/fstat() above already proved this path opens; reaching
+         * here is a TOCTOU race (mi_open does its own, independent open),
+         * not a considered refusal. */
+        fprintf(stderr, "macho9 grow: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "macho9 grow: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }

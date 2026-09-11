@@ -998,7 +998,12 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
      * MR_REFUSED/MR_FAIL split as every return there -- see the comment on
      * mr_apply_file itself, in rewrite.h, for the dividing line. */
     uint32_t narch; int swap;
-    if (mfat_parse(buf, fsize, &narch, &swap) != 0) {
+    int fp_rc = mfat_parse(buf, fsize, &narch, &swap);
+    if (fp_rc == MFAT_IO_ERROR) {
+        fprintf(stderr, "ERROR: out of memory validating the fat arch table\n");
+        return MR_FAIL;
+    }
+    if (fp_rc != 0) {
         fprintf(stderr, "ERROR: malformed fat file (bad magic, arch table past the end, "
                         "a slice overlapping the header, or two slices overlapping "
                         "each other)\n");
@@ -1023,10 +1028,15 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
 
     /* 0 means no abort. Not a bool: the two ways this loop can abort are a
      * per-slice malloc failure (MR_FAIL) and mr_process_thin refusing a
-     * slice's edit (MR_ERROR -- MR_REFUSED once it reaches this function's
-     * own return, per that constant's contract), and the return below has to
-     * tell them apart rather than collapsing both into one flag the way an
-     * `aborted` bool would. */
+     * slice's edit (MR_ERROR, defined above with MR_SKIP -- that comment
+     * describes MR_ERROR purely as a per-slice signal, "fatal to the whole
+     * operation", and says nothing about an exit code, which is correct: it
+     * is private to this file and never one, per the brief's own warning not
+     * to touch it. This function's job is exactly that translation -- an
+     * MR_ERROR slice becomes THIS function's own MR_REFUSED, per MR_REFUSED's
+     * contract in rewrite.h, not MR_ERROR's), and the return below has to
+     * tell the two abort reasons apart rather than collapsing both into one
+     * flag the way an `aborted` bool would. */
     int abort_rc = 0;
     uint32_t i;
     for (i = 0; i < narch; i++) {
@@ -1284,9 +1294,15 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * fat from thin apart before choosing how to read the rest. */
     /* Every return in this function is MR_REFUSED or MR_FAIL, matching the
      * dividing line this function's own comment in rewrite.h draws: MR_FAIL
-     * ONLY for open/fstat/read/write/malloc itself failing, MR_REFUSED for
-     * everything that examined the bytes (even "too small to be a Mach-O",
-     * which never gets as far as reading load commands) and declined. */
+     * for open/fstat/read/write/malloc itself failing (this function's own,
+     * directly below, or mi_open's/mfat_parse's, one level down), MR_REFUSED
+     * for everything that examined the bytes (even "too small to be a
+     * Mach-O", which never gets as far as reading load commands) and
+     * declined. This does not cover every malloc reachable from this
+     * function -- mg_grow_header's and mg_plausible's own internal
+     * allocations are the one deliberate exception, folded into MR_REFUSED
+     * instead; see the comment where mr_process_thin's MR_ERROR becomes
+     * MR_REFUSED, below, for why. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return MR_FAIL; }
 
@@ -1345,15 +1361,28 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
          * never comes. */
         close(fd);
         mi_image im;
-        if (mi_open(path, &im) != 0) {
-            /* mi_open reports pass/fail only -- on failure "*out is
-             * untouched and nothing is allocated" (its own contract), so
-             * there is no buffer here to inspect for WHY. Reconstruct the
-             * three-way too-short/bad-magic/malformed diagnostic change_dylib
-             * has always given from what's already in hand instead: st.st_size
-             * (the real file size, from the fstat above) and magic (the
-             * 4-byte peek above -- valid here since the fat-magic branch
-             * above already ruled out both fat magics). */
+        int mo_rc = mi_open(path, &im);
+        if (mo_rc == MI_IO_ERROR) {
+            /* Only reachable via a TOCTOU race: this function's own open/
+             * fstat/read above, just before this branch, already proved the
+             * path opens and reads -- so mi_open's independent, SECOND open
+             * of the same path can only fail here if something replaced or
+             * removed it in between. Rare enough that no test stages it
+             * (same class as the MR_SKIP fallback below), but a real
+             * environment failure, never a considered refusal, so MR_FAIL. */
+            fprintf(stderr, "%s: cannot open or read\n", path);
+            return MR_FAIL;
+        }
+        if (mo_rc != 0) {
+            /* mi_open's only other failure is MI_NOT_MACHO, which reports
+             * pass/fail only -- on failure "*out is untouched and nothing is
+             * allocated" (its own contract), so there is no buffer here to
+             * inspect for WHY. Reconstruct the three-way too-short/bad-magic/
+             * malformed diagnostic change_dylib has always given from what's
+             * already in hand instead: st.st_size (the real file size, from
+             * the fstat above) and magic (the 4-byte peek above -- valid
+             * here since the fat-magic branch above already ruled out both
+             * fat magics). */
             if ((size_t)st.st_size < sizeof(struct mach_header_64)) {
                 fprintf(stderr, "%s: too short to be a 64-bit Mach-O (%lld bytes, need at "
                                 "least %zu)\n", path, (long long)st.st_size,
@@ -1382,11 +1411,22 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
             fprintf(stderr, "%s: not a 64-bit Mach-O (rejected during processing)\n", path);
             rc = MR_REFUSED;
         } else {
-            /* MR_ERROR here always means mr_process_thin (or a primitive it
-             * called -- see the list in this function's own rewrite.h
-             * comment) examined the bytes and declined; none of its MR_ERROR
-             * paths are a syscall or malloc failure, so this is MR_REFUSED,
-             * never MR_FAIL. */
+            /* MR_ERROR here means mr_process_thin (or a primitive it called
+             * -- see the list in this function's own rewrite.h comment)
+             * examined the bytes and declined, so this is MR_REFUSED, never
+             * MR_FAIL -- with one folded-in exception, by controller ruling,
+             * not an oversight: mg_grow_header and mg_plausible each have a
+             * realloc/malloc failure buried among their own content checks
+             * (grow.c), and mr_process_thin's single MR_ERROR return from
+             * either one cannot tell that failure apart from every other
+             * reason those two functions refuse. Splitting it would mean
+             * widening mg_grow_header's and mg_plausible's own return
+             * contracts (both currently a flat "0 or -1") to say which,
+             * for tables sized in the kilobytes, not the sites (open, fstat,
+             * read, write, single small mallocs) this task's MR_FAIL/
+             * MR_REFUSED line otherwise turns on -- so an allocation failure
+             * inside either helper is reported as MR_REFUSED (1), same as
+             * every other reason they refuse. */
             rc = (po == MR_ERROR) ? MR_REFUSED : 0;
         }
     }

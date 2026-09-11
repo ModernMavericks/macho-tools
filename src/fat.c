@@ -9,10 +9,10 @@
 static uint32_t mfat_swap32(uint32_t v) { return OSSwapInt32(v); }
 
 int mfat_parse(const uint8_t *buf, size_t size, uint32_t *narch_out, int *swapped_out) {
-    if (size < sizeof(struct fat_header)) return 1;
+    if (size < sizeof(struct fat_header)) return MFAT_MALFORMED;
 
     uint32_t magic = *(const uint32_t *)buf;
-    if (magic != FAT_MAGIC && magic != FAT_CIGAM) return 1;
+    if (magic != FAT_MAGIC && magic != FAT_CIGAM) return MFAT_MALFORMED;
     int swap = (magic == FAT_CIGAM);
 
     const struct fat_header *fh = (const struct fat_header *)buf;
@@ -23,7 +23,7 @@ int mfat_parse(const uint8_t *buf, size_t size, uint32_t *narch_out, int *swappe
      * bits, so this bound can never itself overflow. */
     uint64_t region = (uint64_t)sizeof(struct fat_header) +
                        (uint64_t)narch * sizeof(struct fat_arch);
-    if (region > size) return 1;
+    if (region > size) return MFAT_MALFORMED;
 
     /* Collect every entry's offset+size, validating each individually
      * against the file and the header/table region as before, so a second
@@ -40,7 +40,7 @@ int mfat_parse(const uint8_t *buf, size_t size, uint32_t *narch_out, int *swappe
     if (narch) {
         offs  = (uint32_t *)malloc((size_t)narch * sizeof(uint32_t));
         sizes = (uint32_t *)malloc((size_t)narch * sizeof(uint32_t));
-        if (!offs || !sizes) { free(offs); free(sizes); return 1; }
+        if (!offs || !sizes) { free(offs); free(sizes); return MFAT_IO_ERROR; }
     }
 
     const struct fat_arch *ar = (const struct fat_arch *)(buf + sizeof(struct fat_header));
@@ -49,8 +49,8 @@ int mfat_parse(const uint8_t *buf, size_t size, uint32_t *narch_out, int *swappe
         uint32_t s = swap ? mfat_swap32((uint32_t)ar[i].size)   : (uint32_t)ar[i].size;
         /* A slice cannot start before the region that describes it -- that
          * would let it alias the fat header/arch table itself. */
-        if ((uint64_t)o < region) { free(offs); free(sizes); return 1; }
-        if ((uint64_t)o + s > size) { free(offs); free(sizes); return 1; }
+        if ((uint64_t)o < region) { free(offs); free(sizes); return MFAT_MALFORMED; }
+        if ((uint64_t)o + s > size) { free(offs); free(sizes); return MFAT_MALFORMED; }
         offs[i] = o; sizes[i] = s;
     }
 
@@ -58,7 +58,7 @@ int mfat_parse(const uint8_t *buf, size_t size, uint32_t *narch_out, int *swappe
         uint64_t a0 = offs[i], a1 = a0 + sizes[i];
         for (uint32_t j = i + 1; j < narch; j++) {
             uint64_t b0 = offs[j], b1 = b0 + sizes[j];
-            if (a0 < b1 && b0 < a1) { free(offs); free(sizes); return 1; }
+            if (a0 < b1 && b0 < a1) { free(offs); free(sizes); return MFAT_MALFORMED; }
         }
     }
     free(offs); free(sizes);

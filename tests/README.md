@@ -60,10 +60,15 @@ in the commit why a row changed.
 
 ## `macho9`'s exit codes
 
-`macho9` uses three exit codes throughout — `verify`, `info`, `grow`, `minos`
-and `lc`'s KIND validation always have, and `dylib`/`rpath`/`lc` now do too
-when given `--fatal-warnings` — also documented machine-readably in
-`--capabilities`' `exitcodes` line:
+`macho9` uses three exit codes throughout. `verify`, `info`, `grow`, `minos`
+and `lc`'s KIND validation always have; `dylib`, `rpath`, `lc` and `minos`
+get theirs from the shared rewrite drivers they call into (`mr_apply_file`,
+`mv_add_version_min`), which now draw this exact same line themselves for
+EVERY considered refusal they can reach -- not only the one `--fatal-
+warnings` adds ("an operation matched nothing"), but every refusal those
+two functions already had (bad magic, no room to grow, and the rest of
+`src/rewrite.h`'s list on `mr_apply_file`). Also documented
+machine-readably in `--capabilities`' `exitcodes` line:
 
 | code | meaning |
 |---|---|
@@ -92,9 +97,11 @@ version check) hand back the exit code of the shared rewrite drivers,
 `MR_FAIL` (2) split this table documents -- `mr_apply_file`'s own comment in
 `src/rewrite.h` has the full classification, including several sites reached
 through a helper's own nonzero return rather than a check written out in
-that function -- but they are still not literally covered by the table
-above, which is `macho9`'s own directly-decided verbs, not these two shared
-drivers one layer down.
+that function -- so their exit codes ARE covered by the table above, exactly
+as `cli/macho9.c`'s own `--capabilities` comment says. What the table's
+prose does not spell out per verb is WHICH of `mr_apply_file`'s many
+considered-refusal cases fired -- that detail is on stderr, not in the exit
+code, same as everywhere else in this table.
 
 (They used to be forwarded from a `change_dylib`/`add_version_min`
 SUBPROCESS, which returned a flat 0/1 with no refused/failed distinction at

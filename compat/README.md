@@ -69,9 +69,13 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with four known exceptions, each measured at its own site: one
-reproduced on a real file (one out of 300 in the differential corpus, below),
-the other three argued unreachable in practice rather than observed:
+check them, with four known exceptions, truthfully not all the same KIND of
+known: one reproduced on a real file (one out of 300 in the differential
+corpus, below), two argued unreachable in practice rather than observed, and
+the fourth true by construction rather than by measurement -- it follows
+directly from reading what two of the wrappers' code does, not from a corpus
+row that exhibits it, so no file "reproduces" it and no argument is needed
+for why it would be rare:
 
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its

@@ -1423,12 +1423,15 @@ build_main "$T/dylib_grow_fixture"
 # or the "without --allow-grow" half of this test is not actually exercising
 # the refusal path.
 longpath="@loader_path/$(printf 'x%.0s' $(seq 1 3500)).dylib"
-if "$MACHO9" dylib "$T/dylib_grow_fixture" -replace "@loader_path/liba.dylib" "$longpath" \
-    >/dev/null 2>"$T/dylib_grow.err"; then
-    bad "dylib: long path without --allow-grow" "should have been refused"
-else
-    ok "dylib: long path without --allow-grow is refused"
-fi
+rc=0
+"$MACHO9" dylib "$T/dylib_grow_fixture" -replace "@loader_path/liba.dylib" "$longpath" \
+    >/dev/null 2>"$T/dylib_grow.err" || rc=$?
+# Exactly the "no room, no --allow-grow" case Ruling 9's new-tests
+# requirement names: a considered refusal (mr_process_thin examined the
+# header pad, decided the new load commands do not fit, and declined without
+# --allow-grow to widen it) is MR_REFUSED, forwarded verbatim as EX_REFUSED.
+[ "$rc" -eq 1 ] && ok "dylib: long path without --allow-grow is refused (EX_REFUSED)" \
+    || bad "dylib: long path without --allow-grow" "expected exit 1, got $rc: $(cat "$T/dylib_grow.err")"
 if "$MACHO9" dylib "$T/dylib_grow_fixture" --allow-grow -replace "@loader_path/liba.dylib" "$longpath" \
     >"$T/dylib_grow.out"; then
     ok "dylib: --allow-grow lets the same replace through"
@@ -1438,6 +1441,47 @@ fi
 grown_info=$("$MACHO9" info "$T/dylib_grow_fixture")
 echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: --allow-grow result has the long path" \
     || bad "dylib: --allow-grow result" "long path not found"
+
+# ============================================================================
+# dylib: pinning the MR_REFUSED/MR_FAIL split (rewrite.h) through mr_apply_file
+# and mi_open, which reaching this verb from macho9's own EX_REFUSED/EX_FAIL
+# checks never exercised. Without these, reverting the reclassification in
+# src/rewrite.c leaves this whole suite green -- see the round-2 fix report
+# for the mutation that proved it.
+# ============================================================================
+
+# A non-Mach-O file: mi_open reads it fine (no I/O failure at all) and
+# mi_validate declines it -- MI_NOT_MACHO, forwarded as MR_REFUSED, EX_REFUSED.
+echo 'not a mach-o, just bytes' > "$T/dylib_notmacho"
+rc=0
+"$MACHO9" dylib "$T/dylib_notmacho" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_notmacho.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "dylib: a non-Mach-O file is refused (EX_REFUSED)" \
+    || bad "dylib: non-Mach-O" "expected exit 1, got $rc: $(cat "$T/dylib_notmacho.err")"
+
+# An absent file: mr_apply_file's own open() fails before mi_open is ever
+# reached -- a genuine syscall failure, MR_FAIL, EX_FAIL.
+rc=0
+"$MACHO9" dylib "$T/no-such-file-for-dylib" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_absent.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "dylib: an absent file is a failure, not a refusal (EX_FAIL)" \
+    || bad "dylib: absent file" "expected exit 2, got $rc: $(cat "$T/dylib_absent.err")"
+
+# A 64-bit fat container (fat_arch_64 -- FAT_MAGIC_64/FAT_CIGAM_64, arm64e/
+# watchOS-style wide offsets). mr_apply_file recognizes this from the first
+# 4 bytes alone, before any further read, so the fixture needs nothing past
+# that magic to exercise the check -- cheap to build: FAT_MAGIC_64 is
+# 0xcafebabf (src/mach_compat.h), and on this host's native byte order that
+# is the 4 bytes 0277 0272 0376 0312 (octal), file-order low-to-high.
+printf '%b' '\0277\0272\0376\0312' > "$T/dylib_fat64"
+rc=0
+"$MACHO9" dylib "$T/dylib_fat64" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_fat64.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "dylib: a 64-bit fat container is refused, not merely failed (EX_REFUSED)" \
+    || bad "dylib: 64-bit fat" "expected exit 1, got $rc: $(cat "$T/dylib_fat64.err")"
+grep -q "fat_arch_64" "$T/dylib_fat64.err" \
+    && ok "dylib: names the 64-bit fat container as the reason" \
+    || bad "dylib: 64-bit fat message" "no mention of fat_arch_64: $(cat "$T/dylib_fat64.err")"
 
 # ============================================================================
 # dylib -replace naming a path the image does not have matched nothing, and

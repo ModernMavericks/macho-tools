@@ -42,9 +42,14 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
  * (`return mv_add_version_min(path);`), the same arrangement mr_apply_file
  * has with dylib/rpath/lc -- so every return below is MR_REFUSED or MR_FAIL,
  * the same two codes and the same dividing line mr_apply_file's own comment
- * (rewrite.h) draws: MR_FAIL only for open/fstat/write itself failing;
- * MR_REFUSED for every site that examined the file (or the race-guard stat
- * against it) and declined, including "no room for LC_VERSION_MIN_MACOSX". */
+ * (rewrite.h) draws: MR_FAIL for this function's own open/fstat/write, for
+ * mi_open's own I/O (MI_IO_ERROR, below), and for the race guard below (both
+ * a failed stat() and a dev/ino mismatch -- the mismatch is the same
+ * "changed underneath us mid-run" condition src/swift_retag.c calls
+ * MSWIFT_RACED and reports as EX_FAIL, not EX_REFUSED, for the identical
+ * reason); MR_REFUSED for every site that examined the file and declined,
+ * including mi_open's MI_NOT_MACHO and "no room for
+ * LC_VERSION_MIN_MACOSX". */
 int mv_add_version_min(const char *path) {
     /* Open O_RDWR early so an unwritable file fails immediately, before any
      * analysis; mi_open (O_RDONLY) does the actual read and validation, same
@@ -55,7 +60,16 @@ int mv_add_version_min(const char *path) {
     if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return MR_FAIL; }
 
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        /* The open()/fstat() above already proved this path opens; reaching
+         * here is a TOCTOU race (mi_open does its own, independent open),
+         * not a considered refusal. */
+        fprintf(stderr, "%s: cannot open or read\n", path);
+        close(fd);
+        return MR_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
         close(fd);
         return MR_REFUSED;
@@ -76,10 +90,16 @@ int mv_add_version_min(const char *path) {
     struct stat st1;
     if (stat(path, &st1) != 0 ||
         st1.st_dev != st0.st_dev || st1.st_ino != st0.st_ino) {
+        /* Both halves are MR_FAIL, not MR_REFUSED: a failed stat() here is a
+         * plain syscall failure, and a dev/ino mismatch is this function's
+         * version of MSWIFT_RACED (src/swift_retag.c) -- "the file changed
+         * under us mid-run" is an environment condition, not a judgement
+         * about the file's content, and retag-swift already reports its own
+         * identical race as EX_FAIL for exactly that reason. */
         fprintf(stderr, "%s: changed underneath us between open and validation; refusing\n", path);
         mi_close(&im);
         close(fd);
-        return MR_REFUSED;
+        return MR_FAIL;
     }
 
     size_t fsize = im.size;

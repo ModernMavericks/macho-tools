@@ -28,6 +28,18 @@ typedef struct {
     uint32_t align;
 } mfat_arch;
 
+/* mfat_parse's two failure reasons -- the same distinction image.h's
+ * MI_IO_ERROR/MI_NOT_MACHO draws, for the same reason (cli/macho9.c's
+ * EX_REFUSED/EX_FAIL, src/rewrite.c's/src/version_min.c's MR_REFUSED/
+ * MR_FAIL). mfat_parse takes an already-read buffer, not a path, so it has
+ * no open/fstat/read of its own to fail -- its ONE environment failure is
+ * the two `malloc`s it uses to track slice offsets/sizes while checking for
+ * overlaps. Every other failure (bad magic, arch table past the end, a
+ * slice out of bounds or overlapping the header/table, two slices
+ * overlapping each other) is a decision about the file's own content. */
+#define MFAT_IO_ERROR   (-1)
+#define MFAT_MALFORMED  (-2)
+
 /* Validate buf[0..size) as a fat (universal) Mach-O: magic is FAT_MAGIC or
  * FAT_CIGAM, the fat_arch table (narch entries) fits inside `size`, EVERY
  * entry's offset+size is in bounds AND does not start before the end of the
@@ -39,8 +51,9 @@ typedef struct {
  * intends to do with it). Returns 0 on success and sets *narch_out and
  * *swapped_out (nonzero if the file is byte-swapped relative to this host --
  * true for every real fat file read on a little-endian machine). Returns
- * non-zero on any failure and touches neither output; it prints nothing, so
- * the caller can phrase its own diagnostic. */
+ * MFAT_IO_ERROR or MFAT_MALFORMED on failure (see those constants above)
+ * and touches neither output; it prints nothing, so the caller can phrase
+ * its own diagnostic. */
 int mfat_parse(const uint8_t *buf, size_t size, uint32_t *narch_out, int *swapped_out);
 
 /* Fetch arch `idx`'s fields, byte-order-corrected to host-native. `idx` must

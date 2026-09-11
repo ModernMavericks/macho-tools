@@ -44,30 +44,49 @@
 # "33 -change flags smashed the stack", docs/PROPOSAL.md -- fixed rather than
 # reintroduced in shell.)
 #
-# EXIT CODES. Forwarded unchanged, and no mapping is added here: the C tool
-# returned mr_apply_file's own 0/1 (0 ok, 1 the flat "something went wrong"
-# that rewriter had no finer answer than), and `dylib`, `rpath` and `lc`
-# still forward that SAME value, unmapped, PAST THEIR OWN ARGUMENT CHECKS --
-# for this wrapper specifically. mr_apply_file's own vocabulary is no longer
-# that flat 0/1, though (rewrite.h): 0 ok, MR_REFUSED (1) for a considered
+# EXIT CODES. Forwarded unchanged, and no mapping is added here: this
+# wrapper runs the emitted `macho9 dylib`/`rpath`/`lc` line and exits
+# whatever it exits, PAST THEIR OWN ARGUMENT CHECKS -- see the paragraph
+# below for what those checks make unreachable here. The C tool returned
+# mr_apply_file's own 0/1 (0 ok, 1 the flat "something went wrong" that
+# rewriter had no finer answer than); mr_apply_file's vocabulary is no
+# longer that flat 0/1 (rewrite.h): 0 ok, MR_REFUSED (1) for a considered
 # refusal -- examined the input and declined, rewrite.h's own comment on
-# mr_apply_file lists the cases -- or MR_FAIL (2) for a genuine open/fstat/
-# read/write/malloc failure. A considered refusal still exits 1 here,
-# matching the C tool by coincidence, not construction; an operational
-# failure now exits 2, where the C tool always exited a flat 1 -- see
-# compat/README.md's "drop-in" section for this as a named exception. That
-# THIS WRAPPER forwards verbatim at all stopped being true of `dylib`/
-# `rpath`/`lc` in general the moment macho9 grew `--fatal-warnings`
-# (mr_apply_file can now also return MR_REFUSED for an unmatched operation,
-# which cli/macho9.c forwards as EX_REFUSED=1): it stays true HERE only
-# because this translation never emits that flag -- change_dylib's own
-# grammar has no spelling for it, and never will, since `-change` matching
-# nothing has always exited 0 and that is compat surface. If translate.sh
-# ever grows a --fatal-warnings-shaped flag, this comment is the one to
-# update. Argument checks are unreachable from here regardless -- the
-# translation validates every -strip-lc KIND against the same table
-# (src/lc_kinds.c) before emitting, and never emits a verb with no
-# operation.
+# mr_apply_file lists the cases, and this was ALWAYS true of mr_apply_file's
+# behavior, just not numerically visible under the scheme that shipped
+# first -- or MR_FAIL (2) for a genuine open/fstat/read/write/malloc
+# failure. A considered refusal still exits 1 here, matching the C tool by
+# coincidence, not construction; an operational failure now exits 2, where
+# the C tool always exited a flat 1 -- see compat/README.md's "drop-in"
+# section for this as a named exception.
+#
+# --fatal-warnings is a SEPARATE fact, not what makes the paragraph above
+# true or conditional: this translation never emits that flag -- change_
+# dylib's own grammar has no spelling for it, and never will, since
+# `-change` matching nothing has always exited 0 and that is compat
+# surface -- so the ONE mr_apply_file behavior that flag specifically adds
+# (turning "an operation matched nothing" from a report into MR_REFUSED) is
+# simply never reached through this wrapper. If translate.sh ever grows a
+# --fatal-warnings-shaped flag, this paragraph is the one to update.
+# Argument checks are unreachable from here regardless -- the translation
+# validates every -strip-lc KIND against the same table (src/lc_kinds.c)
+# before emitting, and never emits a verb with no operation.
+#
+# ONE-VERB VS MULTI-VERB: "forwarded unchanged, no mapping" is exactly true
+# only when this translation emits a single line -- macho9-compat.sh's
+# mw_run_atomic hands straight to mw_run and returns its raw exit code
+# unmapped. A run needing more than one family (`-change` AND `-strip-lc`
+# together, say) goes through mw_run_atomic's copy-aside-and-install dance
+# instead, which has TWO hardcoded `return 1`s of its own (a failed `cp`
+# aside, or a failed install back over the original) that are NOT macho9's
+# exit code at all -- they fire before or after macho9 ever runs. An absent
+# FILE is the case where this is visible: single-verb, it reaches
+# mr_apply_file's own open() and exits 2 (MR_FAIL); multi-verb, `cp -p`
+# fails on the same absent file BEFORE any macho9 command runs, and
+# mw_run_atomic's hardcoded path returns 1. Not a bug to fix here --
+# mw_run_atomic's own `return 1`s are exactly right for the historical-
+# mapping wrappers (fix_macho.sh) that share it -- just a real seam this
+# wrapper's own "forwarded unchanged" claim has to be read around.
 #
 # STDOUT. Measured over all 1110 generated change_dylib combinations plus the
 # hand-picked ones (tests/compat-matrix.tsv):

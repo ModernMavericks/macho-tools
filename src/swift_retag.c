@@ -144,7 +144,17 @@ int mswift_retag_file(const char *path) {
     if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return MSWIFT_ERROR; }
 
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        /* The open()/fstat() above already proved this path opens; reaching
+         * here is a TOCTOU race (mi_open does its own, independent open),
+         * not a judgement about the file's content -- MSWIFT_ERROR, the
+         * same code this function's own open()/fstat() failures above use,
+         * not MSWIFT_NOT_MACHO. */
+        close(fd);
+        return MSWIFT_ERROR;
+    }
+    if (mo_rc != 0) {
         /* Not a (validly-formed) 64-bit Mach-O -- nothing to do here, exactly
          * as the old magic-only check decided for a bad magic. mi_open
          * additionally catches cmdsize/alignment/segment malformations the

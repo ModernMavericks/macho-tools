@@ -182,10 +182,16 @@
 # compat/patch_macho.sh make and for the same reason: macho9's own EX_FAIL
 # is 2, a value no fix_macho caller has ever seen, and forwarding it would
 # invent a third outcome for a grammar that has two. (EX_REFUSED, 1, is not
-# the problem -- it already coincides with fix_macho's own flat failure code,
-# for a considered refusal; the case this mapping exists for is EX_FAIL. No
-# line this translation emits can reach mr_apply_file's own MR_REFUSED
-# anyway, because that needs --fatal-warnings and this never emits it.)
+# the problem -- it already coincides with fix_macho's own flat failure
+# code, for any of the ordinary considered refusals this translation's
+# `dylib`/`lc`/`segment` lines CAN reach -- bad magic, no room to grow, and
+# the rest of rewrite.h's list, none of which need --fatal-warnings. The
+# ONE mr_apply_file refusal genuinely unreachable here is the
+# --fatal-warnings-specific one, "an operation matched nothing" promoted
+# to MR_REFUSED -- this translation never emits that flag, so that
+# particular trigger never fires. It would not have needed mapping either
+# way: it is 1, same as everything else this mapping already collapses to
+# 1.)
 #
 # ---- the writability check -----------------------------------------------
 #
