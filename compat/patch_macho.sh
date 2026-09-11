@@ -26,8 +26,10 @@
 # (1) where it examined the input and declined on purpose -- not a readable
 # 64-bit Mach-O, no chained fixups to convert, any of declassify.h's LIMITS --
 # and EX_FAIL (2) for an operational failure. So: ANY nonzero becomes 1. Zero
-# stays zero. tests/leaf-tool-crashes.sh depends on this, checking for exit 1
-# on a fixture whose refusal reaches macho9 as EX_REFUSED.
+# stays zero. EX_REFUSED is already 1 and passes through unchanged -- which
+# is all tests/leaf-tool-crashes.sh sees, checking for exit 1 on a fixture
+# whose refusal reaches macho9 as EX_REFUSED. The mapping's real work is
+# EX_FAIL (2) becoming 1, which tests/wrapper_test.sh checks on an absent IN.
 #
 # THE WRITE, AND THE FOURTH OBSERVABLE. patch_macho created OUT with
 # open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755) and wrote into it. That fixes

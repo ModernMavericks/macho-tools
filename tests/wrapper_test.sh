@@ -215,13 +215,16 @@ cd_usage="Usage: $BIN/change_dylib input [-grow] [-change old new] [-delete path
 # ---- patch_macho --------------------------------------------------------
 #
 # EXIT CODES ARE MAPPED. `macho9 declassify` returns EX_REFUSED (1) where it
-# examined the input and declined; patch_macho returned a flat 1 for
-# everything. A caller that tested `!= 0` is unaffected either way, but
-# tests/leaf-tool-crashes.sh tests for exactly 1.
+# examined the input and declined, and EX_FAIL (2) for an operational
+# failure; patch_macho returned a flat 1 for everything. A caller that
+# tested `!= 0` is unaffected either way, but tests/leaf-tool-crashes.sh
+# tests for exactly 1. An absent IN is the operational-failure case --
+# declassify cannot even open it, so it exits EX_FAIL (2), not EX_REFUSED --
+# and is the one here where the mapping actually changes a number.
 run patch_macho nosuchfile out
 [ "$rc" -eq 1 ] \
-    && ok "patch_macho: a refusal maps macho9's EX_REFUSED back to a flat 1" \
-    || bad "patch_macho refusal" "exit $rc, want 1"
+    && ok "patch_macho: an absent IN maps macho9's EX_FAIL back to a flat 1" \
+    || bad "patch_macho absent IN" "exit $rc, want 1"
 
 fresh
 printf 'not a mach-o at all\n' > "$T/nm"

@@ -51,7 +51,9 @@
  * name, not with a bare `< 0`: only MSWIFT_ERROR is a failure of the tool
  * itself, and the compat front-end's exit code has always turned on exactly
  * that distinction. */
-#define MSWIFT_ERROR      (-1)  /* open/fstat/write failed; already reported */
+#define MSWIFT_ERROR      (-1)  /* open/fstat/write failed, or mi_open's own
+                                 * open, fstat, read or whole-file malloc did
+                                 * (MI_IO_ERROR); already reported */
 #define MSWIFT_NOT_MACHO  (-2)  /* not a readable 64-bit Mach-O; NOTHING printed,
                                  * so a front-end that cares must say so itself */
 #define MSWIFT_RACED      (-3)  /* `path` named a different inode by the time it

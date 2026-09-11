@@ -108,26 +108,34 @@
  *
  * EX_REFUSED is used ONLY at a point where macho9 itself examined the input
  * and made that call; it is never used for a genuine operational failure (a
- * syscall that failed, a bad number of command-line arguments) -- EX_FAIL is
- * that catch-all, named the same way as EX_REFUSED so a future change to
- * either touches one place. That includes the shared rewrite drivers
- * (mr_apply_file, mv_add_version_min) that dylib/rpath/lc/minos hand back:
+ * syscall that failed, a bad number of command-line arguments), save the one
+ * allocation fold described below -- EX_FAIL is that catch-all, named the
+ * same way as EX_REFUSED so a future change to either touches one place.
+ * That includes the shared rewrite drivers (mr_apply_file,
+ * mv_add_version_min) that dylib/rpath/lc/minos hand back:
  * they now draw the SAME line themselves (rewrite.h's own comment on
  * mr_apply_file has the full classification), returning MR_REFUSED
  * (== EX_REFUSED, enforced below) for a considered refusal -- "not a 64-bit
  * Mach-O" in any of its forms, no room to grow, a rewrite's own cross-check
  * failing, and more -- and MR_FAIL (== EX_FAIL, enforced below) for
- * open/fstat/read/write/malloc itself failing. Forwarding either verbatim is
+ * open/fstat/read/write/malloc itself failing (and mv_add_version_min's race
+ * guard, a failed stat() or a changed inode). Forwarding either verbatim is
  * exact, not an approximation, with one deliberate exception those two
- * drivers' own comments carry: a malloc INSIDE mg_grow_header or
- * mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every other
- * reason either one refuses, not split out to MR_FAIL -- so "a malloc that
- * failed" is EX_FAIL only when it is macho9's, mi_open's, or mfat_parse's
- * own; one made by a primitive those two drivers call is not, by design (see
- * rewrite.h's MR_FAIL comment for why). A caller that only checks "== 0" or
- * "!= 0" still needs no changes; --capabilities documents all three codes
- * (see print_capabilities below) and tests/README.md repeats it for
- * humans. */
+ * drivers' own comments carry: an allocation failure INSIDE mg_grow_header
+ * or mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every
+ * other reason either one refuses, not split out to MR_FAIL. The same fold
+ * holds on the verbs that call those two directly -- cmd_grow
+ * (mg_grow_header) and cmd_verify (mg_plausible) both return EX_REFUSED for
+ * any failure of theirs. So a failed allocation that is checked at all is
+ * EX_FAIL when it is mi_open's or mi_open_slack's, mfat_parse's,
+ * md_declassify's, wa_write_atomic's temp-name buffer, or one src/rewrite.c's
+ * own drivers make (rewrite.h's MR_FAIL comment names them); EX_REFUSED
+ * when it is inside mg_grow_header or mg_plausible, by design (see
+ * rewrite.c's comment on the fold for why); and no exit code at all when it
+ * is wa_write_atomic's copy of an extended attribute, which only warns. A
+ * caller that only checks "== 0" or "!= 0" still needs no changes;
+ * --capabilities documents all three codes (see print_capabilities below)
+ * and tests/README.md repeats it for humans. */
 #define EX_REFUSED 1
 #define EX_FAIL    2
 
@@ -222,11 +230,13 @@ static void print_ops_csv(int is_rpath) {
  *       version, a grow mg_grow_header itself refused, new load commands
  *       that don't fit and can't be grown, an unmatched --fatal-warnings
  *       operation, and more (rewrite.h's own comment on mr_apply_file has
- *       the full list, including the one exception -- a realloc/malloc
+ *       the full list, including the one exception -- an allocation
  *       failure inside mg_grow_header or mg_plausible themselves stays
  *       refused=EX_REFUSED, not failed, same as every other reason either
- *       one refuses); failed=EX_FAIL is everything else (syscall/malloc
- *       failure, usage error). The two numbers are 1 and 2, not the reverse
+ *       one refuses, on grow and verify as well as the rewrite verbs);
+ *       failed=EX_FAIL is everything else (syscall/malloc failure, usage
+ *       error -- EX_REFUSED's own comment above has the exact allocation
+ *       breakdown). The two numbers are 1 and 2, not the reverse
  *       -- see EX_REFUSED's own comment above for why this repo deliberately
  *       does not match what it originally shipped. A caller checking only
  *       nonzero needs no changes regardless of which way the numbers run.
@@ -524,12 +534,16 @@ static int cmd_grow(const char *path, const char *n_str) {
          * global rule -- see EX_REFUSED's own comment) -- growth that would
          * need a real __LINKEDIT resize, a non-PIE image, an unsupported
          * ULEB re-encode -- so a failure here is a refusal. That includes
-         * the two cases where mg_grow_header's OWN failure is actually a
-         * realloc of the whole image failing (grow.c): this verb cannot
-         * tell that apart from every other reason mg_grow_header declines,
+         * every case where mg_grow_header's OWN failure is actually an
+         * allocation failing (grow.c): its two reallocations of the whole
+         * image, and its side tables -- the address snapshot, the export-
+         * trie walk's scratch table, the trie rebuilder's, mg_verify's, and
+         * those of the mg_plausible it runs last. This verb cannot tell any
+         * of those apart from every other reason mg_grow_header declines,
          * and by deliberate choice does not try to -- see rewrite.c's
          * comment on the identical fold in mr_apply_file for why. So a
-         * failed grow always exits here, on this path, never EX_FAIL. */
+         * failed mg_grow_header always exits here, EX_REFUSED, never
+         * EX_FAIL. (A failed write-back, below, is EX_FAIL.) */
         fprintf(stderr, "macho9 grow: %s left unmodified\n", path);
         free(buf);
         return EX_REFUSED;

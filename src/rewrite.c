@@ -1030,8 +1030,9 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
      * THIS function's own per-slice copy-buffer malloc failing (MR_FAIL --
      * `sbuf[i] = malloc(...)` below, nothing to do with any allocation
      * mr_process_thin or a primitive it calls may have already made and
-     * folded into its own MR_ERROR, per that exception's own comment where
-     * this function's MR_ERROR->MR_REFUSED translation happens, below) and
+     * folded into its own MR_ERROR -- see the short note at this function's
+     * MR_ERROR->MR_REFUSED translation, below, and the full comment on that
+     * fold in mr_apply_file, at its thin path's identical translation) and
      * mr_process_thin refusing a slice's edit (MR_ERROR, defined above with
      * MR_SKIP -- that comment describes MR_ERROR purely as a per-slice
      * signal, "fatal to the whole operation", and says nothing about an
@@ -1071,6 +1072,11 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
             fprintf(stderr, "ERROR: %s: refusing the whole fat file -- a partial "
                             "rewrite would leave its slices inconsistent\n", label);
             i++;   /* this slice's buffer was still allocated; free it too */
+            /* MR_REFUSED even when the slice's MR_ERROR came from an
+             * allocation failure inside mg_grow_header or mg_plausible:
+             * the same deliberate fold as mr_apply_file's thin path, whose
+             * comment at its own MR_ERROR->MR_REFUSED translation says
+             * why. */
             abort_rc = MR_REFUSED;
             break;
         } else if (mod) {
@@ -1299,14 +1305,16 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
     /* Every return in this function is MR_REFUSED or MR_FAIL, matching the
      * dividing line this function's own comment in rewrite.h draws: MR_FAIL
      * for open/fstat/read/write/malloc itself failing (this function's own,
-     * directly below, or mi_open's/mfat_parse's, one level down), MR_REFUSED
-     * for everything that examined the bytes (even "too small to be a
-     * Mach-O", which never gets as far as reading load commands) and
-     * declined. This does not cover every malloc reachable from this
-     * function -- mg_grow_header's and mg_plausible's own internal
-     * allocations are the one deliberate exception, folded into MR_REFUSED
-     * instead; see the comment where mr_process_thin's MR_ERROR becomes
-     * MR_REFUSED, below, for why. */
+     * directly below; mr_process_fat's checked ones; or mi_open's/
+     * mfat_parse's, one level down), MR_REFUSED for everything that
+     * examined the bytes (even "too small to be a Mach-O", which never gets
+     * as far as reading load commands) and declined. This does not cover
+     * every allocation reachable from this function. mg_grow_header's and
+     * mg_plausible's own are the deliberate exception, folded into
+     * MR_REFUSED instead; see the comment where mr_process_thin's MR_ERROR
+     * becomes MR_REFUSED, below, for why. And three callocs in this file are
+     * not checked at all -- both of mr_process_thin's new_lcs tables and
+     * mr_process_fat's noff -- so their failure reaches neither code. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return MR_FAIL; }
 
@@ -1420,20 +1428,32 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
              * -- see the list in this function's own rewrite.h comment)
              * examined the bytes and declined, so this is MR_REFUSED, never
              * MR_FAIL -- with one folded-in exception, deliberate, not an
-             * oversight: mg_grow_header and mg_plausible each have a
-             * realloc/malloc failure buried among their own content checks
-             * (grow.c:1075's `realloc(buf, fsize + grow)` and grow.c:1268
-             * both reallocate the WHOLE image, not some small side table),
-             * and mr_process_thin's single MR_ERROR return from either one
-             * cannot tell that failure apart from every other reason those
-             * two functions refuse. Splitting it would mean widening
-             * mg_grow_header's and mg_plausible's own return contracts
-             * (both currently a flat "0 or -1") to say which -- a change
-             * later work already plans to make when it restructures those
-             * two functions, not one to fold in here as a side effect. So,
-             * plainly: an allocation failure while growing a large binary
-             * exits 1 (MR_REFUSED), not 2, same as every other reason
-             * mg_grow_header or mg_plausible refuses. */
+             * oversight: mg_grow_header and mg_plausible each return the
+             * same -1 for an allocation failure as for their content
+             * checks. mg_grow_header's include its two reallocations of the
+             * WHOLE image (grow.c:1075's `realloc(buf, fsize + grow)`, and
+             * grow.c:1268's, growing __LINKEDIT for a rebuilt export trie)
+             * as well as side tables (its address snapshot, grow.c:223 via
+             * :1067; the export-trie walk's scratch table, grow.c:525 via
+             * :1042 and :1174; the trie rebuilder's, src/trie.c; mg_verify's,
+             * grow.c:234) and every allocation of the mg_plausible it runs
+             * last. mg_plausible's own are side tables only (grow.c:719-721,
+             * and grow.c:525 again through mg_collect). mr_process_thin's
+             * single MR_ERROR return from either one cannot tell that
+             * failure apart from every other reason those two functions
+             * refuse. Splitting it would mean widening mg_grow_header's and
+             * mg_plausible's own return contracts (both currently a flat
+             * "0 or -1") to say which -- a change later work already plans
+             * to make when it restructures those two functions, not one to
+             * fold in here as a side effect. So, plainly: an allocation
+             * failure inside either one exits 1 (MR_REFUSED), not 2, same as
+             * every other reason mg_grow_header or mg_plausible refuses --
+             * and that is not confined to growing. mg_grow_header is reached
+             * only with allow_grow, but mr_process_thin runs mg_plausible on
+             * every rewrite that is not a pure segment rename (see
+             * mr_is_rename_only) unless MACHO_NO_VERIFY is set, so an
+             * ordinary dylib/rpath/lc edit reaches it too. mr_process_fat
+             * makes the identical translation for a fat slice. */
             rc = (po == MR_ERROR) ? MR_REFUSED : 0;
         }
     }

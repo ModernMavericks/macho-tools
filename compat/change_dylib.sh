@@ -55,15 +55,21 @@
 # mr_apply_file lists the cases, and this was ALWAYS true of mr_apply_file's
 # behavior, just not numerically visible under the scheme that shipped
 # first -- or MR_FAIL (2) for a genuine open/fstat/read/write/malloc
-# failure. ONE EXCEPTION this wrapper can reach: `-grow` becomes
-# `--allow-grow`, and a realloc/malloc failure INSIDE mg_grow_header
-# (src/grow.c, reached only through `--allow-grow`) is folded into
-# MR_REFUSED, not MR_FAIL, same as every other reason mg_grow_header
-# refuses -- rewrite.c's own comment on that fold has the full reasoning.
-# Apart from that one case, a considered refusal still exits 1 here,
-# matching the C tool by coincidence, not construction; an operational
-# failure now exits 2, where the C tool always exited a flat 1 -- see
-# compat/README.md's "drop-in" section for this as a named exception.
+# failure. ONE EXCEPTION this wrapper can reach, with or without `-grow`:
+# an allocation failure INSIDE mg_grow_header or mg_plausible (src/grow.c)
+# is folded into MR_REFUSED, not MR_FAIL, same as every other reason either
+# one refuses -- rewrite.c's own comment on that fold has the full
+# reasoning. This wrapper reaches mg_grow_header only through
+# `--allow-grow` (which `-grow` becomes), and only when the new load
+# commands overflow the pad; mg_plausible needs no flag at all --
+# mr_process_thin runs it on every rewrite that is not a pure segment
+# rename (mr_is_rename_only), which is every rewrite this wrapper's
+# `lc`/`dylib`/`rpath` lines can make, unless MACHO_NO_VERIFY is set in the
+# environment. Apart from that fold, and the multi-verb seam described
+# below, a considered refusal still exits 1 here, matching the C tool by
+# coincidence, not construction; an operational failure now exits 2, where
+# the C tool always exited a flat 1 -- see compat/README.md's "drop-in"
+# section for this as a named exception.
 #
 # --fatal-warnings is a SEPARATE fact, not what makes the paragraph above
 # true or conditional: this translation never emits that flag -- change_

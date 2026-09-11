@@ -2474,11 +2474,16 @@ rc=0
     && ok "retag-swift: an unopenable path is a failure (2), not a refusal (1) and not silent success" \
     || bad "retag-swift: missing path" "expected exit 2, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
 # MSWIFT_ERROR's own contract (swift_retag.h) is "already reported" --
-# cmd_retag_swift relies on that and prints nothing itself for this code, so
-# a silent exit 2 here would mean the contract broke (exactly what happened
-# when the MI_IO_ERROR branch inside mswift_retag_file's mi_open call was
-# added without a print of its own). Assert stderr is not empty, not just
-# that the exit code is right.
+# cmd_retag_swift relies on that and prints nothing itself for this code.
+# What this guards is the path an absent file actually takes:
+# mswift_retag_file's own open() fails first, perror()s, and returns
+# MSWIFT_ERROR, so the run must exit 2 with something on stderr. It does NOT
+# reach, and cannot guard, the MI_IO_ERROR branch after mswift_retag_file's
+# mi_open call -- the one that once returned MSWIFT_ERROR without a print.
+# That branch's print is verified by inspection only: once open() and
+# fstat() have succeeded, reaching it takes the path being removed or
+# replaced mid-run, a malloc failure, or a short read, and this suite stages
+# none of those.
 [ -s "$T/retag_missing.err" ] \
     && ok "retag-swift: an unopenable path prints something, per MSWIFT_ERROR's contract" \
     || bad "retag-swift: missing path stderr" "exit 2 but stderr was empty -- MSWIFT_ERROR's 'already reported' contract broke"

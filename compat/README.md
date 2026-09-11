@@ -103,15 +103,23 @@ for why it would be rare:
     header has it) and is likewise unaffected by this. A CONSIDERED refusal
     (the input examined and declined) still exits 1, matching the C tool by
     coincidence, not by construction; but a genuine operational failure
-    (open, fstat, read, write, or a malloc `mr_apply_file`/
-    `mv_add_version_min` or `mi_open`/`mfat_parse` makes directly for the
-    file) now exits 2, where the C tool always exited a flat 1. ONE
-    EXCEPTION reachable through `change_dylib -grow`: a realloc/malloc
-    failure INSIDE `mg_grow_header` (reached only via `--allow-grow`) stays
-    a considered refusal, exit 1, same as every other reason that function
-    refuses -- `src/rewrite.c`'s own comment on that fold has the reasoning.
-    `compat/change_dylib.sh` and `compat/add_version_min.sh`'s own headers
-    have the rest of the detail.
+    (open, fstat, read or write failing, `mv_add_version_min`'s race guard,
+    or a checked allocation that `src/rewrite.c`'s drivers or
+    `mi_open`/`mfat_parse` make -- `src/rewrite.h`'s `MR_FAIL` comment
+    names them) now exits 2, where the C tool always exited a flat 1. Two
+    exceptions, both `change_dylib`'s only. First, an allocation failure
+    INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) exits 1, the
+    same as every other reason either one refuses -- and it needs no
+    `-grow`. `change_dylib` reaches `mg_grow_header` only through
+    `--allow-grow`, but `src/rewrite.c` runs `mg_plausible` on every
+    rewrite that is not a pure segment rename -- every rewrite
+    `change_dylib` can ask for -- unless `MACHO_NO_VERIFY` is set.
+    `src/rewrite.c`'s own comment on that fold has the reasoning. Second, a
+    `change_dylib` run that emits more than one `macho9` line goes through
+    `mw_run_atomic`, whose own hardcoded `return 1`s (a failed copy aside,
+    for one, which is what an absent FILE produces) are not `macho9`'s
+    code at all. `compat/change_dylib.sh` and `compat/add_version_min.sh`'s
+    own headers have the rest of the detail.
 
 There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
