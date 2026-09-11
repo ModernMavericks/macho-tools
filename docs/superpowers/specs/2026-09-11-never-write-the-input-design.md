@@ -138,7 +138,17 @@ tool allowed. One shell function in `compat/macho9-compat.sh` does it for all:
 **Multi-command invocations become one edit script.** `compat/translate.sh`
 emits a single `macho9 edit FILE TMP -` with one statement per translated
 operation on stdin, emitting several `-insert` flags in reverse, because
-script inserts go to the front in turn. That deletes `mw_run_atomic`'s
+script inserts go to the front in turn.
+
+A verb applies one family's operations as a batch against the original
+image; a script applies statements in sequence. They agree when each
+family's statements come in this order: deletes and reexports, then
+replaces, then appends, then inserts (reversed) -- with `load-command
+delete` first overall, as today, since deleting commands hands header pad
+back. The one shape no order can express is a `-change` whose new path is
+another's old path (a chain or a swap); on the edit-script path the
+translation refuses it, saying to run the two as separate invocations. A
+single-family invocation keeps using its verb, whose batch handles it. That deletes `mw_run_atomic`'s
 copy-aside-and-`cat` path and the stdout that named its copy. It needs fat
 support (queue item 11) first: `change_dylib` accepts fat files.
 
