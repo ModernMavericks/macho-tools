@@ -39,6 +39,7 @@
 #define MACHO9_MACH_COMPAT_H
 
 #include <mach-o/loader.h>
+#include <mach/machine.h>
 
 /* ---- load commands -------------------------------------------------- */
 
@@ -113,6 +114,25 @@
 #endif
 #ifndef FAT_CIGAM_64
 #define FAT_CIGAM_64 0xbfbafecau
+#endif
+
+/* cputype/subtype values for lipo's arch names (src/arch_names.c). arm64 and
+ * the x86_64h/arm64e subtypes postdate or barely predate the 10.9 SDK;
+ * defined here only where its headers lack them. */
+#ifndef CPU_TYPE_ARM64
+#define CPU_TYPE_ARM64 ((cpu_type_t)(CPU_TYPE_ARM | CPU_ARCH_ABI64))
+#endif
+#ifndef CPU_SUBTYPE_ARM64_ALL
+#define CPU_SUBTYPE_ARM64_ALL ((cpu_subtype_t)0)
+#endif
+#ifndef CPU_SUBTYPE_ARM64E
+#define CPU_SUBTYPE_ARM64E ((cpu_subtype_t)2)
+#endif
+#ifndef CPU_SUBTYPE_X86_64_H
+#define CPU_SUBTYPE_X86_64_H ((cpu_subtype_t)8)
+#endif
+#ifndef CPU_SUBTYPE_MASK
+#define CPU_SUBTYPE_MASK 0xff000000u
 #endif
 
 #endif /* MACHO9_MACH_COMPAT_H */
