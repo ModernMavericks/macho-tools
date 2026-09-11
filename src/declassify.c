@@ -205,23 +205,21 @@ static int md_collect_lc(const struct load_command *lc_, void *ctx_) {
 }
 
 int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
-    /* What the two cleanup labels at the bottom hand back. Declared here
-     * because a goto may not jump over its initialization. */
-    int rc;
-
-    /* Read file. The 2MB of slack is this conversion's own requirement: it
-     * appends the rebuilt rebase/bind streams into the tail of the buffer
-     * rather than reallocating, so the headroom has to be there from the
-     * start. That is why mi_open alone could not serve this caller, and it is
-     * why the read lives in here rather than in either front-end -- the
-     * requirement travels with the code that depends on it. */
+    /* Read file. The MDCL_SLACK of headroom is this conversion's own
+     * requirement: it appends the rebuilt rebase/bind streams into the tail
+     * of the buffer rather than reallocating, so the headroom has to be there
+     * from the start. That is why mi_open alone could not serve this caller,
+     * and it is why the read lives in here rather than in either front-end
+     * -- the requirement travels with the code that depends on it (and
+     * md_declassify_buf's other caller, src/edit.c, makes the same room with
+     * a realloc of the image it already holds). */
     mi_image im;
     {
-        int mo_rc = mi_open_slack(path, 2*1024*1024, &im);
+        int mo_rc = mi_open_slack(path, MDCL_SLACK, &im);
         if (mo_rc == MI_IO_ERROR) {
             /* An operational failure (couldn't open/read/allocate for the
              * file itself), not a judgement about its content -- MDCL_ERROR,
-             * matching this function's other operational failures below, not
+             * matching this conversion's other operational failures, not
              * MDCL_NOT_MACHO. MDCL_ERROR's own contract requires this
              * function to have already printed something; MDCL_NOT_MACHO's
              * requires the opposite (see declassify.h), so this is the one
@@ -231,14 +229,36 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
         }
         if (mo_rc != 0) return MDCL_NOT_MACHO;
     }
-    size_t fsize = im.size;
-    /* Writable bytes past the end of the file, captured HERE because
-     * mi_release empties the image a few dozen lines down and this is the only
-     * place the allocation's real size is knowable. It is the budget the
+    /* The allocation's real size is captured before mi_release empties the
+     * image: it is the budget the appended rebase/bind streams have to fit
+     * inside. This function, not the image, owns the buffer from here, and
+     * hands it to the caller (or frees it) according to the conversion's
+     * answer. */
+    size_t fsize = im.size, cap = im.cap;
+    uint8_t *buf = mi_release(&im);
+    size_t len = 0;
+    int rc = md_declassify_buf(buf, fsize, cap, &len);
+    if (rc == MDCL_CONVERTED || rc == MDCL_PASSTHROUGH) {
+        *out_buf = buf;
+        *out_len = len;
+    } else {
+        free(buf);
+    }
+    return rc;
+}
+
+int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len) {
+    /* What the two cleanup labels at the bottom hand back. Declared here
+     * because a goto may not jump over its initialization. */
+    int rc;
+
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return MDCL_NOT_MACHO;
+    /* Writable bytes past the end of the image. It is the budget the
      * appended rebase/bind streams have to fit inside, and it used to be
      * discarded -- the two memcpys below wrote into the slack without ever
      * asking how much of it there was. */
-    size_t slack = im.cap - fsize;
+    size_t slack = cap > fsize ? cap - fsize : 0;
     struct mach_header_64 *hdr = im.hdr;
 
     /* __TEXT's vmaddr: the pre-slide base. Was a strcmp inside the walk below;
@@ -248,14 +268,12 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     struct segment_command_64 *text_seg = mi_find_segment(&im, "__TEXT");
     uint64_t image_base_vmaddr = text_seg ? text_seg->vmaddr : 0;
 
-    /* Collect segments and find special load commands. Walked via mi_each_lc
-     * while `im` still owns the buffer -- mi_release happens right after,
-     * once the walk (and its one early-stop refusal) is done. */
+    /* Collect segments and find special load commands. `im` only views the
+     * caller's buffer (mi_wrap), so a refusal here has nothing to free. */
     struct md_collect_ctx cctx;
     memset(&cctx, 0, sizeof cctx);
     if (!mi_each_lc(&im, md_collect_lc, &cctx)) {
-        /* md_collect_lc already printed why; im still owns buf here. */
-        mi_close(&im);
+        /* md_collect_lc already printed why. */
         return MDCL_REFUSED;
     }
     struct segment_command_64 **segs = cctx.segs;
@@ -270,13 +288,6 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     memcpy(to_remove, cctx.to_remove, sizeof to_remove);
     int n_remove = cctx.n_remove;
 
-    /* This function, not the image, owns the buffer from here: the rest of
-     * the conversion indexes the buffer directly and eventually hands it to
-     * the caller (or free()s it on a refusal), which would leave an mi_image
-     * dangling -- and mi_close would double-free -- if it still thought it
-     * owned the memory. The hand-off is explicit, as in rewrite.c. */
-    uint8_t *buf = mi_release(&im);
-
     /* Idempotency: a binary that already has LC_DYLD_INFO_ONLY and no chained
      * fixups has been through this conversion before (or never needed
      * patching), and re-running it would error out on the missing fixups.
@@ -284,11 +295,10 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
      * safely on an already-converted binary. */
     if (!fixups_off && has_dyld_info_only) {
         printf("Already patched (LC_DYLD_INFO_ONLY present, no chained fixups) — passing through.\n");
-        *out_buf = buf;
         *out_len = fsize;
         return MDCL_PASSTHROUGH;
     }
-    if (!fixups_off) { fprintf(stderr, "No chained fixups found\n"); free(buf); return MDCL_REFUSED; }
+    if (!fixups_off) { fprintf(stderr, "No chained fixups found\n"); return MDCL_REFUSED; }
     printf("Found %d segments\n", nsegs);
 
     /* Parse chained fixups */
@@ -548,21 +558,20 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     }
 
     free(rebase.data); free(bind.data);
-    *out_buf = buf;
     *out_len = new_end;
     return MDCL_CONVERTED;
 
     /* Every refusal raised after the opcode buffers exist reaches here instead
      * of returning where it stands. patch_macho's main() could just `return 1`
      * and let exit() reclaim everything; a library function has to hand back
-     * the memory it took, and hand back nothing else -- *out_buf and *out_len
-     * are untouched on every negative return, which is what declassify.h
-     * promises callers. `fail` is the same cleanup for a caller that has
-     * already chosen a different code (MDCL_ERROR); it must not be reached
-     * with rc unset. */
+     * the memory it took, and hand back nothing else -- *out_len is untouched
+     * on every negative return, which is what declassify.h promises callers,
+     * and `buf` is the caller's to free. `fail` is the same cleanup for a
+     * caller that has already chosen a different code (MDCL_ERROR); it must
+     * not be reached with rc unset. */
 refuse:
     rc = MDCL_REFUSED;
 fail:
-    free(rebase.data); free(bind.data); free(buf);
+    free(rebase.data); free(bind.data);
     return rc;
 }

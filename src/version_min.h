@@ -15,6 +15,7 @@
  * FILE 10.9`: the old name and the verb print exactly the same thing, because
  * there is only one implementation left to print it.
  */
+#include "image.h"
 
 /*
  * Append LC_VERSION_MIN_MACOSX 10.9 to the thin 64-bit Mach-O at `path`,
@@ -28,5 +29,21 @@
  * are not handled: add_version_min never did.
  */
 int mv_add_version_min(const char *path);
+
+/*
+ * mv_add_version_min's edit, without the file: append LC_VERSION_MIN_MACOSX
+ * 10.9 to the image `im` views (from mi_open or mi_wrap), in place, and
+ * nothing else -- no open, no race guard, no write. mv_add_version_min is
+ * this plus those; src/edit.c calls it for `version-min set 10.9` against the
+ * image it writes once, itself, after the last statement.
+ *
+ * Returns 0 with *out_added = 1 if it appended the command, 0 with
+ * *out_added = 0 if the image already had one (after printing "already
+ * present; nothing to do." on stdout, as mv_add_version_min always has), or
+ * MR_REFUSED (src/rewrite.h) with "no room for LC_VERSION_MIN_MACOSX" on
+ * stderr when the header pad cannot hold the 16 bytes. The appended command
+ * lives in the header pad, so im->size does not change.
+ */
+int mv_add_version_min_image(mi_image *im, int *out_added);
 
 #endif /* MACHO9_VERSION_MIN_H */

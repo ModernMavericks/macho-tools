@@ -1,7 +1,8 @@
 /*
  * mv_ -- see version_min.h. This is compat/add_version_min.c's former main(),
  * unchanged in behaviour and in every message it prints; only the argument
- * check stayed behind in that tool.
+ * check stayed behind in that tool. Its in-memory middle is
+ * mv_add_version_min_image, so an edit script can apply it to a buffer.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,20 +105,43 @@ int mv_add_version_min(const char *path) {
         return MR_FAIL;
     }
 
+    /* The edit itself, in memory; what is left here is the file around it. */
+    int added = 0;
+    int rc = mv_add_version_min_image(&im, &added);
+    if (rc != 0 || !added) {
+        mi_close(&im);
+        close(fd);
+        return rc;
+    }
+
     size_t fsize = im.size;
     struct mach_header_64 *hdr = im.hdr;
+    /* mi_release, not the image, owns the buffer from here: this writes it
+     * back and eventually free()s it. */
+    uint8_t *buf = mi_release(&im);
+
+    lseek(fd, 0, SEEK_SET);
+    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return MR_FAIL; }
+    close(fd);
+    printf("Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=%u, sizeofcmds=%u)\n",
+           hdr->ncmds, hdr->sizeofcmds);
+    free(buf);
+    return 0;
+}
+
+/* See version_min.h. mv_add_version_min's former middle, moved rather than
+ * copied: the scan, the "already present" and "no room" answers, and the
+ * append, all against the caller's buffer and none of the file around it. */
+int mv_add_version_min_image(mi_image *im, int *out_added) {
+    *out_added = 0;
+    size_t fsize = im->size;
+    struct mach_header_64 *hdr = im->hdr;
 
     struct mv_scan scan = { UINT32_MAX, 0 };
-    mi_each_lc(&im, mv_scan_lc, &scan);
-
-    /* mi_release, not the image, owns the buffer from here: this writes the
-     * new command straight into it and eventually free()s it. */
-    uint8_t *buf = mi_release(&im);
+    mi_each_lc(im, mv_scan_lc, &scan);
 
     if (scan.has_version_min) {
         printf("LC_VERSION_MIN_MACOSX already present; nothing to do.\n");
-        free(buf);
-        close(fd);
         return 0;
     }
 
@@ -138,12 +162,10 @@ int mv_add_version_min(const char *path) {
         lc_end + sizeof(struct version_min_command) > scan.first_sect_off ||
         lc_end + sizeof(struct version_min_command) > fsize) {
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
-        free(buf);
-        close(fd);
         return MR_REFUSED;
     }
 
-    struct version_min_command *vm = (struct version_min_command *)(buf + lc_end);
+    struct version_min_command *vm = (struct version_min_command *)(im->buf + lc_end);
     memset(vm, 0, sizeof(*vm));
     vm->cmd = LC_VERSION_MIN_MACOSX;
     vm->cmdsize = sizeof(*vm);
@@ -151,12 +173,6 @@ int mv_add_version_min(const char *path) {
     vm->sdk     = (10 << 16) | (9 << 8);
     hdr->ncmds++;
     hdr->sizeofcmds += sizeof(*vm);
-
-    lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return MR_FAIL; }
-    close(fd);
-    printf("Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=%u, sizeofcmds=%u)\n",
-           hdr->ncmds, hdr->sizeofcmds);
-    free(buf);
+    *out_added = 1;
     return 0;
 }

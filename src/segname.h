@@ -6,7 +6,8 @@
  *
  * This is compat/rename_segment.c's rs_rename_lc, lifted out of that tool so
  * it is a library function rather than one program's static. cli/macho9.c's
- * `segment` verb is the only C front-end left; the old grammar,
+ * `segment` verb and src/edit.c's `segment rename` statement are its only C
+ * front-ends, both through src/rewrite.h's mr_ops; the old grammar,
  * `rename_segment binary OLDNAME NEWNAME`, reaches this same code through
  * compat/rename_segment.sh, the /bin/sh wrapper that replaced
  * compat/rename_segment.c. That wrapper is what still reproduces the old

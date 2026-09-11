@@ -7,8 +7,10 @@
  *
  * This is compat/retag_swift_classes.c's whole per-file process(), lifted out
  * of that tool so it is a library function rather than one program's static.
- * cli/macho9.c's `retag-swift` verb is the only C front-end left; the old
- * grammar, `retag_swift_classes binary [binary ...]`, reaches this same code
+ * cli/macho9.c's `retag-swift` verb and src/edit.c's `swift-abi set legacy`
+ * statement are its only C front-ends (the latter through
+ * mswift_retag_image, below, the same retag on an image already in memory);
+ * the old grammar, `retag_swift_classes binary [binary ...]`, reaches this same code
  * through compat/retag_swift_classes.sh, the /bin/sh wrapper that replaced
  * compat/retag_swift_classes.c -- and that wrapper is what still keeps the
  * multi-file argv loop, the per-file "%s: retagged %d class record(s)" and
@@ -46,6 +48,7 @@
  * success -- which is what the old tool's bare "return 0" looked like from
  * the outside.
  */
+#include "image.h"
 
 /* Negative returns from mswift_retag_file. A caller must test for these by
  * name, not with a bare `< 0`: only MSWIFT_ERROR is a failure of the tool
@@ -69,5 +72,18 @@
  * and nothing is written on any failure.
  */
 int mswift_retag_file(const char *path);
+
+/*
+ * mswift_retag_file's retag, without the file: the same walk over the image
+ * `im` views (from mi_open or mi_wrap), rewriting tag bits in place in its
+ * buffer -- no open, no race guard, no write. mswift_retag_file is this plus
+ * those; src/edit.c calls it for `swift-abi set legacy` against the image it
+ * writes once, itself, after the last statement.
+ *
+ * Returns the number of class records retagged, 0 or more; it has no failure
+ * of its own and prints nothing. Only tag bits in __DATA's (or
+ * __DATA_CONST's) class records change, so im->size does not.
+ */
+int mswift_retag_image(mi_image *im);
 
 #endif /* MACHO9_SWIFT_RETAG_H */

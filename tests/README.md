@@ -1,6 +1,6 @@
 # tests
 
-Thirteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
+Fifteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 
 | test | what it proves |
 |---|---|
@@ -8,6 +8,8 @@ Thirteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `image_test` | walks `tests/fixture.macho`, a real 10.9-built executable, against `src/image.c`'s reader — exercised against a binary a linker actually emitted, not one this test invented |
 | `trie_test` | hermetic: `src/trie.c`'s export-trie rebuild (decode, shift, re-serialize) against hand-built and hand-computed trie byte buffers — no fixture file needed, same reasoning as `grow_test` |
 | `linkedit_test` | hermetic: `src/linkedit.c`'s `ml_bump_all` (the `__LINKEDIT` offset-bump table) against a synthetic image built by hand via `mi_wrap` — no fixture file needed, same reasoning as `trie_test` |
+| `script_test` | hermetic: `src/script.c`'s edit-script tokenizer and parser against hand-written script text — the quoting shapes `compat/translate.sh`'s `mt_quote` emits, the statement table, the directives, and parse errors reported by line. Run with `MallocScribble=1` so its use-after-free regression test actually fails if the bug returns |
+| `edit_test` | hermetic: `src/edit.c`'s execution model against a synthetic image written to a temp directory — statements apply in order and each sees the last one's result, a refusal part-way leaves the input byte-for-byte and inode-for-inode untouched with no `--output` or temp file created, a dry run writes nothing but still verifies, the final verify ignores `MACHO_NO_VERIFY`, and only a thin 64-bit Mach-O is accepted |
 | `change_dylib_test` | builds real dylibs, rewrites a real executable, and **runs it** — a wrong library ordinal shows up as a dyld failure, not a silent mis-binding. Also covers `src/fat.c`'s fat-arch validation (both read-side, via `fix_macho`, and write-side) and `write_atomic`'s symlink/hard-link/ordinary-file handling |
 | `chained_fixups` | `patch_macho`'s chained-fixups conversion, against a fixture only a modern linker can produce. `SKIP`s (exit 77) on a host that can't emit chained fixups — 10.9 included — so it's real coverage on a modern host and an honest no-op on the target |
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |

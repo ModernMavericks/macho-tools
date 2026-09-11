@@ -7,7 +7,9 @@
  *
  * This is compat/patch_macho.c's whole conversion, lifted out of that tool's
  * main() so it is a library function rather than a program. cli/macho9.c's
- * `declassify` verb is the only C front-end left; the old grammar,
+ * `declassify` verb and src/edit.c's `fixups set classic` statement are its
+ * only C front-ends (the latter through md_declassify_buf, below, the same
+ * conversion on an image already in memory); the old grammar,
  * `patch_macho IN OUT`, reaches this same code through compat/patch_macho.sh,
  * the /bin/sh wrapper that replaced compat/patch_macho.c. That wrapper is
  * what still reproduces the old tool's observables -- exit 1 for everything
@@ -99,8 +101,9 @@
  *     far has: src/declassify.c's opcode-buffer comment measures it as
  *     rebase-heavy, on the Node binary install.sh fetches and runs this
  *     conversion over.
- *   2MB of slack past the end of the file, which both finished streams plus
- *     their 8-byte alignment must fit inside -- MDCL_REFUSED otherwise.
+ *   2MB of slack past the end of the file (MDCL_SLACK, below), which both
+ *     finished streams plus their 8-byte alignment must fit inside --
+ *     MDCL_REFUSED otherwise.
  *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY, and a __LINKEDIT
  *     segment to extend -- MDCL_REFUSED without either.
  *   An unknown chained-fixups pointer format is MDCL_REFUSED. A fixup that
@@ -127,5 +130,33 @@
  * ever reads.
  */
 int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len);
+
+/* The headroom the conversion appends into, past the end of the image: the
+ * LIMITS section's 2MB of slack. md_declassify reads the file with this much
+ * allocated beyond it; a caller of md_declassify_buf must provide it the
+ * same way. */
+#define MDCL_SLACK (2*1024*1024)
+
+/*
+ * md_declassify's conversion, without the file: the same work on an image
+ * already in memory. buf[0..fsize) is the image and buf[fsize..cap) is
+ * writable room past it -- MDCL_SLACK of it, as md_declassify reads with; a
+ * caller that gives less is refused when the streams do not fit, never
+ * written past. md_declassify is a read plus this; src/edit.c calls it for
+ * `fixups set classic` against the image it writes once, itself, after the
+ * last statement.
+ *
+ * Returns the same codes as md_declassify, tested by name the same way, and
+ * prints the same messages -- except that it has no file to fail to read, so
+ * MDCL_ERROR here only ever means an opcode-buffer allocation failed. On
+ * MDCL_CONVERTED *out_len is the converted image's length (at most `cap`); on
+ * MDCL_PASSTHROUGH it is `fsize`, the image unchanged. On a negative return
+ * *out_len is untouched and the buffer's contents are unspecified -- the
+ * chain walk rewrites fixup slots in place before a later refusal can fire --
+ * so a caller must discard it, never write it.
+ *
+ * It never allocates or frees `buf`: the caller owns it throughout.
+ */
+int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len);
 
 #endif /* MACHO9_DECLASSIFY_H */

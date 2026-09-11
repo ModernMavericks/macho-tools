@@ -135,6 +135,46 @@ static int mswift_retag(uint8_t *buf, size_t fsize, struct mswift_seg *segs, int
     return 1;
 }
 
+/* See swift_retag.h. mswift_retag_file's former middle, moved rather than
+ * copied: every list, every class and its metaclass, retagged in the
+ * caller's buffer. */
+int mswift_retag_image(mi_image *im) {
+    size_t fsize = im->size;
+
+    struct mswift_seg segs[64];
+    int nsegs = 0;
+    uint64_t listoff = 0, listsize = 0;
+    int changed = 0;
+
+    static const char *lists[] = { "__objc_classlist", "__objc_nlclslist" };
+    for (size_t li = 0; li < sizeof(lists)/sizeof(lists[0]); li++) {
+        /* Modern linkers place the list in __DATA_CONST; a port may already
+         * have renamed that segment to __DATA, so accept either. */
+        if (!mswift_find_section(im, "__DATA", lists[li], &listoff, &listsize, segs, &nsegs) &&
+            !mswift_find_section(im, "__DATA_CONST", lists[li], &listoff, &listsize, segs, &nsegs))
+            continue;
+        /* The section's own offset/size are file data mi_open never
+         * validated -- a section can legitimately claim a range past the
+         * file (or one that overflows the addition), and this code used to
+         * index straight into it. Skip this list rather than crash; see
+         * tests/leaf-tool-crashes.sh's oobsection fixture. */
+        if (!mswift_in_bounds(fsize, listoff, listsize)) continue;
+
+        for (uint64_t i = 0; i + 8 <= listsize; i += 8) {
+            uint64_t cls_va = *(uint64_t *)(im->buf + listoff + i);
+            if (!cls_va) continue;
+            changed += mswift_retag(im->buf, fsize, segs, nsegs, cls_va);
+            /* The metaclass carries the same tag and is reached via isa. */
+            int64_t co = mswift_file_off(segs, nsegs, cls_va);
+            if (co >= 0 && mswift_in_bounds(fsize, (uint64_t)co + CLASS_ISA_OFFSET, sizeof(uint64_t))) {
+                uint64_t meta_va = *(uint64_t *)(im->buf + co + CLASS_ISA_OFFSET);
+                if (meta_va) changed += mswift_retag(im->buf, fsize, segs, nsegs, meta_va);
+            }
+        }
+    }
+    return changed;
+}
+
 int mswift_retag_file(const char *path) {
     /* Open O_RDWR early so an unwritable file fails immediately; mi_open
      * (O_RDONLY) does the actual read and validation, same split as
@@ -188,40 +228,11 @@ int mswift_retag_file(const char *path) {
 
     size_t fsize = im.size;
 
-    struct mswift_seg segs[64];
-    int nsegs = 0;
-    uint64_t listoff = 0, listsize = 0;
-    int changed = 0;
+    /* The retag itself, in memory; what is left here is the file around it. */
+    int changed = mswift_retag_image(&im);
 
-    static const char *lists[] = { "__objc_classlist", "__objc_nlclslist" };
-    for (size_t li = 0; li < sizeof(lists)/sizeof(lists[0]); li++) {
-        /* Modern linkers place the list in __DATA_CONST; a port may already
-         * have renamed that segment to __DATA, so accept either. */
-        if (!mswift_find_section(&im, "__DATA", lists[li], &listoff, &listsize, segs, &nsegs) &&
-            !mswift_find_section(&im, "__DATA_CONST", lists[li], &listoff, &listsize, segs, &nsegs))
-            continue;
-        /* The section's own offset/size are file data mi_open never
-         * validated -- a section can legitimately claim a range past the
-         * file (or one that overflows the addition), and this code used to
-         * index straight into it. Skip this list rather than crash; see
-         * tests/leaf-tool-crashes.sh's oobsection fixture. */
-        if (!mswift_in_bounds(fsize, listoff, listsize)) continue;
-
-        for (uint64_t i = 0; i + 8 <= listsize; i += 8) {
-            uint64_t cls_va = *(uint64_t *)(im.buf + listoff + i);
-            if (!cls_va) continue;
-            changed += mswift_retag(im.buf, fsize, segs, nsegs, cls_va);
-            /* The metaclass carries the same tag and is reached via isa. */
-            int64_t co = mswift_file_off(segs, nsegs, cls_va);
-            if (co >= 0 && mswift_in_bounds(fsize, (uint64_t)co + CLASS_ISA_OFFSET, sizeof(uint64_t))) {
-                uint64_t meta_va = *(uint64_t *)(im.buf + co + CLASS_ISA_OFFSET);
-                if (meta_va) changed += mswift_retag(im.buf, fsize, segs, nsegs, meta_va);
-            }
-        }
-    }
-
-    /* mi_release, not the image, owns the buffer from here: this function
-     * wrote straight into it above (mswift_retag()) and eventually free()s it. */
+    /* mi_release, not the image, owns the buffer from here: the retag wrote
+     * straight into it (mswift_retag()) and this eventually free()s it. */
     uint8_t *buf = mi_release(&im);
 
     if (changed) {

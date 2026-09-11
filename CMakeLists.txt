@@ -55,7 +55,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -220,6 +220,21 @@ add_test(NAME script_test COMMAND script_test)
 # MallocScribble=1 overwrites every freed block with 0x55 on free, so ctest
 # actually exercises the regression this test exists to catch.
 set_tests_properties(script_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
+# Hermetic tests for src/edit.c's execution model -- statements apply in
+# order, a failure part-way writes nothing, a dry run writes nothing but still
+# verifies -- against a synthetic image built by hand, same reasoning as
+# linkedit_test. It writes that image into a mkdtemp directory because me_run
+# takes a path. MallocScribble=1 for the reason script_test has it, applied to
+# this module's own hazard: the image buffer is reallocated between
+# statements (allow-grow's header grow, `fixups set classic`'s room to
+# append), and a pointer kept across one would still read the old bytes by
+# luck on a plain run.
+add_executable(edit_test tests/edit_test.c)
+target_compile_options(edit_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(edit_test PRIVATE macho9core)
+add_test(NAME edit_test COMMAND edit_test)
+set_tests_properties(edit_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
 # Hermetic tests for src/linkedit.c's ml_bump_all (Task 2b): a synthetic
 # image built by hand via mi_wrap, so no fixture file is needed -- same

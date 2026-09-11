@@ -5,9 +5,11 @@
  *
  * This is change_dylib's whole operation set, lifted out of that tool's
  * main() so it is a library function rather than a program. cli/macho9.c's
- * `dylib`/`rpath`/`lc`/`segment` verbs are the only C front-end left
+ * `dylib`/`rpath`/`lc`/`segment` verbs are its front-end
  * (-replace/-delete/-append/-insert/-reexport, plus a segment rename shared
- * with src/segname.h); the OLD grammar -- change_dylib's
+ * with src/segname.h), through mr_apply_file; src/edit.c's edit scripts are
+ * the other, through mr_apply_image, the same rewrite applied to an image
+ * already in memory. The OLD grammar -- change_dylib's
  * -change/-delete/-reexport/-add/-insert/-strip-lc and the -*-rpath twins --
  * reaches exactly this code through compat/change_dylib.sh, the /bin/sh
  * wrapper that replaced compat/change_dylib.c, and compat/translate.sh, which
@@ -50,6 +52,7 @@
  * binds to the dylib being removed.
  */
 #include <stdint.h>
+#include <stddef.h>
 
 /* One dylib-path (or rpath) operation.
  *
@@ -143,10 +146,14 @@ typedef struct {
      * -delete of `-replace X N -delete X` as a false miss. Loosening this is
      * how that false miss comes back, so a shadowed operation stays silent.
      *
-     * cli/macho9.c's `dylib`, `rpath` and `lc` verbs are the only ones that
-     * ever set this; `segment` and `retag-swift` don't take a list of
-     * operations that could miss, so they have nothing to parse a
-     * --fatal-warnings flag into. Declared
+     * cli/macho9.c's `dylib`, `rpath` and `lc` verbs set this from
+     * --fatal-warnings, and src/edit.c sets it on every statement it lowers
+     * to an mr_ops when the edit script says `fatal-warnings`; `segment` and
+     * `retag-swift` don't take a list of operations that could miss, so they
+     * have nothing to parse a --fatal-warnings flag into. src/edit.c applies
+     * one statement at a time to an image it writes only at the end, so for
+     * it the write this refuses about has not happened yet -- a refusal there
+     * discards the whole run. Declared
      * before allow_grow, not after, so allow_grow stays the LAST field --
      * see the layout tripwire next to mr_is_rename_only in rewrite.c, which
      * checks the last field's offset precisely so that inserting a new
@@ -190,11 +197,17 @@ typedef struct {
  *     change_dylib's own historical words ("too many <flag> (max N)"),
  *     before ever emitting a `macho9` command line.
  *   mr_apply_file (src/rewrite.c) declares its own per-operation hit-count
- *     arrays -- int[MR_MAX_OPS] for dylib/rpath, int[MR_MAX_STRIP] for
- *     strip -- sized from these same two macros, but does NOT itself check
- *     `ops->n_dylib_changes`/`n_rpath_changes`/`n_strip_cmds` against them.
- *     See mr_apply_file's own comment for the precondition this leaves on
- *     its caller. */
+ *     arrays -- an mr_hits (below): int[MR_MAX_OPS] for dylib/rpath,
+ *     int[MR_MAX_STRIP] for strip -- sized from these same two macros, but
+ *     does NOT itself check `ops->n_dylib_changes`/`n_rpath_changes`/
+ *     `n_strip_cmds` against them. See mr_apply_file's own comment for the
+ *     precondition this leaves on its caller.
+ *
+ * NOT a cap on an edit script. src/edit.c lowers each statement to an mr_ops
+ * holding exactly one operation and hands it to mr_apply_image, so its
+ * mr_hits never counts past index 0, however many statements the script has
+ * -- the statement array itself is sized from the parsed script
+ * (src/script.h). */
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 
@@ -271,9 +284,9 @@ typedef struct {
  *     here. ONE EXCEPTION: mg_grow_header and mg_plausible each fold an
  *     allocation failure of their own into the same signal they use for
  *     every other refusal (grow.c), and this function cannot tell that case
- *     apart from the rest -- see src/rewrite.c, the comment where
- *     mr_process_thin's MR_ERROR becomes this function's own MR_REFUSED,
- *     for why that stays folded in rather than being split out to MR_FAIL,
+ *     apart from the rest -- see src/rewrite.c, the comment in mr_apply_image
+ *     (below) where mr_process_thin's MR_ERROR becomes MR_REFUSED, for why
+ *     that stays folded in rather than being split out to MR_FAIL,
  *     and for why it is not confined to --allow-grow runs.
  *   MR_FAIL (2) -- a genuine operational failure: open, fstat, read or write
  *     failing (this function's own, or mi_open's/mfat_parse's), or a
@@ -302,5 +315,64 @@ typedef struct {
  * different caller that skips it turns an over-long array into a stack
  * overflow here, not a diagnostic. */
 int mr_apply_file(const char *path, const mr_ops *ops);
+
+/* Per-operation hit counts: how many load commands each entry of an mr_ops'
+ * dylib_changes, rpath_changes and strip_cmds matched, index for index. They
+ * are ADDED to, never assigned, because a fat file's slices each add their
+ * own matches to one total -- an operation that matched in one slice and not
+ * another has matched. So the caller zeroes an mr_hits once per image (or
+ * per fat file) and not between slices. Sized from the same two macros that
+ * bound mr_ops' arrays (see mr_apply_file's PRECONDITION above). */
+typedef struct {
+    int dylib[MR_MAX_OPS];
+    int rpath[MR_MAX_OPS];
+    int strip[MR_MAX_STRIP];
+} mr_hits;
+
+/*
+ * mr_apply_file's thin-image step, without the file: apply `ops` to the thin
+ * 64-bit Mach-O already in memory at *pbuf (*pfsize bytes), and write
+ * nothing. mr_apply_file reads a thin file and hands its buffer here;
+ * src/edit.c calls this once per edit-script statement, against the one
+ * image it verifies and writes itself after the last statement. There is one
+ * rewrite either way -- this is that rewrite, not a copy of it.
+ *
+ * *pbuf may be realloc'd (allow_grow reaches mg_grow_header). On return,
+ * success or not, *pbuf and *pfsize name the buffer the caller owns and must
+ * free(). After a failure its contents are unspecified -- the new load
+ * commands may already have been committed when a later check refused -- so
+ * a caller that sees a refusal must discard the buffer, never write it.
+ *
+ * Prints exactly what mr_apply_file prints for a thin file, with `label` in
+ * place of the path: the header-pad and "updated"/"nothing to change"
+ * progress lines on stdout, and each refusal's reason on stderr. It does NOT
+ * report which operations matched nothing, and does not act on
+ * ops->fatal_unmatched: the hit counts are ADDED to `hits` (see mr_hits), and
+ * mr_unmatched_verdict, below, does both once the caller has finished with
+ * the image.
+ *
+ * Returns 0, with *out_modified saying whether anything changed, or
+ * MR_REFUSED. Never MR_FAIL: there is no I/O here, and every allocation
+ * failure it can report at all is the one mr_apply_file's own comment
+ * describes as folded into MR_REFUSED (inside mg_grow_header or
+ * mg_plausible). Its two new_lcs callocs are not checked at all, the same as
+ * when mr_apply_file reaches them.
+ *
+ * PRECONDITION: the same array bound as mr_apply_file's, for the same
+ * reason -- `hits` holds MR_MAX_OPS/MR_MAX_STRIP counters. src/edit.c meets
+ * it by construction: each statement lowers to an mr_ops holding exactly one
+ * operation. */
+int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
+                   const mr_ops *ops, int *out_modified, mr_hits *hits);
+
+/* After a successful rewrite, report on stderr every dylib_changes/
+ * rpath_changes/strip_cmds entry that matched nothing according to `hits`
+ * (the "macho9: ... matched nothing" lines), and decide what that means:
+ * MR_REFUSED if at least one matched nothing and ops->fatal_unmatched is set,
+ * otherwise 0. Only after a SUCCESSFUL rewrite: a refused one may have
+ * stopped before a single comparison ran, and its hit counts mean nothing.
+ * mr_apply_file calls this after its write; src/edit.c after each statement,
+ * before anything is written. */
+int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits);
 
 #endif /* MACHO9_REWRITE_H */

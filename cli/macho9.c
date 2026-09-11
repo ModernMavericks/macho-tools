@@ -560,7 +560,8 @@ static int cmd_grow(const char *path, const char *n_str) {
          * those of the mg_plausible it runs last. This verb cannot tell any
          * of those apart from every other reason mg_grow_header declines,
          * and by deliberate choice does not try to -- see rewrite.c's
-         * comment on the identical fold in mr_apply_file for why. So a
+         * comment on the identical fold in mr_apply_image (the thin-image
+         * step mr_apply_file goes through) for why. So a
          * failed mg_grow_header always exits here, EX_REFUSED, never
          * EX_FAIL. (A failed write-back, below, is EX_FAIL.) */
         fprintf(stderr, "macho9 grow: %s left unmodified\n", path);

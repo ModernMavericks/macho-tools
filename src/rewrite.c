@@ -1,6 +1,7 @@
 /*
- * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/macho9.c and by
- * the old change_dylib grammar that reaches it through compat/change_dylib.sh.
+ * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/macho9.c, by
+ * src/edit.c's edit scripts (through mr_apply_image), and by the old
+ * change_dylib grammar that reaches it through compat/change_dylib.sh.
  * See rewrite.h for the operation set and why this is a library function
  * rather than one tool's main().
  *
@@ -1032,7 +1033,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
      * mr_process_thin or a primitive it calls may have already made and
      * folded into its own MR_ERROR -- see the short note at this function's
      * MR_ERROR->MR_REFUSED translation, below, and the full comment on that
-     * fold in mr_apply_file, at its thin path's identical translation) and
+     * fold in mr_apply_image, at the thin path's identical translation) and
      * mr_process_thin refusing a slice's edit (MR_ERROR, defined above with
      * MR_SKIP -- that comment describes MR_ERROR purely as a per-slice
      * signal, "fatal to the whole operation", and says nothing about an
@@ -1074,9 +1075,9 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
             i++;   /* this slice's buffer was still allocated; free it too */
             /* MR_REFUSED even when the slice's MR_ERROR came from an
              * allocation failure inside mg_grow_header or mg_plausible:
-             * the same deliberate fold as mr_apply_file's thin path, whose
-             * comment at its own MR_ERROR->MR_REFUSED translation says
-             * why. */
+             * the same deliberate fold as the thin path's, whose comment at
+             * its own MR_ERROR->MR_REFUSED translation (mr_apply_image)
+             * says why. */
             abort_rc = MR_REFUSED;
             break;
         } else if (mod) {
@@ -1238,9 +1239,9 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * is where a per-operation diagnostic can be added without moving anything
  * six wrappers' worth of tests are holding still.
  *
- * Returns the number of entries reported as unmatched, so mr_apply_file can
- * turn this report into a refusal (ops->fatal_unmatched) without re-scanning
- * the hit arrays itself. */
+ * Returns the number of entries reported as unmatched, so
+ * mr_unmatched_verdict (below) can turn this report into a refusal
+ * (ops->fatal_unmatched) without re-scanning the hit arrays itself. */
 static int mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
                                 const int *hit_rpath, const int *hit_strip) {
     /* The "macho9: " prefix on the three lines below is DELIBERATE and is
@@ -1279,8 +1280,69 @@ static int mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
     return n;
 }
 
+/* See rewrite.h. The report, then the one decision fatal_unmatched makes
+ * about it -- in one place, so mr_apply_file (after its write) and
+ * src/edit.c (after each statement) cannot disagree about what "matched
+ * nothing" promotes to. */
+int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits) {
+    int nunmatched = mr_report_unmatched(ops, hits->dylib, hits->rpath, hits->strip);
+    /* MR_REFUSED, not a bare 1, so the callers and this library cannot drift
+     * about what number means "fatal_unmatched fired" -- see MR_REFUSED's own
+     * comment in rewrite.h for why it is safe to forward verbatim. */
+    return (ops->fatal_unmatched && nunmatched > 0) ? MR_REFUSED : 0;
+}
+
+/* See rewrite.h: mr_process_thin, with its private per-slice codes turned
+ * into the MR_REFUSED/0 every caller outside this file speaks. */
+int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
+                   const mr_ops *ops, int *out_modified, mr_hits *hits) {
+    int po = mr_process_thin(pbuf, pfsize, label, ops, out_modified,
+                              hits->dylib, hits->rpath, hits->strip);
+    if (po == MR_SKIP) {
+        /* Unreachable from mr_apply_file: its mi_open already validated this
+         * exact buffer with the identical algorithm mr_process_thin's own
+         * mi_wrap runs on it, so mi_wrap cannot disagree. From src/edit.c
+         * the buffer is whatever the previous statement left, which every
+         * operation validates before it hands it back, so it is unreachable
+         * there in practice too -- but not by the same proof, which is one
+         * more reason this stays a refusal rather than an assertion. The
+         * detailed three-way diagnostic lives at mr_apply_file's mi_open
+         * failure site, where it is actually reachable. */
+        fprintf(stderr, "%s: not a 64-bit Mach-O (rejected during processing)\n", label);
+        return MR_REFUSED;
+    }
+    /* MR_ERROR here means mr_process_thin (or a primitive it called -- see
+     * the list in mr_apply_file's own rewrite.h comment) examined the bytes
+     * and declined, so this is MR_REFUSED, never MR_FAIL -- with one
+     * folded-in exception, deliberate, not an oversight: mg_grow_header and
+     * mg_plausible each return the same -1 for an allocation failure as for
+     * their content checks. mg_grow_header's include its two reallocations
+     * of the WHOLE image (grow.c:1075's `realloc(buf, fsize + grow)`, and
+     * grow.c:1268's, growing __LINKEDIT for a rebuilt export trie) as well as
+     * side tables (its address snapshot, grow.c:223 via :1067; the
+     * export-trie walk's scratch table, grow.c:525 via :1042 and :1174; the
+     * trie rebuilder's, src/trie.c; mg_verify's, grow.c:234) and every
+     * allocation of the mg_plausible it runs last. mg_plausible's own are
+     * side tables only (grow.c:719-721, and grow.c:525 again through
+     * mg_collect). mr_process_thin's single MR_ERROR return from either one
+     * cannot tell that failure apart from every other reason those two
+     * functions refuse. Splitting it would mean widening mg_grow_header's
+     * and mg_plausible's own return contracts (both currently a flat "0 or
+     * -1") to say which -- a change later work already plans to make when
+     * it restructures those two functions, not one to fold in here as a
+     * side effect. So, plainly: an allocation failure inside either one
+     * exits 1 (MR_REFUSED), not 2, same as every other reason
+     * mg_grow_header or mg_plausible refuses -- and that is not confined to
+     * growing. mg_grow_header is reached only with allow_grow, but
+     * mr_process_thin runs mg_plausible on every rewrite that is not a pure
+     * segment rename (see mr_is_rename_only) unless MACHO_NO_VERIFY is set,
+     * so an ordinary dylib/rpath/lc edit reaches it too. mr_process_fat
+     * makes the identical translation for a fat slice. */
+    return (po == MR_ERROR) ? MR_REFUSED : 0;
+}
+
 int mr_apply_file(const char *path, const mr_ops *ops) {
-    /* Per-operation hit counts for mr_report_unmatched below. Owned and
+    /* Per-operation hit counts for mr_unmatched_verdict below. Owned and
      * zeroed here, once, so a fat file's slices (each processed by its own
      * mr_process_thin call, via mr_process_fat) all accumulate into the SAME
      * arrays -- see mr_process_fat's own comment for why that matters. Sized
@@ -1289,9 +1351,8 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * caller; see this function's own declaration in rewrite.h for the
      * detail (only cli/macho9.c enforces it today, and only because it is
      * the sole caller, not because anything here checks). */
-    int hit_dylib[MR_MAX_OPS] = {0};
-    int hit_rpath[MR_MAX_OPS] = {0};
-    int hit_strip[MR_MAX_STRIP] = {0};
+    mr_hits hits;
+    memset(&hits, 0, sizeof hits);
 
     /* The O_RDWR fd is opened up front -- that ordering is load-bearing: it
      * is what makes an unwritable file fail immediately instead of after all
@@ -1311,10 +1372,11 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * as far as reading load commands) and declined. This does not cover
      * every allocation reachable from this function. mg_grow_header's and
      * mg_plausible's own are the deliberate exception, folded into
-     * MR_REFUSED instead; see the comment where mr_process_thin's MR_ERROR
-     * becomes MR_REFUSED, below, for why. And three callocs in this file are
-     * not checked at all -- both of mr_process_thin's new_lcs tables and
-     * mr_process_fat's noff -- so their failure reaches neither code. */
+     * MR_REFUSED instead; see the comment in mr_apply_image, above, where
+     * mr_process_thin's MR_ERROR becomes MR_REFUSED, for why. And three
+     * callocs in this file are not checked at all -- both of
+     * mr_process_thin's new_lcs tables and mr_process_fat's noff -- so their
+     * failure reaches neither code. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return MR_FAIL; }
 
@@ -1361,7 +1423,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
             perror("read"); close(fd); free(buf); return MR_FAIL;
         }
         close(fd);
-        rc = mr_process_fat(&buf, &fsize, ops, &modified, hit_dylib, hit_rpath, hit_strip);
+        rc = mr_process_fat(&buf, &fsize, ops, &modified, hits.dylib, hits.rpath, hits.strip);
     } else {
         /* Thin (or not a Mach-O at all): mi_open does the actual read and
          * full validation -- cmdsize bounds/alignment and LC_SEGMENT_64/
@@ -1412,50 +1474,10 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
         fsize = im.size;
         buf = mi_release(&im);
 
-        int po = mr_process_thin(&buf, &fsize, path, ops, &modified,
-                                  hit_dylib, hit_rpath, hit_strip);
-        if (po == MR_SKIP) {
-            /* Unreachable in practice: mi_open above already validated this
-             * exact buffer with the identical algorithm mr_process_thin's own
-             * mi_wrap runs on it, so mi_wrap cannot disagree. Kept as a
-             * defensive fallback only -- the detailed diagnostic this branch
-             * used to give now lives at the mi_open failure site above,
-             * where it is actually reachable. */
-            fprintf(stderr, "%s: not a 64-bit Mach-O (rejected during processing)\n", path);
-            rc = MR_REFUSED;
-        } else {
-            /* MR_ERROR here means mr_process_thin (or a primitive it called
-             * -- see the list in this function's own rewrite.h comment)
-             * examined the bytes and declined, so this is MR_REFUSED, never
-             * MR_FAIL -- with one folded-in exception, deliberate, not an
-             * oversight: mg_grow_header and mg_plausible each return the
-             * same -1 for an allocation failure as for their content
-             * checks. mg_grow_header's include its two reallocations of the
-             * WHOLE image (grow.c:1075's `realloc(buf, fsize + grow)`, and
-             * grow.c:1268's, growing __LINKEDIT for a rebuilt export trie)
-             * as well as side tables (its address snapshot, grow.c:223 via
-             * :1067; the export-trie walk's scratch table, grow.c:525 via
-             * :1042 and :1174; the trie rebuilder's, src/trie.c; mg_verify's,
-             * grow.c:234) and every allocation of the mg_plausible it runs
-             * last. mg_plausible's own are side tables only (grow.c:719-721,
-             * and grow.c:525 again through mg_collect). mr_process_thin's
-             * single MR_ERROR return from either one cannot tell that
-             * failure apart from every other reason those two functions
-             * refuse. Splitting it would mean widening mg_grow_header's and
-             * mg_plausible's own return contracts (both currently a flat
-             * "0 or -1") to say which -- a change later work already plans
-             * to make when it restructures those two functions, not one to
-             * fold in here as a side effect. So, plainly: an allocation
-             * failure inside either one exits 1 (MR_REFUSED), not 2, same as
-             * every other reason mg_grow_header or mg_plausible refuses --
-             * and that is not confined to growing. mg_grow_header is reached
-             * only with allow_grow, but mr_process_thin runs mg_plausible on
-             * every rewrite that is not a pure segment rename (see
-             * mr_is_rename_only) unless MACHO_NO_VERIFY is set, so an
-             * ordinary dylib/rpath/lc edit reaches it too. mr_process_fat
-             * makes the identical translation for a fat slice. */
-            rc = (po == MR_ERROR) ? MR_REFUSED : 0;
-        }
+        /* The rewrite itself, and its MR_SKIP/MR_ERROR -> MR_REFUSED
+         * translation (including the allocation fold that comes with it),
+         * are mr_apply_image's -- see its comment above. */
+        rc = mr_apply_image(&buf, &fsize, path, ops, &modified, &hits);
     }
 
     /* Captured before the write attempt below, which can turn `rc` from 0 to
@@ -1483,7 +1505,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * nothing -- reporting them would risk calling an operation "matched
      * nothing" that never got a chance to match anything at all. */
     if (processed_ok) {
-        int nunmatched = mr_report_unmatched(ops, hit_dylib, hit_rpath, hit_strip);
+        int verdict = mr_unmatched_verdict(ops, &hits);
         /* ops->fatal_unmatched turns that report into a refusal -- but only
          * when the run otherwise succeeded (rc == 0): a failed atomic write
          * (rc already MR_FAIL, above) is a genuine operational failure and
@@ -1491,18 +1513,14 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
          * unhappy. THIS NEVER ROLLS BACK A WRITE IT MADE: if some other
          * operation in the same run DID match, that write (or "Updated ..."
          * line) already happened by the time this check runs, and this is a
-         * refusal about the miss just reported, not a rollback of it. But
-         * `nunmatched > 0` does not by itself mean anything was written --
+         * refusal about the miss just reported, not a rollback of it. But a
+         * refusing verdict does not by itself mean anything was written --
          * if EVERY operation matched nothing, `modified` is still 0 (see
          * mr_process_thin's own "nothing to change" early return, this
          * file, above) and no write was attempted at all, so there is
          * nothing here to roll back OR preserve; the file is untouched
-         * either way. MR_REFUSED, not a
-         * bare 1, so the one caller (cli/macho9.c) and this library cannot
-         * drift about what number means "fatal_unmatched fired" -- see
-         * MR_REFUSED's own comment in rewrite.h for why it is safe to
-         * forward verbatim. */
-        if (rc == 0 && ops->fatal_unmatched && nunmatched > 0) rc = MR_REFUSED;
+         * either way. */
+        if (rc == 0) rc = verdict;
     }
 
     free(buf);
