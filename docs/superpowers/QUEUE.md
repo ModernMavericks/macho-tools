@@ -10,7 +10,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | plan written; shelved until item 3 merges |
 | 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written; shelved until item 2 merges |
 | 6 | **Human code review + excellent documentation** | — | — | not started |
-| 7 | History rewrite | — | — | explicitly last |
+| 7 | History rewrite + the three rename steps | — | — | explicitly last |
 
 ## Why this order
 
@@ -57,6 +57,46 @@ docs, ledgers and plans cite.
 - Review the four specs above (items 2–5).
 - Decide whether to resume item 2's execution — it is paused at `5bea3ae` with
   nothing of Task 0 landed.
-- The three rename steps, when item 3 starts, in this order: the agent's project
-  directory, then the clone, then the GitHub repo. The first must come first or
-  four memories and every transcript of this work are orphaned.
+- **The three rename steps are deferred to item 7**, immediately before the
+  history rewrite — not to item 3. See below.
+
+## The rename steps sit with the history rewrite, not with item 3
+
+Item 3 renames the *product*: the binary, the CMake targets, the shared wrapper
+scripts, the prose. That is all in-tree and lands on its own. The three steps the
+repo owner takes — moving the agent's project directory, moving the clone,
+renaming the GitHub repo — are about **where things live**, and were checked
+against the tree rather than assumed:
+
+- **Nothing in the repo keys on the clone's directory name.** The only
+  `macho-tools` strings outside `docs/` are `CMakeLists.txt`'s status messages
+  and `release.yml`'s artifact name, and item 3 renames both as product names
+  wherever the clone happens to sit.
+- **The build directories are a convention, not a derivation.** No shipyard
+  script generates `/private/tmp/mm-build/schmonz/macho-tools/…` from the repo
+  path. Moving the clone does invalidate the configured build dirs, because
+  `CMakeCache.txt` holds absolute source paths — one reconfigure, not a redesign.
+- **Both checkout roots are one filesystem object** (same inode), so moving
+  either moves both views at once.
+
+So the product rename and the location rename are independent, and the location
+rename belongs here because **the history rewrite is the other change that
+invalidates infrastructure** — every commit SHA cited across these docs and the
+SDD ledgers. Doing both at one break costs one disruption instead of two.
+
+**The order within the pair is still invariant.** The project directory must move
+immediately before the clone, in the same sitting, with no session live in that
+directory:
+
+```sh
+mv ~/.claude/projects/-Users-schmonz-Documents-code-trees-mavericks-macho-tools \
+   ~/.claude/projects/-Users-schmonz-Documents-code-trees-mavericks-machotool
+mv ~/Documents/code/trees/mavericks-macho-tools \
+   ~/Documents/code/trees/mavericks-machotool
+```
+
+Renaming the clone first orphans the memories and every transcript of this work.
+
+**The GitHub rename is independent of both** and can happen whenever — GitHub
+redirects the old URL, so the local remote keeps working either way. Grouping it
+here only keeps the mental model to one "rename day".

@@ -404,9 +404,18 @@ git commit -m "feat!: always verbose, on stderr; the --verbose flag is gone"
 
 ---
 
-## The three steps the repo owner takes
+## The three steps the repo owner takes — NOT part of this plan
 
-Not tasks. The plan cannot do them, and they must happen **in this order**, before a new session starts in the renamed clone.
+**Do not do these while executing this plan.** They are queue item 7's, deferred
+to sit with the history rewrite; `docs/superpowers/QUEUE.md` and the spec carry
+the reasoning. They are reproduced here only so an implementer who finds the
+directory still named `mavericks-macho-tools` after finishing knows that is
+correct and not an oversight.
+
+This plan renames the *product* — binary, targets, scripts, prose — all in-tree.
+Nothing it does depends on where the clone lives, and nothing outside `docs/`
+keys on the clone's directory name. When these three do happen, they must happen
+**in this order**, in one sitting, with no session live in that directory.
 
 1. **Move the agent's project directory.** It is keyed to the working directory's path, so renaming the clone first orphans the memories and every transcript of this work:
    ```sh

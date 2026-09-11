@@ -161,10 +161,29 @@ opcode streams — because that is the part a user cannot see for themselves. It
 must also include `target`'s expansion, line by line, since that line does
 different things to different binaries.
 
-## Steps the repo owner takes
+## Steps the repo owner takes — deferred to just before the history rewrite
 
-Three things this plan cannot do for itself. **Do all three before starting a new
-session in the renamed clone**, and in this order.
+Three things this design cannot do for itself. **They do not happen with this
+design's work.** They are queue item 7's, and `docs/superpowers/QUEUE.md` carries
+the reasoning; the short version is that this design renames the *product*, which
+is entirely in-tree, while these three rename *where things live*, and nothing in
+the repo couples the two:
+
+- no file outside `docs/` keys on the clone's directory name — the only
+  `macho-tools` strings are `CMakeLists.txt`'s status messages and
+  `release.yml`'s artifact name, both of which this design renames as product
+  names wherever the clone sits;
+- the `/private/tmp/mm-build/…` build directories are a chosen convention, not
+  derived from the repo path by any shipyard script, so moving the clone costs
+  one `cmake` reconfigure (their `CMakeCache.txt` holds absolute source paths);
+- both checkout roots are the same filesystem object, so moving either moves both.
+
+Deferring them groups this disruption with the history rewrite, which is the
+other change that invalidates infrastructure — every commit SHA these documents
+and the SDD ledgers cite.
+
+**The order within the pair is still invariant**, and steps 1 and 2 must happen in
+one sitting with no session live in that directory.
 
 **1. Move the agent's project directory first.** It is keyed to the working
 directory's path, so renaming the clone without moving it orphans four memories
