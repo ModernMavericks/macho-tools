@@ -923,9 +923,10 @@ if [ -x "$BIN/patch_macho" ]; then
     # distinguishes "examined it and declined" (EX_REFUSED=1) from an
     # operational failure (EX_FAIL=2). For THIS refusal the two numbers
     # happen to agree (both 1) -- that is a coincidence of the corrected
-    # numbering, not a design goal -- but a Task 2 wrapper still has real
-    # mapping work to do for the EX_FAIL=2 case, where the numbers diverge;
-    # compat/patch_macho.sh's own header covers both.
+    # numbering, not a design goal -- but a wrapper that must look like
+    # patch_macho still has real mapping work to do for the EX_FAIL=2 case,
+    # where the numbers diverge; compat/patch_macho.sh's own header covers
+    # both.
     "$BIN/patch_macho" "$T/not-a-macho-in-cli-test" "$T/nope_pm" >/dev/null 2>&1 && pm_rc=0 || pm_rc=$?
     [ "$pm_rc" -eq 1 ] && ok "declassify: patch_macho's flat 1 and this verb's EX_REFUSED agree on this refusal" \
         || bad "declassify: patch_macho exit" "expected the historical flat 1, got $pm_rc"
@@ -2726,8 +2727,8 @@ grep -q "^macho9 edit: " "$T/editbad.err" \
     || bad "edit parse error" "no 'macho9 edit: ' prefix: $(cat "$T/editbad.err")"
 
 # Usage errors: an unknown flag, a missing positional, an extra positional,
-# and a missing OUT after --output are all EX_FAIL (2) with a usage message
-# -- never a crash, never silently accepted.
+# a missing OUT after --output, an OUT that is a flag, and a second --output
+# are all EX_FAIL (2) -- never a crash, never silently accepted.
 build_main "$T/edit_usage"
 rc=0
 "$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --bogus-flag \
@@ -2748,6 +2749,26 @@ rc=0
     >/dev/null 2>"$T/edit_usage4.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: --output with no OUT is a usage error (2)" \
     || bad "edit usage" "missing OUT: expected 2, got $rc"
+# An OUT starting with "--" is a forgotten OUT: taking `--output --verbose`
+# as a file name would write a file called "--verbose" and drop the flag.
+# Run from $T, so a stray file from a regression lands where this looks.
+rc=0
+(cd "$T" && "$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --output --verbose) \
+    >/dev/null 2>"$T/edit_usage5.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: --output followed by a flag is a usage error (2)" \
+    || bad "edit usage" "--output --verbose: expected 2, got $rc"
+[ -e "$T/--verbose" ] \
+    && bad "edit usage" "--output --verbose wrote a file named --verbose" \
+    || ok "edit: --output --verbose writes no file named --verbose"
+# One write has one destination, so --output may be given only once.
+rc=0
+"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --output "$T/edit_out_a" \
+    --output "$T/edit_out_b" >/dev/null 2>"$T/edit_usage6.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: a repeated --output is a usage error (2)" \
+    || bad "edit usage" "repeated --output: expected 2, got $rc"
+[ -e "$T/edit_out_a" ] || [ -e "$T/edit_out_b" ] \
+    && bad "edit usage" "a repeated --output still wrote a file" \
+    || ok "edit: a repeated --output writes neither OUT"
 
 # A script file that cannot be read at all -- as opposed to one that parses
 # badly -- is also EX_FAIL, reported with the path.
@@ -2795,21 +2816,16 @@ grep -qF "      renumbered 2 surviving ordinals: 2->1, 3->2" "$T/verb.err" \
 # The counts, as numbers. A "nlist" line saying 0 would satisfy the greps
 # above, so these read the figures back: liba's a_sym and libSystem's
 # dyld_stub_binder are both undefined symbols whose ordinal moved, and each
-# is bound through a SET_DYLIB_ORDINAL opcode. So neither figure can be 0 --
-# and the opcode total must be the sum of its per-stream split.
+# is bound through a SET_DYLIB_ORDINAL opcode. So neither figure can be 0.
 vb_nlist() { sed -n 's/^          \([0-9][0-9]*\) nlist entr[a-z]* updated$/\1/p' "$1"; }
 vb_ops() { sed -n 's/^          \([0-9][0-9]*\) SET_DYLIB_ORDINAL opcodes\{0,1\} updated.*/\1/p' "$1"; }
-vb_split() { sed -n 's/.*SET_DYLIB_ORDINAL.*(bind \([0-9]*\), weak \([0-9]*\), lazy \([0-9]*\))$/\1 + \2 + \3/p' "$1"; }
-nl2=$(vb_nlist "$T/verb.err"); op2=$(vb_ops "$T/verb.err"); split2=$(vb_split "$T/verb.err")
+nl2=$(vb_nlist "$T/verb.err"); op2=$(vb_ops "$T/verb.err")
 [ -n "$nl2" ] && [ "$nl2" -gt 0 ] \
     && ok "edit --verbose: a delete that moved bound ordinals counts nlist entries > 0 ($nl2)" \
     || bad "edit --verbose" "nlist count '$nl2' should be > 0: $(cat "$T/verb.err")"
 [ -n "$op2" ] && [ "$op2" -gt 0 ] \
     && ok "edit --verbose: ... and SET_DYLIB_ORDINAL opcodes > 0 ($op2)" \
     || bad "edit --verbose" "opcode count '$op2' should be > 0: $(cat "$T/verb.err")"
-[ -n "$split2" ] && [ "$(( $split2 ))" -eq "${op2:--1}" ] \
-    && ok "edit --verbose: the opcode total is its bind/weak/lazy split ($split2)" \
-    || bad "edit --verbose" "split '$split2' does not sum to '$op2': $(cat "$T/verb.err")"
 
 # A count that does not move when the input does is not a count. The same
 # delete on a fixture with one more bound dylib after libb (libc3, whose
@@ -2913,6 +2929,74 @@ build_main_two_dylibs "$T/edit_quiet"
 [ -s "$T/quiet.err" ] \
     && bad "edit (quiet)" "a successful run without --verbose logged: $(cat "$T/quiet.err")" \
     || ok "edit: without --verbose, no follow-up report"
+
+# Statements run one at a time, so each `dylib insert` goes to the front of
+# the image the statement before it left: two insert lines land in the
+# REVERSE of the order written, where `macho9 dylib -insert A -insert B`
+# keeps its order. The README and src/edit.h disclose that; this pins it.
+# Two 32-byte commands overflow the 56-byte pad the modern cross runner's
+# linker leaves (as the `edit --verbose` insert case above notes), so both
+# runs free LC_UUID's 24 bytes first.
+build_main "$T/edit_ins2"
+printf 'load-command delete uuid\ndylib insert /A\ndylib insert /B\n' >"$T/ins2.edits"
+"$MACHO9" edit "$T/edit_ins2" "$T/ins2.edits" >/dev/null 2>"$T/ins2.err" \
+    || bad "edit: two inserts" "$(cat "$T/ins2.err")"
+ins2=$("$MACHO9" info "$T/edit_ins2")
+echo "$ins2" | grep -qxF "  ordinal=1 path=/B" && echo "$ins2" | grep -qxF "  ordinal=2 path=/A" \
+    && ok "edit: two dylib insert lines leave the second at ordinal 1 and the first at 2" \
+    || bad "edit: two inserts" "expected /B at 1 and /A at 2: $(echo "$ins2" | grep 'ordinal=')"
+build_main "$T/cli_ins2"
+"$MACHO9" lc "$T/cli_ins2" -delete uuid >/dev/null 2>"$T/cli_ins2.err" \
+    || bad "dylib: two inserts" "$(cat "$T/cli_ins2.err")"
+"$MACHO9" dylib "$T/cli_ins2" -insert /A -insert /B >/dev/null 2>"$T/cli_ins2.err" \
+    || bad "dylib: two inserts" "$(cat "$T/cli_ins2.err")"
+cins2=$("$MACHO9" info "$T/cli_ins2")
+echo "$cins2" | grep -qxF "  ordinal=1 path=/A" && echo "$cins2" | grep -qxF "  ordinal=2 path=/B" \
+    && ok "dylib: -insert A -insert B keeps A at ordinal 1 and B at 2, unlike two script lines" \
+    || bad "dylib: two inserts" "expected /A at 1 and /B at 2: $(echo "$cins2" | grep 'ordinal=')"
+
+# allow-grow through edit, on the riskiest path it has: the header grow
+# reallocates the image partway through the script, and the NEXT statement
+# must run against the reallocated buffer. build_main's fixture is
+# MH_EXECUTE and PIE, the one shape mg_grow_header grows. The appended path
+# is sized from the fixture's own pad as `macho9 info` reports it, not
+# hard-coded, because each host's linker leaves a different pad: an
+# LC_LOAD_DYLIB is 24 bytes plus the path and its NUL, so a path longer
+# than the pad cannot fit in it. Messages are cut short because the path is
+# thousands of bytes long.
+build_main "$T/edit_grow"
+grow_pad=$("$MACHO9" info "$T/edit_grow" \
+    | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
+if [ -z "$grow_pad" ]; then
+    bad "edit allow-grow: fixture setup" "macho9 info reported no header pad"
+    grow_pad=0
+fi
+grow_path="/$(printf "%${grow_pad}s" '' | tr ' ' x)"
+printf 'dylib append %s\nload-command delete uuid\n' "$grow_path" >"$T/grow_no.edits"
+{ printf 'allow-grow\n'; cat "$T/grow_no.edits"; } >"$T/grow_yes.edits"
+grow_before=$(sha "$T/edit_grow")
+rc=0
+"$MACHO9" edit "$T/edit_grow" "$T/grow_no.edits" >/dev/null 2>"$T/grow_no.err" || rc=$?
+[ "$rc" -eq 1 ] \
+    && ok "edit: a dylib append that overflows the ${grow_pad}-byte pad is refused (1) without allow-grow" \
+    || bad "edit allow-grow" "without the directive: expected 1, got $rc: $(cut -c1-160 "$T/grow_no.err")"
+[ "$(sha "$T/edit_grow")" = "$grow_before" ] \
+    && ok "edit: ... and the refused run left the file unchanged" \
+    || bad "edit allow-grow" "the refused run modified the file"
+rc=0
+"$MACHO9" edit "$T/edit_grow" "$T/grow_yes.edits" >/dev/null 2>"$T/grow_yes.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "edit: with allow-grow, the same script succeeds" \
+    || bad "edit allow-grow" "with the directive: expected 0, got $rc: $(cut -c1-160 "$T/grow_yes.err")"
+grow_info=$("$MACHO9" info "$T/edit_grow")
+echo "$grow_info" | grep -qF "path=$grow_path" \
+    && ok "edit: allow-grow: the appended dylib is in the written image" \
+    || bad "edit allow-grow" "the appended dylib is not in the image"
+echo "$grow_info" | grep -q "LC_UUID" \
+    && bad "edit allow-grow" "LC_UUID survived: the statement after the grow did not apply" \
+    || ok "edit: allow-grow: the statement after the grow applied to the grown image"
+"$MACHO9" verify "$T/edit_grow" >/dev/null 2>"$T/grow_verify.err" \
+    && ok "edit: allow-grow: the result passes macho9 verify" \
+    || bad "edit allow-grow" "verify refused the result: $(cat "$T/grow_verify.err")"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"

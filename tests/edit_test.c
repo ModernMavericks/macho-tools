@@ -421,6 +421,41 @@ static void test_a_failure_part_way_writes_nothing(void) {
     check_untouched("part-way, --output", path, &before);
     CHECK(access(out, F_OK) != 0 && errno == ENOENT,
           "part-way, --output: %s was not created", out);
+    /* ... and the refusal says so, rather than calling a file that was
+     * never there "left unmodified". */
+    {
+        char want[1200], wrong[1200];
+        snprintf(want, sizeof want, "; %s not written; %s left unmodified\n", out, path);
+        snprintf(wrong, sizeof wrong, "%s left unmodified", out);
+        CHECK(strstr(g_log, want) != NULL,
+              "part-way, --output: the refusal says OUT was not written and FILE was "
+              "left unmodified (log: %s)", g_log);
+        CHECK(strstr(g_log, wrong) == NULL,
+              "part-way, --output: the refusal does not call OUT unmodified (log: %s)", g_log);
+    }
+    rm_dir();
+}
+
+/* A script with no statements -- only directives, comments or blank lines
+ * -- still gets the final verify, and an image that fails it is refused.
+ * With nothing to count, the refusal must not say "after statement 0 of
+ * 0". */
+static void test_an_empty_script_is_refused_sensibly(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "img");
+    uint8_t *img = build_image(IMPLAUSIBLE);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+
+    snap before = take(path);
+    int rc = run(path, NULL, "# nothing but a comment\nfatal-warnings\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "empty script: an implausible image is still refused (got %d)", rc);
+    check_untouched("empty script", path, &before);
+    CHECK(strstr(g_log, "refused at verification (the script has no statements); ") != NULL,
+          "empty script: the refusal says there were no statements (log: %s)", g_log);
+    CHECK(strstr(g_log, "of 0") == NULL,
+          "empty script: the refusal does not count statement 0 of 0 (log: %s)", g_log);
     rm_dir();
 }
 
@@ -583,11 +618,30 @@ static void test_the_file_level_operations_run_in_memory(void) {
     int rc = run(path, NULL,
                  "fixups set classic\n"
                  "version-min set 10.9\n"
-                 "swift-abi set legacy\n", 0, 0);
+                 "swift-abi set legacy\n", 1, 0);
     CHECK(rc == 0, "in memory: an already-classic image passes fixups set classic, "
           "then gains a version-min (got %d; log: %s)", rc, g_log);
     CHECK(count_lc(path, LC_VERSION_MIN_MACOSX, NULL) == 1,
           "in memory: LC_VERSION_MIN_MACOSX was appended");
+    /* The append is the one trace the statement leaves: the stdout line
+     * that reports it belongs to `macho9 minos`, which edit does not call.
+     * So --verbose says so, beneath the statement, as a follow-up. */
+    {
+        const char *stmt = strstr(g_log, "  version-min set 10.9\n");
+        const char *app = strstr(g_log, "\n      appended LC_VERSION_MIN_MACOSX 10.9\n");
+        const char *next = strstr(g_log, "  swift-abi set legacy\n");
+        CHECK(stmt && app && next && stmt < app && app < next,
+              "in memory: --verbose logs the version-min append beneath its statement "
+              "(log: %s)", g_log);
+    }
+    /* Run again, the image already has one: nothing appended, nothing
+     * claimed. */
+    rc = run(path, NULL, "version-min set 10.9\n", 1, 0);
+    CHECK(rc == 0, "in memory: version-min set on an image that has one succeeds (got %d)", rc);
+    CHECK(count_lc(path, LC_VERSION_MIN_MACOSX, NULL) == 1,
+          "in memory: a second version-min set appends no second command");
+    CHECK(strstr(g_log, "appended") == NULL,
+          "in memory: --verbose claims no append when there was none (log: %s)", g_log);
     {
         size_t len = 0;
         uint8_t *now = read_file(path, &len);
@@ -680,6 +734,7 @@ static void test_only_a_thin_image_is_accepted(void) {
 int main(void) {
     test_statements_apply_in_order();
     test_a_failure_part_way_writes_nothing();
+    test_an_empty_script_is_refused_sensibly();
     test_dry_run_writes_nothing_but_still_verifies();
     test_the_final_verify_ignores_MACHO_NO_VERIFY();
     test_later_statements_see_earlier_ones();

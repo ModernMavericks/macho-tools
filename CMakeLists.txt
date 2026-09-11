@@ -213,8 +213,8 @@ add_executable(script_test tests/script_test.c)
 target_compile_options(script_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(script_test PRIVATE macho9core)
 add_test(NAME script_test COMMAND script_test)
-# Ruling 16: test_error_message_quoting_survives_the_free (a use-after-free
-# regression test) does not reliably fail on a plain run -- libc's allocator
+# test_error_message_quoting_survives_the_free (a use-after-free regression
+# test) does not reliably fail on a plain run -- libc's allocator
 # typically leaves a freed block's bytes untouched until reused, so the
 # use-after-free read often still returns the original text by luck.
 # MallocScribble=1 overwrites every freed block with 0x55 on free, so ctest

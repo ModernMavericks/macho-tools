@@ -613,10 +613,11 @@ data-dependent follow-ups a static explanation could never show. It is the one
 part of this design that is nearly free, and it falls out of applying to an
 in-memory image and writing once.
 
-`edit` uses the verbs' existing exit codes, unchanged: `0` on success, `2`
-where it examined the file and declined on purpose (a refused statement, a
-failed verify, or an unmatched operation under `fatal-warnings`), `1` for an
-operational failure (a syscall, a malloc, an unparseable edit script). An edit script that
+`edit` uses the verbs' exit codes, as corrected under "Exit codes" below: `0`
+on success, `1` where it examined the file and declined on purpose (a refused
+statement, a failed verify, or an unmatched operation under `fatal-warnings`),
+`2` for an operational failure (a syscall, a malloc, an unparseable edit
+script). An edit script that
 asked for nothing the image needed still succeeds, and says so, exactly as a
 single verb does today.
 

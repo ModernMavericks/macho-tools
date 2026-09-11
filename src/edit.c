@@ -9,9 +9,11 @@
  * stderr; this module's own report goes to me_opts.log. That report includes
  * the follow-up work an operation does beyond what its statement names, from
  * figures the operation hands back through an out-parameter -- mr_ops'
- * `renumbering`, md_declassify_buf's md_report, mswift_retag_image's return
- * -- and never from a second look at the image.
+ * `renumbering`, md_declassify_buf's md_report, mswift_retag_image's return,
+ * mv_add_version_min_image's `added` -- and never from a second look at the
+ * image.
  */
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +35,33 @@
 #include "atomic_write.h"
 #include "mach_compat.h"
 
+/* Every line this module writes, to the log or to stderr, goes through here.
+ * The operations print their progress to stdout, which is fully buffered
+ * when it is not a terminal, so without the flush a `2>&1` capture would
+ * show this module's lines ahead of stdout lines printed before them.
+ * me_rewrite flushes the same way before the "matched nothing" report. What
+ * this cannot order is a message an operation writes to stderr while it
+ * runs (a refusal from inside mr_apply_image, say): stderr is unbuffered,
+ * so that can still land ahead of the same operation's earlier stdout
+ * lines. */
+static void me_say(FILE *f, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void me_say(FILE *f, const char *fmt, ...) {
+    va_list ap;
+    fflush(stdout);
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
+
+/* The tail of a refusal or failure line: what the run left behind. In place,
+ * that is FILE as it was. With --output it is FILE as it was and OUT not
+ * written -- OUT may never have existed, so "OUT left unmodified" would
+ * describe a file that is not there. */
+static void me_say_left(FILE *log, const char *path, const char *out) {
+    if (out) me_say(log, "%s not written; %s left unmodified\n", out, path);
+    else     me_say(log, "%s left unmodified\n", path);
+}
+
 /* "208526708" -> "208,526,708", the way the report prints a byte count. */
 static void me_commas(char out[32], size_t n) {
     char digits[24];
@@ -46,10 +75,10 @@ static void me_commas(char out[32], size_t n) {
 }
 
 static void me_log_stmt(FILE *log, const ms_stmt *st) {
-    fprintf(log, "  %s %s", ms_kind_name(st->kind), ms_op_name(st->op));
-    if (st->a) fprintf(log, " %s", st->a);
-    if (st->b) fprintf(log, " %s", st->b);
-    fprintf(log, "\n");
+    me_say(log, "  %s %s", ms_kind_name(st->kind), ms_op_name(st->op));
+    if (st->a) me_say(log, " %s", st->a);
+    if (st->b) me_say(log, " %s", st->b);
+    me_say(log, "\n");
 }
 
 /* A count the way the report prints one: with commas. */
@@ -84,11 +113,11 @@ static void me_log_renumbering(FILE *log, const mr_renumbering *r) {
     char k[16], c1[32], c2[32], c3[32], c4[32];
     int removed = 0, moved = 0;
     for (int i = 1; i <= r->inserted; i++)
-        fprintf(log, "      inserted LC_LOAD_DYLIB as ordinal %d\n", i);
+        me_say(log, "      inserted LC_LOAD_DYLIB as ordinal %d\n", i);
     for (int o = 1; o <= r->n; o++) {
         int to = r->old_to_new[o];
         if (to == 0) {
-            fprintf(log, "      removed %s (was ordinal %d)\n", me_lc(k, r->old_cmd[o]), o);
+            me_say(log, "      removed %s (was ordinal %d)\n", me_lc(k, r->old_cmd[o]), o);
             removed++;
         } else if (to != o) {
             moved++;
@@ -98,29 +127,29 @@ static void me_log_renumbering(FILE *log, const mr_renumbering *r) {
     if (r->counts.flat) {
         /* mo_map_apply walked nothing: a flat-namespace image names no
          * library by ordinal, so a moved load command moves no reference. */
-        fprintf(log, "      flat namespace: no symbol records a library ordinal, "
-                     "so none was renumbered\n");
+        me_say(log, "      flat namespace: no symbol records a library ordinal, "
+                    "so none was renumbered\n");
         return;
     }
     if (moved == 0) {
-        fprintf(log, "      no %s ordinal changed\n", which);
+        me_say(log, "      no %s ordinal changed\n", which);
         return;
     }
-    fprintf(log, "      renumbered %d %s ordinal%s:", moved, which, moved == 1 ? "" : "s");
+    me_say(log, "      renumbered %d %s ordinal%s:", moved, which, moved == 1 ? "" : "s");
     const char *sep = " ";
     for (int o = 1; o <= r->n; o++) {
         int to = r->old_to_new[o];
         if (to == 0 || to == o) continue;
-        fprintf(log, "%s%d->%d", sep, o, to);
+        me_say(log, "%s%d->%d", sep, o, to);
         sep = ", ";
     }
-    fprintf(log, "\n");
+    me_say(log, "\n");
     long ops = r->counts.bind + r->counts.weak + r->counts.lazy;
-    fprintf(log, "          %s nlist entr%s updated\n",
-            me_count(c1, r->counts.nlist), r->counts.nlist == 1 ? "y" : "ies");
-    fprintf(log, "          %s SET_DYLIB_ORDINAL opcode%s updated (bind %s, weak %s, lazy %s)\n",
-            me_count(c1, ops), ops == 1 ? "" : "s", me_count(c2, r->counts.bind),
-            me_count(c3, r->counts.weak), me_count(c4, r->counts.lazy));
+    me_say(log, "          %s nlist entr%s updated\n",
+           me_count(c1, r->counts.nlist), r->counts.nlist == 1 ? "y" : "ies");
+    me_say(log, "          %s SET_DYLIB_ORDINAL opcode%s updated (bind %s, weak %s, lazy %s)\n",
+           me_count(c1, ops), ops == 1 ? "" : "s", me_count(c2, r->counts.bind),
+           me_count(c3, r->counts.weak), me_count(c4, r->counts.lazy));
 }
 
 /* The follow-up `fixups set classic` carries when it converts: __LINKEDIT's
@@ -128,21 +157,21 @@ static void me_log_renumbering(FILE *log, const mr_renumbering *r) {
  * (declassify.h's md_report). */
 static void me_log_declassify(FILE *log, const md_report *r) {
     char k[16], c1[32], c2[32], c3[32], c4[32];
-    fprintf(log, "      chained fixups -> LC_DYLD_INFO_ONLY\n");
-    fprintf(log, "      %s rebase%s and %s bind%s emitted (%s bytes of opcodes, %s bytes appended)\n",
-            me_count(c1, r->rebases), r->rebases == 1 ? "" : "s",
-            me_count(c2, r->binds), r->binds == 1 ? "" : "s",
-            me_count(c3, (long)(r->rebase_bytes + r->bind_bytes)),
-            me_count(c4, (long)r->appended));
+    me_say(log, "      chained fixups -> LC_DYLD_INFO_ONLY\n");
+    me_say(log, "      %s rebase%s and %s bind%s emitted (%s bytes of opcodes, %s bytes appended)\n",
+           me_count(c1, r->rebases), r->rebases == 1 ? "" : "s",
+           me_count(c2, r->binds), r->binds == 1 ? "" : "s",
+           me_count(c3, (long)(r->rebase_bytes + r->bind_bytes)),
+           me_count(c4, (long)r->appended));
     if (r->n_stripped > 0) {
-        fprintf(log, "      stripped");
+        me_say(log, "      stripped");
         for (int i = 0; i < r->n_stripped; i++)
-            fprintf(log, "%s%s", i ? ", " : " ", me_lc(k, r->stripped[i]));
-        fprintf(log, "\n");
+            me_say(log, "%s%s", i ? ", " : " ", me_lc(k, r->stripped[i]));
+        me_say(log, "\n");
     }
     if (r->linkedit_after > r->linkedit_before)
-        fprintf(log, "      __LINKEDIT extended by %s bytes\n",
-                me_count(c1, (long)(r->linkedit_after - r->linkedit_before)));
+        me_say(log, "      __LINKEDIT extended by %s bytes\n",
+               me_count(c1, (long)(r->linkedit_after - r->linkedit_before)));
 }
 
 /* One mr_ops through the rewrite, then the verdict on anything it asked for
@@ -155,6 +184,9 @@ static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path, const mr_
     memset(&hits, 0, sizeof hits);
     int rc = mr_apply_image(pbuf, psize, path, ops, &modified, &hits);
     if (rc != 0) return rc;
+    /* The verdict's "matched nothing" report goes to stderr; flushed first
+     * for the reason me_say flushes. */
+    fflush(stdout);
     return mr_unmatched_verdict(ops, &hits);
 }
 
@@ -163,7 +195,7 @@ static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path, const mr_
  * mi_open would give a file. */
 static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FILE *log) {
     if (mi_wrap(buf, size, im) == 0) return 0;
-    fprintf(log, "macho9 edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
+    me_say(log, "macho9 edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
     return MR_REFUSED;
 }
 
@@ -176,8 +208,8 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
  * Under `verbose`, a statement that succeeded logs, indented beneath its
  * statement line, the work it did beyond what it names: the ordinal
  * renumbering of a dylib insert or delete, what `fixups set classic`
- * converted or that it passed the image through, and what `swift-abi set
- * legacy` retagged. */
+ * converted or that it passed the image through, what `swift-abi set
+ * legacy` retagged, and the command `version-min set` appended. */
 static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
                     const ms_script *s, const ms_stmt *st, FILE *log, int verbose) {
     mr_ops ops;
@@ -203,8 +235,8 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         /* The same pre-check cmd_segment makes: a segname field is 16 bytes,
          * and mseg_rename_lc would truncate a longer name silently. */
         if (!mseg_name_fits(st->b)) {
-            fprintf(log, "macho9 edit: new segment name '%s' is longer than the %d bytes "
-                         "a segname field holds\n", st->b, MSEG_NAME_MAX);
+            me_say(log, "macho9 edit: new segment name '%s' is longer than the %d bytes "
+                        "a segname field holds\n", st->b, MSEG_NAME_MAX);
             return MR_REFUSED;
         }
         /* A rename has no hit array for mr_unmatched_verdict to read; its
@@ -219,7 +251,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         ops.segment_renamed = &renamed;
         int rc = me_rewrite(pbuf, psize, path, &ops);
         if (rc != 0 || renamed > 0) return rc;
-        fprintf(stderr, "macho9: segment %s matched nothing\n", st->a);
+        me_say(stderr, "macho9: segment %s matched nothing\n", st->a);
         return s->fatal_warnings ? MR_REFUSED : 0;
     }
 
@@ -271,7 +303,15 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         mi_image im;
         int added = 0;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        return mv_add_version_min_image(&im, &added);
+        int rc = mv_add_version_min_image(&im, &added);
+        /* Whether it appended a command or found one already there, as the
+         * core reports it through `added`. The already-there case is on
+         * stdout, where the core has always printed it; the append prints
+         * nothing there, because its stdout line belongs to `macho9 minos`,
+         * which edit does not call. */
+        if (rc == 0 && verbose && added)
+            me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
+        return rc;
     }
 
     case MS_SWIFT_ABI: {
@@ -283,10 +323,10 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         int retagged = mswift_retag_image(&im);
         if (verbose) {
             if (retagged > 0)
-                fprintf(log, "      retagged %d class record%s\n", retagged,
-                        retagged == 1 ? "" : "s");
+                me_say(log, "      retagged %d class record%s\n", retagged,
+                       retagged == 1 ? "" : "s");
             else
-                fprintf(log, "      nothing to retag\n");
+                me_say(log, "      nothing to retag\n");
         }
         return 0;
     }
@@ -300,12 +340,12 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * becomes part of the output. */
         size_t len = *psize, newlen = 0;
         if (len > SIZE_MAX - MDCL_SLACK) {
-            fprintf(log, "macho9 edit: %s: too large to make room for fixups set classic\n", path);
+            me_say(log, "macho9 edit: %s: too large to make room for fixups set classic\n", path);
             return MR_FAIL;
         }
         uint8_t *nb = (uint8_t *)realloc(*pbuf, len + MDCL_SLACK);
         if (!nb) {
-            fprintf(log, "macho9 edit: out of memory making room for fixups set classic\n");
+            me_say(log, "macho9 edit: out of memory making room for fixups set classic\n");
             return MR_FAIL;
         }
         *pbuf = nb;
@@ -322,17 +362,17 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (rc == MDCL_PASSTHROUGH) {
             *psize = newlen;
             if (verbose)
-                fprintf(log, "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): "
-                             "passed through unchanged\n");
+                me_say(log, "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): "
+                            "passed through unchanged\n");
             return 0;
         }
         if (rc == MDCL_REFUSED) return MR_REFUSED;   /* the reason is on stderr */
         if (rc == MDCL_ERROR) return MR_FAIL;        /* likewise */
         if (rc == MDCL_NOT_MACHO) {
-            fprintf(log, "macho9 edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
+            me_say(log, "macho9 edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
             return MR_REFUSED;
         }
-        fprintf(log, "macho9 edit: md_declassify_buf returned an unrecognized code %d\n", rc);
+        me_say(log, "macho9 edit: md_declassify_buf returned an unrecognized code %d\n", rc);
         return MR_FAIL;
     }
     }
@@ -341,7 +381,7 @@ unknown:
     /* Unreachable through ms_parse, which refuses a statement outside
      * MS_TABLE; a statement this switch does not lower is a build that
      * disagrees with itself, not something the image did. */
-    fprintf(log, "macho9 edit: cannot apply '%s %s'\n", ms_kind_name(st->kind), ms_op_name(st->op));
+    me_say(log, "macho9 edit: cannot apply '%s %s'\n", ms_kind_name(st->kind), ms_op_name(st->op));
     return MR_FAIL;
 }
 
@@ -356,12 +396,12 @@ static int me_refuse_input(const char *path, FILE *log) {
     if (got == (ssize_t)sizeof magic &&
         (magic == FAT_MAGIC || magic == FAT_CIGAM ||
          magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64)) {
-        fprintf(log, "macho9 edit: %s is a fat (universal) Mach-O; edit applies a script to "
-                     "one thin 64-bit image. `fixups set classic` converts a thin image only, "
-                     "and running a script over each slice is not supported -- extract one "
-                     "with `lipo -thin ARCH` first\n", path);
+        me_say(log, "macho9 edit: %s is a fat (universal) Mach-O; edit applies a script to "
+                    "one thin 64-bit image. `fixups set classic` converts a thin image only, "
+                    "and running a script over each slice is not supported -- extract one "
+                    "with `lipo -thin ARCH` first\n", path);
     } else {
-        fprintf(log, "macho9 edit: %s: not a readable 64-bit Mach-O\n", path);
+        me_say(log, "macho9 edit: %s: not a readable 64-bit Mach-O\n", path);
     }
     return MR_REFUSED;
 }
@@ -377,13 +417,13 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     mi_image im;
     int mo = mi_open(path, &im);
     if (mo == MI_IO_ERROR) {
-        fprintf(log, "macho9 edit: %s: cannot open or read\n", path);
+        me_say(log, "macho9 edit: %s: cannot open or read\n", path);
         return MR_FAIL;
     }
     if (mo != 0) return me_refuse_input(path, log);
     struct stat st;
     if (stat(path, &st) != 0) {
-        fprintf(log, "macho9 edit: %s: cannot stat\n", path);
+        me_say(log, "macho9 edit: %s: cannot stat\n", path);
         mi_close(&im);
         return MR_FAIL;
     }
@@ -406,8 +446,9 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         int rc = me_apply(&buf, &size, path, s, stmt, log, verbose);
         if (rc != 0) {
             if (rc != MR_REFUSED) rc = MR_FAIL;
-            fprintf(log, "macho9 edit: %s at statement %d of %d (line %d); %s left unmodified\n",
-                    rc == MR_REFUSED ? "refused" : "failed", i + 1, s->n, stmt->line, dest);
+            me_say(log, "macho9 edit: %s at statement %d of %d (line %d); ",
+                   rc == MR_REFUSED ? "refused" : "failed", i + 1, s->n, stmt->line);
+            me_say_left(log, path, out);
             free(buf);
             return rc;
         }
@@ -418,27 +459,40 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
      * failure inside mg_plausible, which it reports the same way as every
      * other reason it declines (see rewrite.c's comment on that fold). */
     if (mg_plausible(buf, size) != 0) {
-        fprintf(log, "macho9 edit: refused at verification, after statement %d of %d; "
-                     "%s left unmodified\n", s->n, s->n, dest);
+        /* A script of nothing but directives, comments or blank lines has
+         * no statement to count, so "after statement 0 of 0" would be
+         * nonsense; the image itself is what failed. */
+        if (s->n == 0)
+            me_say(log, "macho9 edit: refused at verification (the script has no "
+                        "statements); ");
+        else
+            me_say(log, "macho9 edit: refused at verification, after statement %d of %d; ",
+                   s->n, s->n);
+        me_say_left(log, path, out);
         free(buf);
         return MR_REFUSED;
     }
-    if (verbose) fprintf(log, "%s: verified\n", path);
+    if (verbose) me_say(log, "%s: verified\n", path);
 
     me_commas(bytes, size);
     if (dry_run) {
-        fprintf(log, "%s: NOT written (--dry-run) -- would be %s bytes\n", dest, bytes);
+        me_say(log, "%s: NOT written (--dry-run) -- would be %s bytes\n", dest, bytes);
         free(buf);
         return 0;
     }
 
     /* Write once. */
     if (wa_write_atomic(dest, st.st_mode, buf, size) != 0) {
-        fprintf(log, "macho9 edit: %s left unmodified (write failed)\n", dest);
+        /* With --output, FILE was never a destination; what OUT holds after
+         * a failed write is atomic_write.h's to say, not this line's. */
+        if (out)
+            me_say(log, "macho9 edit: writing %s failed; %s left unmodified\n", out, path);
+        else
+            me_say(log, "macho9 edit: %s left unmodified (write failed)\n", path);
         free(buf);
         return MR_FAIL;
     }
-    if (verbose) fprintf(log, "%s: written (%s bytes)\n", dest, bytes);
+    if (verbose) me_say(log, "%s: written (%s bytes)\n", dest, bytes);
     free(buf);
     return 0;
 }

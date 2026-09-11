@@ -14,6 +14,7 @@
  *   macho9 minos FILE 10.9
  *   macho9 info FILE
  *   macho9 verify FILE
+ *   macho9 edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]
  *
  * Not every line above is implemented by every build -- `macho9 --capabilities`
  * is the machine-readable truth about which ones are, so the wrapper and this
@@ -26,7 +27,9 @@
  * `lc` and `segment` into mr_apply_file (src/rewrite.h); `minos` into
  * mv_add_version_min (src/version_min.h); `retag-swift` into
  * mswift_retag_file (src/swift_retag.h); `declassify` into md_declassify
- * (src/declassify.h). Each verb is a thin shell over code
+ * (src/declassify.h); `edit` into ms_parse (src/script.h) and me_run
+ * (src/edit.h), which reaches the in-memory cores of the same
+ * implementations. Each verb is a thin shell over code
  * that already exists in this repo, and each translates this grammar into the
  * ONE
  * implementation -- so the ordinal-renumbering logic that has twice shipped
@@ -1059,11 +1062,13 @@ static int cmd_declassify(const char *in, const char *out) {
 
 /* ---- edit: parse an edit script and run it through me_run --------------
  *
- * The one verb whose positionals aren't at fixed argv indices: --output and
- * --verbose may appear anywhere among the arguments, before or after FILE
- * and SCRIPT or between them, so this scans every token once instead of
- * assuming a position. The two tokens that are not "--output", its OUT, or
- * "--verbose" -- in the order seen -- are FILE and SCRIPT. Only the exact
+ * The one verb whose positionals aren't at fixed argv indices: --output,
+ * --verbose and --dry-run may appear anywhere among the arguments, before
+ * or after FILE and SCRIPT or between them, so this scans every token once
+ * instead of assuming a position. The two tokens that are not "--output",
+ * its OUT, "--verbose" or "--dry-run" -- in the order seen -- are FILE and
+ * SCRIPT. --output may be given once, and its OUT may not start with "--".
+ * Only the exact
  * token "-" is exempt from the unrecognized-flag check below; it is not
  * "SCRIPT may start with '-'" in general, and "-" is not always stdin: it is
  * stdin only where it lands as SCRIPT (checked below), and a literal
@@ -1128,6 +1133,22 @@ static int cmd_edit(int argc, char **argv) {
         const char *tok = argv[i];
         if (strcmp(tok, "--output") == 0) {
             if (i + 1 >= argc) return cmd_edit_usage(prog);
+            /* `--output --verbose` means a forgotten OUT far more often than
+             * a file really named "--verbose", and taking it as OUT would
+             * write that file and swallow the flag. No flag this verb takes
+             * has a single dash, so an OUT such as "-x" is still taken as a
+             * file name. */
+            if (strncmp(argv[i + 1], "--", 2) == 0) {
+                fprintf(stderr, "macho9 edit: --output needs a file name, not '%s'\n",
+                        argv[i + 1]);
+                return EX_FAIL;
+            }
+            /* Two OUTs name two destinations for one write; taking the
+             * last would silently drop the first. */
+            if (out) {
+                fprintf(stderr, "macho9 edit: --output given more than once\n");
+                return EX_FAIL;
+            }
             out = argv[++i];
         } else if (strcmp(tok, "--verbose") == 0) {
             verbose = 1;

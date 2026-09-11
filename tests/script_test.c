@@ -70,6 +70,20 @@ static void test_unterminated_quote_is_an_error(void) {
     CHECK(err[0] != 0, "and says so");
 }
 
+/* A backslash escapes the byte after it, so a line ending in one has
+ * nothing to escape. ms_split must say so rather than copy the terminating
+ * NUL as the escaped byte and keep reading past the end of the line. */
+static void test_trailing_backslash_is_an_error(void) {
+    /* Zeroed past the NUL, so a regression reads zeros rather than stack
+     * garbage, and fails the same way every run. */
+    char buf[64] = {0}; char *av[8]; char err[128] = {0};
+    snprintf(buf, sizeof buf, "dylib append /x\\");
+    int n = ms_split(buf, av, 8, err, sizeof err);
+    CHECK(n == -1, "a trailing backslash is an error (got %d)", n);
+    CHECK(strcmp(err, "trailing backslash") == 0,
+          "and says so (got: %s)", err);
+}
+
 static void test_too_many_fields_is_an_error(void) {
     char buf[64]; char *av[2]; char err[128] = {0};
     snprintf(buf, sizeof buf, "a b c d");
@@ -139,21 +153,19 @@ static void test_no_operation_cap(void) {
     ms_free(&s);
 }
 
-/* Round 1 fix: CRITICAL 1 (use-after-free). Every ms_parse failure path
- * that quotes a field in its message must format that message BEFORE
- * freeing the storage the field points into.
+/* A use-after-free regression test. Every ms_parse failure path that quotes
+ * a field in its message must format that message BEFORE freeing the
+ * storage the field points into; ms_parse once freed first.
  *
- * Round 2 fix: Ruling 16 -- this assertion is NOT portable to any host, and
- * does not reliably catch a regression on a plain run: libc's allocator
- * typically leaves a freed block's bytes untouched until that memory is
- * reused, so a use-after-free read here often reads back the original text
- * anyway, by pure luck. What actually makes it fail is MallocScribble=1,
- * which overwrites every freed block with 0x55 on free -- CMakeLists.txt
- * sets that in script_test's ctest ENVIRONMENT property specifically so
+ * On its own this assertion does not reliably catch a regression: libc's
+ * allocator typically leaves a freed block's bytes untouched until that
+ * memory is reused, so a use-after-free read here often reads back the
+ * original text anyway, by pure luck. What makes it fail is
+ * MallocScribble=1, which overwrites every freed block with 0x55 on free --
+ * CMakeLists.txt sets that in script_test's ctest ENVIRONMENT property so
  * this test (and any future one like it) is exercised for real, not just
- * when someone happens to run the binary by hand with the right env var
- * set. See task-2-report.md's round-1 and round-2 sections for the
- * MallocScribble and Guard Malloc output this actually produces. */
+ * when someone happens to run the binary by hand with the right variable
+ * set. */
 static void test_error_message_quoting_survives_the_free(void) {
     static const char src[] = "frobnicate all\n";
     ms_script s; char err[256] = {0};
@@ -162,11 +174,11 @@ static void test_error_message_quoting_survives_the_free(void) {
           "the message still quotes the field, not freed/scribbled memory (got: %s)", err);
 }
 
-/* Round 1 fix: IMPORTANT 2. An embedded NUL used to make ms_split stop
- * early and silently hand back a truncated field -- e.g.
- * "dylib replace /a /b\0.dylib" parsed with b="/b". Now any control byte
- * except tab (a field separator) and newline (the line separator) is
- * refused, CR included, which also closes the CRLF case. */
+/* An embedded NUL used to make ms_split stop early and silently hand back a
+ * truncated field -- e.g. "dylib replace /a /b\0.dylib" parsed with
+ * b="/b". Now any control byte except tab (a field separator) and newline
+ * (the line separator) is refused, CR included, which also closes the CRLF
+ * case. */
 static void test_embedded_nul_is_refused(void) {
     static const char src[] = "dylib replace /a /b\0.dylib\n";
     ms_script s; char err[256] = {0};
@@ -185,7 +197,8 @@ static void test_crlf_is_refused(void) {
     CHECK(strstr(err, "control character") != NULL, "and names what it is (got: %s)", err);
 }
 
-/* Round 1 fix: IMPORTANT 3 -- the ruled behaviours had no tests. */
+/* The spec's directive rules: repeating one is idempotent, and a directive
+ * takes no operands. */
 
 static void test_repeated_directive_is_accepted(void) {
     static const char src[] = "allow-grow\nallow-grow\nfatal-warnings\nfatal-warnings\ndylib delete /x\n";
@@ -207,12 +220,12 @@ static void test_directive_with_operand_is_refused(void) {
     CHECK(strstr(err, "takes no operands") != NULL, "and names why (got: %s)", err);
 }
 
-/* Round 2 fix: OPEN 3. The `if (s.n != 2) { ms_free(&s); return; }` guard
- * this used to have, placed right before `CHECK(s.n == 2, ...)`, made that
- * CHECK unreachable in its failing case -- a mutation dropping the final,
- * newline-less line still reported 0 failures. The s.n==2 CHECK now always
- * runs; only the stmts[1] INDEXING is guarded, and by a positive condition
- * that doesn't skip the count check it's guarding against. */
+/* The `if (s.n != 2) { ms_free(&s); return; }` guard this used to have,
+ * placed right before `CHECK(s.n == 2, ...)`, made that CHECK unreachable
+ * in its failing case -- a mutation dropping the final, newline-less line
+ * still reported 0 failures. The s.n==2 CHECK now always runs; only the
+ * stmts[1] INDEXING is guarded, and by a positive condition that doesn't
+ * skip the count check it's guarding against. */
 static void test_final_line_without_newline_parses(void) {
     static const char src[] = "load-command delete uuid\ndylib replace /a /b";
     ms_script s; char err[256] = {0};
@@ -225,7 +238,8 @@ static void test_final_line_without_newline_parses(void) {
     ms_free(&s);
 }
 
-/* Round 2 fix: OPEN 3, same unreachable-CHECK bug as the test above. */
+/* Guarded the same way as the test above, for the same reason: the count
+ * CHECK must run even when the count is wrong. */
 static void test_blank_and_comment_lines_dont_shift_line_numbers(void) {
     static const char src[] =
         "load-command delete uuid\n"
@@ -280,8 +294,8 @@ static void test_kind_and_op_names(void) {
     CHECK(strcmp(ms_op_name(-1), "unknown") == 0, "ms_op_name of an out-of-table value");
 }
 
-/* Round 1 fix: MINOR 6 -- MS_MAX_FIELDS' comment claims this reports arity,
- * not overflow, for a line with a handful of stray extra fields. Prove it. */
+/* MS_MAX_FIELDS' comment claims this reports arity, not overflow, for a
+ * line with a handful of stray extra fields. Prove it. */
 static void test_extra_fields_report_arity_not_overflow(void) {
     static const char src[] = "dylib replace a b c d e f\n";
     ms_script s; char err[256] = {0};
@@ -291,10 +305,10 @@ static void test_extra_fields_report_arity_not_overflow(void) {
           "does not fall back to ms_split's generic overflow message (got: %s)", err);
 }
 
-/* Round 1 fix: MINOR 8 -- the FIRST error in source order must be reported,
- * not whichever kind of mistake (syntax vs. semantic) some earlier pass
- * happened to notice first. Line 2 here is a semantic error (unknown
- * statement); line 4 is a syntax error (unterminated quote). */
+/* The FIRST error in source order must be reported, not whichever kind of
+ * mistake (syntax vs. semantic) some earlier pass happened to notice first.
+ * Line 2 here is a semantic error (unknown statement); line 4 is a syntax
+ * error (unterminated quote). */
 static void test_first_error_reported_is_earliest_in_line_order(void) {
     static const char src[] =
         "dylib delete /x\n"
@@ -307,8 +321,8 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Round 1 fix: IMPORTANT 4(b)/Round 2 fix: Ruling 15. Walks ms_table_row
- * directly and confirms MS_TABLE has the spec's 14 rows, each of which
+/* Walks ms_table_row directly and confirms MS_TABLE has the spec's 14 rows
+ * (the "Statements" table lists exactly 14 kind/op pairs), each of which
  * round-trips through an actual ms_parse -- not just that one known row's
  * text appears somewhere. tests/cli_test.sh separately counts
  * --capabilities' own "statement " lines (exactly 14, all unique); together
@@ -365,6 +379,7 @@ int main(void) {
     test_mt_quote_shapes();
     test_double_quotes_and_backslash();
     test_unterminated_quote_is_an_error();
+    test_trailing_backslash_is_an_error();
     test_too_many_fields_is_an_error();
     test_parses_the_production_script();
     test_directives_set_flags_and_are_not_statements();
