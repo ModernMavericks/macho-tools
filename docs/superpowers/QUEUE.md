@@ -5,12 +5,13 @@ The agreed order. Each item names its spec and, once written, its plan.
 | # | item | spec | plan | state |
 |---|---|---|---|---|
 | 1 | Report what macho9 did | — | `plans/2026-09-10-report-what-macho9-did.md` | **done**, pushed, CI green at `77f076a` |
-| 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | plan written; execution paused for owner review |
+| 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | executing |
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; shelved until item 2 merges |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | plan written; shelved until item 3 merges |
 | 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written; shelved until item 2 merges |
 | 6 | **Human code review + excellent documentation** | — | — | not started |
-| 7 | History rewrite + the three rename steps | — | — | explicitly last |
+| 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
+| 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
 
 ## Why this order
 
@@ -21,12 +22,13 @@ The agreed order. Each item names its spec and, once written, its plan.
 and `macho9-translate.sh`; the rename changes all three. Landing release
 conformance first would edit the same lines twice.
 
-**One piece is split out of 4 and not yet queued:** the `.pkg` and the Sparkle
-updater. Its own spec section calls it "the largest single piece and the one most
+**8 is split out of 4, and goes after 7.** The `.pkg` and the Sparkle updater.
+Its own spec section calls it "the largest single piece and the one most
 reasonably split into its own increment", and everything else in item 4 can land
-first and produce a GitHub Release of the binaries. It needs a spec and a plan
-before it has a queue position; the constraint to carry into them is that the
-updater must not link the product it updates.
+first and produce a GitHub Release of the binaries. The repo owner placed it
+after the history rewrite; it needs a spec and a plan before it starts, and
+neither is wanted yet. The constraint to carry into them is that the updater
+must not link the product it updates.
 
 **6 before 7, and 6 after everything else.** A human review wants the code in its
 final shape — renamed, versioned, with the language in place — so it is not
@@ -49,14 +51,12 @@ design: **the module prefixes** (`mi_`, `mr_`, `mg_`, `mo_`, `mseg_`, `mswift_`,
 readability decision no single design should make unilaterally, and item 6 is
 where it belongs.
 
-**7 last** because rewriting history invalidates every commit SHA this repo's
-docs, ledgers and plans cite.
+**7 after everything but 8** because rewriting history invalidates every commit
+SHA this repo's docs, ledgers and plans cite.
 
 ## Outstanding owner actions
 
 - Review the four specs above (items 2–5).
-- Decide whether to resume item 2's execution — it is paused at `5bea3ae` with
-  nothing of Task 0 landed.
 - **The three rename steps are deferred to item 7**, immediately before the
   history rewrite — not to item 3. See below.
 
