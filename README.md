@@ -297,11 +297,14 @@ macho9 edit "$REAL" claude.edits --output "$T"
 - **`allow-grow` reaches `dylib`, `rpath` and `version-min set`** — the
   statements whose load commands can outgrow the header pad — and only on a
   64-bit PIE executable. It does not reach `fixups set classic`: growth
-  refuses an image that still has chained fixups, and the conversion frees
-  more room than it uses. So on a chained image nothing can grow until
-  `fixups set classic` has run; put it first. `segment rename` and
-  `load-command delete` never need it, since neither adds bytes to the load
-  commands.
+  refuses an image that still has chained fixups. Nor does the conversion
+  need it: it removes whichever of `LC_DYLD_EXPORTS_TRIE`,
+  `LC_DYLD_CHAINED_FIXUPS` and `LC_BUILD_VERSION` are present before adding
+  its 48-byte `LC_DYLD_INFO_ONLY`, so on a modern chained binary, which
+  carries all three, it frees at least 56 bytes before using 48. On a
+  chained image nothing can grow until `fixups set classic` has run; put it
+  first. `segment rename` and `load-command delete` never need it, since
+  neither adds bytes to the load commands.
 - **`fatal-warnings` covers the statements that can match nothing:**
   `load-command delete` (no command of that kind), `dylib replace/delete/
   reexport` and `rpath replace/delete` (no command naming that path), and

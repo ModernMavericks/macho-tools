@@ -44,9 +44,11 @@ int mv_add_version_min(const char *path, int allow_grow);
  * command cannot be placed. When the pad is short and `allow_grow` is set,
  * growing it is mg_ensure_pad's decision; if it grows, *pbuf is reallocated,
  * *psize is larger, and every pointer the caller held into the buffer is
- * stale.
+ * stale. `label` prefixes mg_ensure_pad's own lines -- its refusal on stderr
+ * and, when it grows, "LABEL: load commands need ...; growing header..." and
+ * "LABEL: grew header pad: ..." on stdout; both callers pass the file's path.
  */
 int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
-                             int *out_added);
+                             const char *label, int *out_added);
 
 #endif /* MACHO9_VERSION_MIN_H */

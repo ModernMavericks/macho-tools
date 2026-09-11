@@ -201,9 +201,10 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
 
 /* The lowering: one statement, one call to the code that performs it. Returns
  * 0, MR_REFUSED or MR_FAIL. *pbuf and *psize always name the current image
- * afterwards, whether or not the statement succeeded, because two of these
- * reallocate it: allow-grow's header grow inside the rewrite, and the room
- * `fixups set classic` appends its opcode streams into.
+ * afterwards, whether or not the statement succeeded, because three of these
+ * reallocate it: allow-grow's header grow, inside the rewrite and inside
+ * `version-min set`, and the room `fixups set classic` appends its opcode
+ * streams into.
  *
  * Under `verbose`, a statement that succeeded logs, indented beneath its
  * statement line, the work it did beyond what it names: the ordinal
@@ -305,12 +306,14 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         mi_image im;
         int added = 0;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        int rc = mv_add_version_min_image(pbuf, psize, s->allow_grow, &added);
+        int rc = mv_add_version_min_image(pbuf, psize, s->allow_grow, path, &added);
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
-         * stdout, where the core has always printed it; the append prints
-         * nothing there, because its stdout line belongs to `macho9 minos`,
-         * which edit does not call. */
+         * stdout, where the core has always printed it. The append's own
+         * "Added ..." line belongs to `macho9 minos`, which edit does not
+         * call, so an append prints nothing on stdout -- unless it grew the
+         * header pad, when mg_ensure_pad's two grow lines, labelled with
+         * `path`, are there. */
         if (rc == 0 && verbose && added)
             me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
         return rc;

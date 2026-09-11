@@ -3042,9 +3042,14 @@ grep -q "growing the header needs allow-grow" "$T/vm_no.err" \
     && ok "edit: ... and the refusal names allow-grow as the remedy" \
     || bad "edit version-min" "no allow-grow remedy in: $(cat "$T/vm_no.err")"
 rc=0
-"$MACHO9" edit "$T/vm_e" "$T/vm_yes.edits" >/dev/null 2>"$T/vm_yes.err" || rc=$?
+"$MACHO9" edit "$T/vm_e" "$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
     || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
+# The grow lines on stdout are mg_ensure_pad's, labelled with the input's
+# path, as edit.h's inventory of what the operations print says.
+grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
+    && ok "edit: ... and stdout has 'PATH: grew header pad', naming the input" \
+    || bad "edit version-min" "no 'PATH: grew header pad' line on stdout: $(cat "$T/vm_yes.out")"
 "$MACHO9" info "$T/vm_e" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "edit: allow-grow: LC_VERSION_MIN_MACOSX is in the written image" \
     || bad "edit version-min" "no LC_VERSION_MIN_MACOSX after the grow"
@@ -3055,33 +3060,47 @@ rc=0
 # macho9 minos takes --allow-grow, after the version, as dylib/rpath take
 # their flags; without it the verb refuses exactly as before.
 cp "$T/vm_tight" "$T/vm_m"
+vm_m_before=$(sha "$T/vm_m")
 rc=0
 "$MACHO9" minos "$T/vm_m" 10.9 >/dev/null 2>"$T/vm_m_no.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "minos: without --allow-grow a short pad is refused (1)" \
     || bad "minos --allow-grow" "without the flag: expected 1, got $rc: $(cat "$T/vm_m_no.err")"
+[ "$(sha "$T/vm_m")" = "$vm_m_before" ] \
+    && ok "minos: ... and the refused run left the file unchanged" \
+    || bad "minos --allow-grow" "the refused run modified the file"
 grep -q "allow-grow" "$T/vm_m_no.err" \
     && ok "minos: ... and the refusal names allow-grow" \
     || bad "minos --allow-grow" "no allow-grow remedy in: $(cat "$T/vm_m_no.err")"
 rc=0
-"$MACHO9" minos "$T/vm_m" 10.9 --allow-grow >/dev/null 2>"$T/vm_m_yes.err" || rc=$?
+"$MACHO9" minos "$T/vm_m" 10.9 --allow-grow >"$T/vm_m_yes.out" 2>"$T/vm_m_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "minos: --allow-grow grows the header and adds the command" \
     || bad "minos --allow-grow" "with the flag: expected 0, got $rc: $(cat "$T/vm_m_yes.err")"
+vm_m_grows=$(grep -c "grew header pad" "$T/vm_m_yes.out" || true)
+[ "$vm_m_grows" -eq 1 ] \
+    && ok "minos: --allow-grow: stdout has exactly one 'grew header pad' line" \
+    || bad "minos --allow-grow" "expected 1 'grew header pad' line, saw $vm_m_grows: $(cat "$T/vm_m_yes.out")"
 "$MACHO9" info "$T/vm_m" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "minos: --allow-grow: LC_VERSION_MIN_MACOSX is present" \
     || bad "minos --allow-grow" "no LC_VERSION_MIN_MACOSX after the grow"
 "$MACHO9" verify "$T/vm_m" >/dev/null 2>"$T/vm_m_verify.err" \
     && ok "minos: --allow-grow: the grown file passes macho9 verify" \
     || bad "minos --allow-grow" "verify refused: $(cat "$T/vm_m_verify.err")"
-"$MACHO9" minos "$T/vm_m" 10.9 --bogus >/dev/null 2>&1 \
-    && bad "minos" "an unknown flag was accepted" \
-    || ok "minos: an unknown flag is a usage error"
+rc=0
+"$MACHO9" minos "$T/vm_m" 10.9 --bogus >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos: an unknown flag is a usage error (2)" \
+    || bad "minos" "an unknown flag: expected 2, got $rc"
 
 # The historical add_version_min never grew, so its wrapper still refuses.
 cp "$T/vm_tight" "$T/vm_w"
+vm_w_before=$(sha "$T/vm_w")
 rc=0
 "$BIN/add_version_min" "$T/vm_w" >/dev/null 2>"$T/vm_w.err" || rc=$?
-[ "$rc" -ne 0 ] && ok "add_version_min: still refuses a short pad (never grows)" \
-    || bad "add_version_min" "the wrapper grew or succeeded: $(cat "$T/vm_w.err")"
+[ "$rc" -eq 1 ] && grep -q "no room for LC_VERSION_MIN_MACOSX" "$T/vm_w.err" \
+    && ok "add_version_min: still refuses a short pad (1, no room; never grows)" \
+    || bad "add_version_min" "expected 1 and 'no room for LC_VERSION_MIN_MACOSX', got $rc: $(cat "$T/vm_w.err")"
+[ "$(sha "$T/vm_w")" = "$vm_w_before" ] \
+    && ok "add_version_min: ... and the refused run left the file unchanged" \
+    || bad "add_version_min" "the refused run modified the file"
 
 echo "$caps" | grep -q "^verb minos versions=10.9 flags=allow-grow$" \
     && ok "capabilities: minos advertises allow-grow" \

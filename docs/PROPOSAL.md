@@ -156,7 +156,7 @@ macho9 lc FILE OP...
                           | code-sign-drs
 
 macho9 grow FILE N                                          (macho_grow)
-macho9 minos FILE 10.9                                      (add_version_min)
+macho9 minos FILE 10.9 [--allow-grow]                       (add_version_min)
 macho9 segment FILE OLD NEW                                 (rename_segment)
 macho9 retag-swift FILE                                     (retag_swift_classes)
 macho9 info FILE              dump load commands, ordinals, pads

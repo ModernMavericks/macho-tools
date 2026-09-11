@@ -24,8 +24,10 @@
                          * comment there for the dividing line this follows. */
 
 struct mv_scan {
-    uint32_t first_sect_off;   /* upper bound of header pad; UINT32_MAX if no
-                                 * section has a nonzero file offset */
+    uint32_t first_sect_off;   /* lowest nonzero section file offset;
+                                 * UINT32_MAX if no section has one. Only
+                                 * that sentinel is consulted: mg_ensure_pad
+                                 * finds the pad's bound for itself. */
     int      has_version_min;
 };
 
@@ -115,7 +117,7 @@ int mv_add_version_min(const char *path, int allow_grow) {
     size_t fsize = im.size;
     uint8_t *buf = mi_release(&im);
     int added = 0;
-    int rc = mv_add_version_min_image(&buf, &fsize, allow_grow, &added);
+    int rc = mv_add_version_min_image(&buf, &fsize, allow_grow, path, &added);
     if (rc != 0 || !added) {
         free(buf);
         close(fd);
@@ -140,7 +142,7 @@ int mv_add_version_min(const char *path, int allow_grow) {
  * copied: the scan, the "already present" and "no room" answers, and the
  * append, all against the caller's buffer and none of the file around it. */
 int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
-                             int *out_added) {
+                             const char *label, int *out_added) {
     *out_added = 0;
     mi_image im;
     if (mi_wrap(*pbuf, *psize, &im) != 0) {
@@ -173,16 +175,16 @@ int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
         return MR_REFUSED;
     }
-    /* The third way is the ordinary one -- the pad before the first section
-     * is too small -- and that is mg_ensure_pad's to decide, grow or refuse,
-     * the same as for every other load-command edit. */
-    if (need_end > scan.first_sect_off) {
-        if (mg_ensure_pad(pbuf, psize, need_end, allow_grow, "LC_VERSION_MIN_MACOSX") != 0) {
-            fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
-            return MR_REFUSED;
-        }
-        hdr = (struct mach_header_64 *)*pbuf;   /* growth reallocated the buffer */
+    /* Whether the command fits in the pad before the first section, and if
+     * not whether to grow it, is mg_ensure_pad's to decide, the same as for
+     * every other load-command edit. It returns 0 at once, untouched, when
+     * the command fits, and it refuses an image whose first section lies
+     * past the buffer's end. */
+    if (mg_ensure_pad(pbuf, psize, need_end, allow_grow, label) != 0) {
+        fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
+        return MR_REFUSED;
     }
+    hdr = (struct mach_header_64 *)*pbuf;   /* growth may have reallocated it */
 
     struct version_min_command *vm = (struct version_min_command *)(*pbuf + lc_end);
     memset(vm, 0, sizeof(*vm));
