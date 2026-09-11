@@ -141,9 +141,19 @@ static void test_no_operation_cap(void) {
 
 /* Round 1 fix: CRITICAL 1 (use-after-free). Every ms_parse failure path
  * that quotes a field in its message must format that message BEFORE
- * freeing the storage the field points into. This is what a MallocScribble
- * or Guard Malloc run (see task-2-report.md's round-1 section) actually
- * exercises; this assertion is the same claim, portable to any host. */
+ * freeing the storage the field points into.
+ *
+ * Round 2 fix: Ruling 16 -- this assertion is NOT portable to any host, and
+ * does not reliably catch a regression on a plain run: libc's allocator
+ * typically leaves a freed block's bytes untouched until that memory is
+ * reused, so a use-after-free read here often reads back the original text
+ * anyway, by pure luck. What actually makes it fail is MallocScribble=1,
+ * which overwrites every freed block with 0x55 on free -- CMakeLists.txt
+ * sets that in script_test's ctest ENVIRONMENT property specifically so
+ * this test (and any future one like it) is exercised for real, not just
+ * when someone happens to run the binary by hand with the right env var
+ * set. See task-2-report.md's round-1 and round-2 sections for the
+ * MallocScribble and Guard Malloc output this actually produces. */
 static void test_error_message_quoting_survives_the_free(void) {
     static const char src[] = "frobnicate all\n";
     ms_script s; char err[256] = {0};
@@ -163,6 +173,7 @@ static void test_embedded_nul_is_refused(void) {
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
           "an embedded NUL is refused, not silently truncated");
     CHECK(strstr(err, "line 1") != NULL, "and names the line (got: %s)", err);
+    CHECK(strstr(err, "control character") != NULL, "and names what it is (got: %s)", err);
 }
 
 static void test_crlf_is_refused(void) {
@@ -171,6 +182,7 @@ static void test_crlf_is_refused(void) {
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
           "a CR is refused, not folded into the operand");
     CHECK(strstr(err, "line 1") != NULL, "and names the line (got: %s)", err);
+    CHECK(strstr(err, "control character") != NULL, "and names what it is (got: %s)", err);
 }
 
 /* Round 1 fix: IMPORTANT 3 -- the ruled behaviours had no tests. */
@@ -192,19 +204,28 @@ static void test_directive_with_operand_is_refused(void) {
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
           "a directive given an operand is refused");
     CHECK(strstr(err, "line 1") != NULL, "and names the line (got: %s)", err);
+    CHECK(strstr(err, "takes no operands") != NULL, "and names why (got: %s)", err);
 }
 
+/* Round 2 fix: OPEN 3. The `if (s.n != 2) { ms_free(&s); return; }` guard
+ * this used to have, placed right before `CHECK(s.n == 2, ...)`, made that
+ * CHECK unreachable in its failing case -- a mutation dropping the final,
+ * newline-less line still reported 0 failures. The s.n==2 CHECK now always
+ * runs; only the stmts[1] INDEXING is guarded, and by a positive condition
+ * that doesn't skip the count check it's guarding against. */
 static void test_final_line_without_newline_parses(void) {
     static const char src[] = "load-command delete uuid\ndylib replace /a /b";
     ms_script s; char err[256] = {0};
-    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0,
-          "a final line without a trailing newline parses (%s)", err);
-    if (s.n != 2) { ms_free(&s); return; }
+    int r = ms_parse(src, sizeof src - 1, &s, err, sizeof err);
+    CHECK(r == 0, "a final line without a trailing newline parses (%s)", err);
+    if (r != 0) return;
     CHECK(s.n == 2, "both statements kept (got %d)", s.n);
-    CHECK(s.stmts[1].line == 2, "second stmt remembers line 2 (got %d)", s.stmts[1].line);
+    if (s.n == 2)
+        CHECK(s.stmts[1].line == 2, "second stmt remembers line 2 (got %d)", s.stmts[1].line);
     ms_free(&s);
 }
 
+/* Round 2 fix: OPEN 3, same unreachable-CHECK bug as the test above. */
 static void test_blank_and_comment_lines_dont_shift_line_numbers(void) {
     static const char src[] =
         "load-command delete uuid\n"
@@ -213,11 +234,14 @@ static void test_blank_and_comment_lines_dont_shift_line_numbers(void) {
         "   \n"
         "dylib delete /x\n";
     ms_script s; char err[256] = {0};
-    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
-    if (s.n != 2) { ms_free(&s); return; }
+    int r = ms_parse(src, sizeof src - 1, &s, err, sizeof err);
+    CHECK(r == 0, "parses (%s)", err);
+    if (r != 0) return;
     CHECK(s.n == 2, "two statements; blank/comment lines aren't counted (got %d)", s.n);
-    CHECK(s.stmts[0].line == 1, "stmt0 is line 1 (got %d)", s.stmts[0].line);
-    CHECK(s.stmts[1].line == 5, "stmt1 is line 5, not shifted by the skipped lines (got %d)", s.stmts[1].line);
+    if (s.n == 2) {
+        CHECK(s.stmts[0].line == 1, "stmt0 is line 1 (got %d)", s.stmts[0].line);
+        CHECK(s.stmts[1].line == 5, "stmt1 is line 5, not shifted by the skipped lines (got %d)", s.stmts[1].line);
+    }
     ms_free(&s);
 }
 
@@ -283,12 +307,14 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Round 1 fix: IMPORTANT 4(b), Ruling 13. The table-agreement check moves
- * here from a single cli_test.sh grep, because a shell test cannot know the
- * table's row count without a second, hand-copied list -- the very defect
- * this design exists to prevent. This walks ms_table_row directly, so it
- * can assert the row count AND that every row's kind/op round-trip through
- * an actual parse, not just that one known row's line appears in text. */
+/* Round 1 fix: IMPORTANT 4(b)/Round 2 fix: Ruling 15. Walks ms_table_row
+ * directly and confirms MS_TABLE has the spec's 14 rows, each of which
+ * round-trips through an actual ms_parse -- not just that one known row's
+ * text appears somewhere. tests/cli_test.sh separately counts
+ * --capabilities' own "statement " lines (exactly 14, all unique); together
+ * the two catch the generator (cli/macho9.c's loop over ms_table_row) and
+ * the table itself going out of step with each other -- a dropped, extra,
+ * or duplicated line on either side. */
 static void test_capabilities_table_round_trips(void) {
     int i, n_rows = 0;
     const char *kind, *op;

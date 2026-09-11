@@ -55,9 +55,10 @@ typedef struct {
 /* Parses a whole edit script from `buf`/`len` (need not be NUL-terminated;
  * a final line with no trailing newline is fine, and there is no fixed cap
  * on the number of statements -- the array is sized from the script itself).
- * Every byte in [0, len) must be a printable byte, tab, or newline -- any
- * other control byte (a NUL or a CR included) is refused, not silently
- * folded into an operand.
+ * Every byte in [0, len) must be either tab, newline, or NOT an ASCII
+ * control character -- so a NUL or a CR (or any other C0 control byte, or
+ * DEL) is refused, not silently folded into an operand, while a byte 0x80
+ * and above (part of UTF-8, say) is fine.
  *
  * On success, returns 0, fills `*out`, and the caller must eventually call
  * ms_free(out). On error, returns -1 and (if `err` and `errsz` are

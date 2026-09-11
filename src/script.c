@@ -122,8 +122,10 @@ const char *ms_op_name(int op) {
  * Freeing here rather than at each call site also means every ms_parse
  * failure that stems from a specific source line goes through the exact
  * same sequence, so none of them can get the order wrong, forget to free,
- * or forget the "line N" prefix the spec requires. `stmts`/`text` may be
- * NULL (pass 1 hasn't allocated either yet); free(NULL) is a no-op. */
+ * or forget the "line N" prefix the spec requires. `stmts` may be NULL
+ * (cap == 0: pass 1 found no non-blank, non-comment line); `text` is never
+ * NULL here (pass 2 only starts once it's allocated). free(NULL) is a
+ * no-op either way. */
 static int ms_failf(ms_stmt *stmts, char *text, ms_script *out,
                      char *err, size_t errsz, int line, const char *fmt, ...) {
     if (err && errsz) {
@@ -188,13 +190,15 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
      * ms_stmt.a/.b ends up pointing straight into it, so ms_free frees
      * exactly two allocations (this and `stmts`). This is the ONLY pass
      * that reports an error, and it walks the script strictly in source
-     * order and returns on the first line that fails any check -- syntax
-     * (ms_split), an embedded control byte, or a semantic rule (unknown
-     * statement, wrong arity, a directive out of place, a value outside the
-     * accepted vocabulary) alike. That is what guarantees the error
-     * reported is always the earliest one in the script, never whichever
-     * category of mistake this code happens to check first on a given
-     * line. */
+     * order, one line at a time, so the FIRST line with a problem is always
+     * the one reported -- never a later line whose problem some earlier
+     * check happened to notice first. Within a single line, the checks
+     * still run in a fixed order -- an embedded control byte, then
+     * ms_split's syntax, then the semantic rules (unknown statement, wrong
+     * arity, a directive out of place, a value outside the accepted
+     * vocabulary) -- so if a line manages to fail more than one of those,
+     * which one gets reported depends on that order, not on source
+     * position (they're all on the same line). */
     int n_stmts = 0;
     int allow_grow = 0, fatal_warnings = 0, seen_operation = 0;
     size_t i = 0;
