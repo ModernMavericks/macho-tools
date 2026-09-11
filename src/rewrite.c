@@ -972,11 +972,6 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     return 0;
 }
 
-static uint32_t mr_swap32(uint32_t v) {
-    return ((v & 0xffu) << 24) | ((v & 0xff00u) << 8) |
-           ((v & 0xff0000u) >> 8) | ((v >> 24) & 0xffu);
-}
-
 /*
  * Apply every requested change to every slice of a fat (universal) binary in
  * *pbuf, *pfsize, reassembling the fat container afterward. This is what
@@ -1011,13 +1006,50 @@ static uint32_t mr_swap32(uint32_t v) {
  * matched in one fat slice and not another has matched, and a per-slice
  * report would wrongly call that a miss on every slice but one.
  */
+/* The verb path's slice callback: the thin rewrite, under the label and with
+ * the stdout lines `macho9 dylib`/`change_dylib` have always printed for a
+ * fat file. */
+typedef struct {
+    const mr_ops *ops;
+    int *hit_dylib, *hit_rpath, *hit_strip;
+} mr_fat_ctx;
+
+static int mr_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
+                        uint32_t index, int *changed, void *ctx_) {
+    mr_fat_ctx *c = (mr_fat_ctx *)ctx_;
+    char label[64];
+    snprintf(label, sizeof label, "arch %u (cputype 0x%x)", index, a->cputype);
+    int mod = 0;
+    int rc = mr_process_thin(pbuf, psize, label, c->ops, &mod,
+                             c->hit_dylib, c->hit_rpath, c->hit_strip);
+    if (rc == MR_SKIP) {
+        printf("%s: not a 64-bit Mach-O; leaving this slice unchanged\n", label);
+        return 0;
+    }
+    if (rc == MR_ERROR) {
+        fprintf(stderr, "ERROR: %s: refusing the whole fat file -- a partial "
+                        "rewrite would leave its slices inconsistent\n", label);
+        /* MR_REFUSED even when the slice's MR_ERROR came from an allocation
+         * failure inside mg_grow_header or mg_plausible: the same deliberate
+         * fold as the thin path's, whose comment at its own
+         * MR_ERROR->MR_REFUSED translation (mr_apply_image) says why. */
+        return MR_REFUSED;
+    }
+    *changed = mod;
+    return 0;
+}
+
+static void mr_fat_placed(const mfat_arch *a, uint32_t index,
+                          uint64_t off, uint64_t size, void *ctx) {
+    (void)a; (void)ctx;
+    printf("arch %u: placed at %llu (%llu bytes)\n", index,
+           (unsigned long long)off, (unsigned long long)size);
+}
+
 static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
                           const mr_ops *ops, int *out_modified,
                           int *hit_dylib, int *hit_rpath, int *hit_strip) {
     *out_modified = 0;
-    uint8_t *buf = *pbuf;
-    size_t fsize = *pfsize;
-
     /* mfat_parse (src/fat.c) is the ONE place both this rewriter and
      * fix_macho validate a fat file's arch table -- magic, the table fitting
      * inside the file, every entry's offset+size in bounds and not
@@ -1033,7 +1065,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
      * MR_REFUSED/MR_FAIL split as every return there -- see the comment on
      * mr_apply_file itself, in rewrite.h, for the dividing line. */
     uint32_t narch; int swap;
-    int fp_rc = mfat_parse(buf, fsize, &narch, &swap);
+    int fp_rc = mfat_parse(*pbuf, *pfsize, &narch, &swap);
     if (fp_rc == MFAT_IO_ERROR) {
         fprintf(stderr, "ERROR: out of memory validating the fat arch table\n");
         return MR_FAIL;
@@ -1044,193 +1076,13 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
                         "each other)\n");
         return MR_REFUSED;
     }
-
-    /* Per-slice working state, gathered up front so a mid-loop failure can
-     * free exactly what has been allocated so far. */
-    uint8_t **sbuf   = calloc(narch, sizeof(uint8_t *));
-    size_t   *ssize  = calloc(narch, sizeof(size_t));
-    uint64_t *ooff   = calloc(narch, sizeof(uint64_t));
-    uint64_t *osize  = calloc(narch, sizeof(uint64_t));
-    uint32_t *cputype = calloc(narch, sizeof(uint32_t));
-    uint32_t *cpusubtype = calloc(narch, sizeof(uint32_t));
-    uint32_t *align  = calloc(narch, sizeof(uint32_t));
-    if (narch && (!sbuf || !ssize || !ooff || !osize || !cputype || !cpusubtype || !align)) {
-        fprintf(stderr, "ERROR: out of memory\n");
-        free(sbuf); free(ssize); free(ooff); free(osize);
-        free(cputype); free(cpusubtype); free(align);
-        return MR_FAIL;
-    }
-
-    /* 0 means no abort. Not a bool: the two ways this loop can abort are
-     * THIS function's own per-slice copy-buffer malloc failing (MR_FAIL --
-     * `sbuf[i] = malloc(...)` below, nothing to do with any allocation
-     * mr_process_thin or a primitive it calls may have already made and
-     * folded into its own MR_ERROR -- see the short note at this function's
-     * MR_ERROR->MR_REFUSED translation, below, and the full comment on that
-     * fold in mr_apply_image, at the thin path's identical translation) and
-     * mr_process_thin refusing a slice's edit (MR_ERROR, defined above with
-     * MR_SKIP -- that comment describes MR_ERROR purely as a per-slice
-     * signal, "fatal to the whole operation", and says nothing about an
-     * exit code: MR_ERROR is private to this file and is never one. This
-     * function's job is exactly that translation -- an MR_ERROR slice
-     * becomes THIS function's own MR_REFUSED, per MR_REFUSED's contract in
-     * rewrite.h, not MR_ERROR's), and the return below has to tell the two
-     * abort reasons apart rather than collapsing both into one flag the way
-     * an `aborted` bool would. */
-    int abort_rc = 0;
-    uint32_t i;
-    for (i = 0; i < narch; i++) {
-        /* mfat_parse above already proved offset+size is in bounds and
-         * outside the header/table region for every entry up to narch, so
-         * mfat_get needs no further checking here. */
-        mfat_arch a;
-        mfat_get(buf, swap, i, &a);
-        uint32_t o = a.offset, s = a.size, ct = a.cputype, cs = a.cpusubtype, al = a.align;
-        ooff[i] = o; osize[i] = s;
-        cputype[i] = ct; cpusubtype[i] = cs; align[i] = al;
-
-        sbuf[i] = malloc(s ? s : 1);
-        if (!sbuf[i]) { fprintf(stderr, "ERROR: out of memory\n"); abort_rc = MR_FAIL; break; }
-        memcpy(sbuf[i], buf + o, s);
-        ssize[i] = s;
-
-        char label[64];
-        snprintf(label, sizeof label, "arch %u (cputype 0x%x)", i, ct);
-
-        int mod = 0;
-        int rc = mr_process_thin(&sbuf[i], &ssize[i], label, ops, &mod,
-                                  hit_dylib, hit_rpath, hit_strip);
-        if (rc == MR_SKIP) {
-            printf("%s: not a 64-bit Mach-O; leaving this slice unchanged\n", label);
-            /* sbuf[i]/ssize[i] already hold the untouched original bytes. */
-        } else if (rc == MR_ERROR) {
-            fprintf(stderr, "ERROR: %s: refusing the whole fat file -- a partial "
-                            "rewrite would leave its slices inconsistent\n", label);
-            i++;   /* this slice's buffer was still allocated; free it too */
-            /* MR_REFUSED even when the slice's MR_ERROR came from an
-             * allocation failure inside mg_grow_header or mg_plausible:
-             * the same deliberate fold as the thin path's, whose comment at
-             * its own MR_ERROR->MR_REFUSED translation (mr_apply_image)
-             * says why. */
-            abort_rc = MR_REFUSED;
-            break;
-        } else if (mod) {
-            *out_modified = 1;
-        }
-    }
-
-    if (abort_rc) {
-        for (uint32_t j = 0; j < i; j++) free(sbuf[j]);
-        free(sbuf); free(ssize); free(ooff); free(osize);
-        free(cputype); free(cpusubtype); free(align);
-        return abort_rc;
-    }
-
-    if (!*out_modified) {
-        for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
-        free(sbuf); free(ssize); free(ooff); free(osize);
-        free(cputype); free(cpusubtype); free(align);
-        printf("Nothing to change.\n");
-        return 0;
-    }
-
-    /* Reassemble: each slice keeps its original offset until some earlier
-     * slice's size actually changed; from then on later slices pack
-     * sequentially, honoring each slice's own (preserved) alignment.
-     *
-     * `cursor` tracks where the NEXT slice may start, which only means
-     * "the end of the file" when the arch table happens to be in ascending
-     * offset order -- nothing in the fat format requires that (lipo merely
-     * happens to emit it that way). A fat file with, say, arch[0] at a
-     * HIGHER offset than arch[1] is legal and both entries can independently
-     * pass the offset+size-in-bounds check in mfat_parse. Sizing the output
-     * buffer from `cursor` (the LAST slice processed) instead of the
-     * MAXIMUM end across every slice undersizes the allocation whenever the
-     * table isn't ascending, and the memcpy below then writes past it --
-     * heap corruption in the best case, and an exit-0 write of a truncated,
-     * silently-corrupted file in the worst, since mr_apply_file would then write
-     * exactly `newbuf`'s (too-small) size back over the real input. Track
-     * the true maximum explicitly so the allocation is never smaller than
-     * every slice it has to hold, regardless of table order. */
-    uint64_t *noff = calloc(narch, sizeof(uint64_t));
-    int shift = 0;
-    uint64_t cursor = 0;
-    uint64_t max_end = 0;
-    for (uint32_t j = 0; j < narch; j++) {
-        uint64_t want;
-        if (!shift) {
-            want = ooff[j];
-        } else {
-            uint32_t shift_amt = align[j] > 31 ? 31 : align[j];  /* hostile input guard */
-            uint64_t a = (uint64_t)1 << shift_amt;
-            want = (cursor + a - 1) & ~(a - 1);
-        }
-        noff[j] = want;
-        cursor = want + ssize[j];
-        if (cursor > max_end) max_end = cursor;
-        if (ssize[j] != osize[j]) shift = 1;
-    }
-
-    /* Refuse rather than guess: an unshifted slice keeps its ORIGINAL offset
-     * unconditionally (see above), but a later, SHIFTED slice's sequential
-     * packing has no idea where that still-fixed slice sits -- on a
-     * non-ascending table it can walk a shifted slice's new range right on
-     * top of a still-fixed one's. That is silent data loss with an exit 0
-     * (the final memcpy below would just overwrite one slice's bytes with
-     * another's) -- exactly the failure class the previous fix closed the
-     * memory-safety half of; this closes the correctness half. Check every
-     * pair -- not just neighbors in table order, since the colliding pair
-     * need not be adjacent -- BEFORE allocating or writing anything, so a
-     * refusal here leaves the input completely untouched. */
-    for (uint32_t a = 0; a < narch; a++) {
-        uint64_t a0 = noff[a], a1 = a0 + ssize[a];
-        for (uint32_t b = a + 1; b < narch; b++) {
-            uint64_t b0 = noff[b], b1 = b0 + ssize[b];
-            if (a0 < b1 && b0 < a1) {
-                fprintf(stderr, "ERROR: reassembly would place arch %u [%llu,%llu) and "
-                                "arch %u [%llu,%llu) at overlapping offsets; refusing "
-                                "rather than guess a different layout\n",
-                        a, (unsigned long long)a0, (unsigned long long)a1,
-                        b, (unsigned long long)b0, (unsigned long long)b1);
-                for (uint32_t k = 0; k < narch; k++) free(sbuf[k]);
-                free(sbuf); free(ssize); free(ooff); free(osize);
-                free(cputype); free(cpusubtype); free(align); free(noff);
-                return MR_REFUSED;
-            }
-        }
-    }
-
-    uint8_t *newbuf = calloc(1, (size_t)max_end);
-    if (!newbuf) {
-        fprintf(stderr, "ERROR: out of memory reassembling the fat file\n");
-        for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
-        free(sbuf); free(ssize); free(ooff); free(osize);
-        free(cputype); free(cpusubtype); free(align); free(noff);
-        return MR_FAIL;
-    }
-    struct fat_header *nfh = (struct fat_header *)newbuf;
-    nfh->magic = swap ? mr_swap32(FAT_MAGIC) : FAT_MAGIC;
-    nfh->nfat_arch = swap ? mr_swap32(narch) : narch;
-    struct fat_arch *nar = (struct fat_arch *)(newbuf + sizeof(struct fat_header));
-    for (uint32_t j = 0; j < narch; j++) {
-        uint32_t o = (uint32_t)noff[j], s = (uint32_t)ssize[j];
-        nar[j].cputype    = swap ? (cpu_type_t)mr_swap32((uint32_t)cputype[j]) : (cpu_type_t)cputype[j];
-        nar[j].cpusubtype = swap ? (cpu_subtype_t)mr_swap32((uint32_t)cpusubtype[j]) : (cpu_subtype_t)cpusubtype[j];
-        nar[j].offset = swap ? mr_swap32(o) : o;
-        nar[j].size   = swap ? mr_swap32(s) : s;
-        nar[j].align  = swap ? mr_swap32(align[j]) : align[j];
-        memcpy(newbuf + noff[j], sbuf[j], ssize[j]);
-        printf("arch %u: placed at %llu (%llu bytes)\n", j,
-               (unsigned long long)noff[j], (unsigned long long)ssize[j]);
-    }
-
-    for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
-    free(sbuf); free(ssize); free(ooff); free(osize);
-    free(cputype); free(cpusubtype); free(align); free(noff);
-
-    free(buf);
-    *pbuf = newbuf;
-    *pfsize = (size_t)max_end;   /* NOT cursor -- see the comment above the alloc */
+    mr_fat_ctx ctx = { ops, hit_dylib, hit_rpath, hit_strip };
+    int rc = mfat_rewrite(pbuf, pfsize, narch, swap, mr_fat_slice, mr_fat_placed,
+                          &ctx, out_modified);
+    if (rc == MFAT_IO_ERROR) return MR_FAIL;
+    if (rc == MFAT_MALFORMED) return MR_REFUSED;
+    if (rc != 0) return rc;
+    if (!*out_modified) printf("Nothing to change.\n");
     return 0;
 }
 
@@ -1404,17 +1256,17 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
     /* Every return in this function is MR_REFUSED or MR_FAIL, matching the
      * dividing line this function's own comment in rewrite.h draws: MR_FAIL
      * for open/fstat/read/write/malloc itself failing (this function's own,
-     * directly below; mr_process_fat's checked ones; or mi_open's/
+     * directly below; mfat_rewrite's checked ones; or mi_open's/
      * mfat_parse's, one level down), MR_REFUSED for everything that
      * examined the bytes (even "too small to be a Mach-O", which never gets
      * as far as reading load commands) and declined. This does not cover
      * every allocation reachable from this function. mg_grow_header's and
      * mg_plausible's own are the deliberate exception, folded into
      * MR_REFUSED instead; see the comment in mr_apply_image, above, where
-     * mr_process_thin's MR_ERROR becomes MR_REFUSED, for why. And three
+     * mr_process_thin's MR_ERROR becomes MR_REFUSED, for why. And two
      * callocs in this file are not checked at all -- both of
-     * mr_process_thin's new_lcs tables and mr_process_fat's noff -- so their
-     * failure reaches neither code. */
+     * mr_process_thin's new_lcs tables -- so their failure reaches neither
+     * code. */
     int fd = open(path, O_RDWR);
     if (fd < 0) { perror("open"); return MR_FAIL; }
 

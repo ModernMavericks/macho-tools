@@ -267,11 +267,11 @@ typedef struct {
 /* Returned by mr_apply_file (and by mv_add_version_min, src/version_min.c,
  * the same arrangement one level down) for a genuine operational failure:
  * open, fstat, read or write itself failing, or a checked allocation that
- * src/rewrite.c's own drivers make (mr_apply_file's fat-path read buffer;
- * mr_process_fat's tracking arrays, slice copies and reassembly buffer) or
- * that mi_open/mfat_parse, one level down, make for the file itself
- * (mv_add_version_min also returns it for its race guard -- see that
- * function's own comment). NEVER for a considered refusal -- a site that
+ * src/rewrite.c's own drivers make (mr_apply_file's fat-path read buffer) or
+ * that mi_open, mfat_parse or mfat_rewrite, one level down, make for the
+ * file itself (mfat_rewrite's tracking arrays, slice copies and reassembly
+ * buffer among them; mv_add_version_min also returns it for its race guard
+ * -- see that function's own comment). NEVER for a considered refusal -- a site that
  * examined the bytes and declined, however it phrases that on stderr, is
  * MR_REFUSED, not this. And an allocation failure INSIDE mg_grow_header or
  * mg_plausible deliberately does not come here either: it is folded into
