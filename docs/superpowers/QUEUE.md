@@ -13,7 +13,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
 | 9 | `edit` skips the write when nothing changed | — | — | queued; bounded (in place only, byte-compare against FILE) |
-| 10 | `allow-grow` everywhere it is expected | — | — | designing |
+| 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | — | spec written; awaiting owner review |
 | 11 | `edit` on fat (universal) files | — | — | design after item 10 |
 
 Items 9–11 follow from item 2 and have no agreed slot yet. All three change
