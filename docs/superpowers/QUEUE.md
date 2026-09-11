@@ -12,11 +12,11 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 6 | **Human code review + excellent documentation** | — | — | not started |
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
-| 9 | `edit` skips the write when nothing changed | — | — | queued; bounded (in place only, byte-compare against FILE) |
+| 9 | `macho9` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | — | spec written; runs after 10 and 11 |
 | 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | plan written |
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | plan written |
 
-Items 9–11 follow from item 2 and run **before item 3**. Their plans are
+Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
 `--verbose` flag. Item 3 renames the product by sweeping the tree, which
 picks up whatever 9–11 added, and its Task 6 ("always verbose, on stderr")
