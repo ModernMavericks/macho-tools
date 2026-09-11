@@ -34,6 +34,8 @@
 #include "declassify.h"
 #include "atomic_write.h"
 #include "mach_compat.h"
+#include "fat.h"
+#include "arch_names.h"
 
 /* Every line this module writes, to the log or to stderr, goes through here.
  * The operations print their progress to stdout, which is fully buffered
@@ -174,22 +176,6 @@ static void me_log_declassify(FILE *log, const md_report *r) {
                me_count(c1, (long)(r->linkedit_after - r->linkedit_before)));
 }
 
-/* One mr_ops through the rewrite, then the verdict on anything it asked for
- * that matched nothing: a report on stderr, and a refusal under
- * fatal-warnings (ops->fatal_unmatched). The hit counts are per statement,
- * because each statement is its own rewrite of the image as it now stands. */
-static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path, const mr_ops *ops) {
-    mr_hits hits;
-    int modified = 0;
-    memset(&hits, 0, sizeof hits);
-    int rc = mr_apply_image(pbuf, psize, path, ops, &modified, &hits);
-    if (rc != 0) return rc;
-    /* The verdict's "matched nothing" report goes to stderr; flushed first
-     * for the reason me_say flushes. */
-    fflush(stdout);
-    return mr_unmatched_verdict(ops, &hits);
-}
-
 /* The version-min and swift-abi cores take an mi_image; the buffer is the
  * image as the previous statement left it, so it gets the same validation
  * mi_open would give a file. */
@@ -197,6 +183,37 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
     if (mi_wrap(buf, size, im) == 0) return 0;
     me_say(log, "macho9 edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
     return MR_REFUSED;
+}
+
+/* What one statement's "matched nothing" verdict needs across the slices of
+ * a run: counts that every slice running the statement ADDS to (mr_hits'
+ * own contract, rewrite.h), and whether this is the last selected slice --
+ * the one that decides. On a thin file the one image is the last, so the
+ * verdict comes right after the statement, as it always has. */
+typedef struct {
+    mr_hits *hits;      /* this statement's counts, summed across slices */
+    int     *renamed;   /* this statement's segment-rename count, likewise */
+    int      decide;    /* nonzero in the last selected slice */
+    int      missed;    /* set when the verdict refused: it matched nothing */
+} me_verdict;
+
+/* One mr_ops through the rewrite, then -- in the last selected slice -- the
+ * verdict on anything it asked for that matched nothing: a report on stderr,
+ * and a refusal under fatal-warnings (ops->fatal_unmatched). The hit counts
+ * are per statement, because each statement is its own rewrite of the image
+ * as it now stands, and are summed across the slices that run it, because a
+ * statement that matched in any selected slice has matched. */
+static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path,
+                      const mr_ops *ops, me_verdict *v) {
+    int modified = 0;
+    int rc = mr_apply_image(pbuf, psize, path, ops, &modified, v->hits);
+    if (rc != 0 || !v->decide) return rc;
+    /* The verdict's "matched nothing" report goes to stderr; flushed first
+     * for the reason me_say flushes. */
+    fflush(stdout);
+    rc = mr_unmatched_verdict(ops, v->hits);
+    if (rc != 0) v->missed = 1;
+    return rc;
 }
 
 /* The lowering: one statement, one call to the code that performs it. Returns
@@ -212,7 +229,8 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
  * converted or that it passed the image through, what `swift-abi set
  * legacy` retagged, and the command `version-min set` appended. */
 static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
-                    const ms_script *s, const ms_stmt *st, FILE *log, int verbose) {
+                    const ms_script *s, const ms_stmt *st, FILE *log, int verbose,
+                    me_verdict *v) {
     mr_ops ops;
     mr_change change;
     mr_renumbering renum;
@@ -229,7 +247,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (lc_kind_by_name(st->a, &cmd) != 0) break;
         ops.strip_cmds = &cmd;
         ops.n_strip_cmds = 1;
-        return me_rewrite(pbuf, psize, path, &ops);
+        return me_rewrite(pbuf, psize, path, &ops, v);
     }
 
     case MS_SEGMENT: {
@@ -242,18 +260,23 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         }
         /* A rename has no hit array for mr_unmatched_verdict to read; its
          * match count comes back through segment_renamed, as it does for
-         * cmd_segment. Zero is this statement's miss: reported on stderr in
-         * the shape of the other "matched nothing" lines, and a refusal
-         * under fatal-warnings -- before anything is written, because
-         * nothing is written until after the last statement. */
+         * cmd_segment, and is summed across the slices that run this
+         * statement, the way mr_hits is. Zero in every one of them is this
+         * statement's miss, judged in the last selected slice: reported on
+         * stderr in the shape of the other "matched nothing" lines, and a
+         * refusal under fatal-warnings -- before anything is written,
+         * because nothing is written until after the last statement. */
         int renamed = 0;
         ops.segment_rename_old = st->a;
         ops.segment_rename_new = st->b;
         ops.segment_renamed = &renamed;
-        int rc = me_rewrite(pbuf, psize, path, &ops);
-        if (rc != 0 || renamed > 0) return rc;
+        int rc = me_rewrite(pbuf, psize, path, &ops, v);
+        if (rc != 0) return rc;
+        *v->renamed += renamed;
+        if (!v->decide || *v->renamed > 0) return 0;
         me_say(stderr, "macho9: segment %s matched nothing\n", st->a);
-        return s->fatal_warnings ? MR_REFUSED : 0;
+        if (s->fatal_warnings) { v->missed = 1; return MR_REFUSED; }
+        return 0;
     }
 
     case MS_DYLIB:
@@ -293,7 +316,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * an insert, or a delete that matched -- so a replace, an append, a
          * reexport or a delete that matched nothing logs no follow-up. */
         if (!rpath) ops.renumbering = &renum;
-        int rc = me_rewrite(pbuf, psize, path, &ops);
+        int rc = me_rewrite(pbuf, psize, path, &ops, v);
         if (rc == 0 && verbose && renum.done) me_log_renumbering(log, &renum);
         return rc;
     }
@@ -390,24 +413,248 @@ unknown:
     return MR_FAIL;
 }
 
-/* mi_open said MI_NOT_MACHO. Say which kind of "no": a fat file is a Mach-O,
- * just not one this verb edits, and deserves to be told so rather than
- * called "not a Mach-O". */
-static int me_refuse_input(const char *path, FILE *log) {
+/* Every statement, in order, against one image -- a thin file's, or one fat
+ * slice's. `slice` is NULL for a thin file, else the slice's arch name, for
+ * the refusal line. hits/renamed hold one entry per statement, shared by
+ * every slice of the run; `decide` says whether this is the last selected
+ * slice. Returns 0, or the first failing statement's code after printing the
+ * refusal line.
+ *
+ * WHY NOT BATCH THE STATEMENTS into one operation set, the way `macho9
+ * dylib` batches its flags into one mr_ops: because `fixups set classic`
+ * cannot batch with anything -- every later statement has to see the lowered
+ * image, with its new LC_DYLD_INFO_ONLY and extended __LINKEDIT -- and
+ * because running in sequence is what a reader of the script assumes.
+ * `dylib append X` followed by `dylib replace X Y` means something only in
+ * sequence. The cost is rebuilding the load-command table once per
+ * statement: a few KB, against I/O that happens once either way. */
+static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const char *out,
+                         const ms_script *s, FILE *log, int verbose,
+                         mr_hits *hits, int *renamed, int decide, const char *slice) {
+    for (int i = 0; i < s->n; i++) {
+        const ms_stmt *stmt = &s->stmts[i];
+        if (verbose) me_log_stmt(log, stmt);
+        me_verdict v = { &hits[i], &renamed[i], decide, 0 };
+        int rc = me_apply(pbuf, psize, path, s, stmt, log, verbose, &v);
+        if (rc != 0) {
+            if (rc != MR_REFUSED) rc = MR_FAIL;
+            me_say(log, "macho9 edit: %s at statement %d of %d (line %d)",
+                   rc == MR_REFUSED ? "refused" : "failed", i + 1, s->n, stmt->line);
+            if (slice && v.missed) me_say(log, ": it matched nothing in any selected slice");
+            else if (slice)        me_say(log, " in slice %s", slice);
+            me_say(log, "; ");
+            me_say_left(log, path, out);
+            return rc;
+        }
+    }
+    return 0;
+}
+
+/* The last step of a run that verified: report, and write once unless this
+ * is a dry run. Takes ownership of buf. */
+static int me_write_once(uint8_t *buf, size_t size, mode_t mode, const char *path,
+                         const char *out, FILE *log, int verbose, int dry_run) {
+    const char *dest = out ? out : path;
+    char bytes[32];
+    me_commas(bytes, size);
+    if (dry_run) {
+        me_say(log, "%s: NOT written (--dry-run) -- would be %s bytes\n", dest, bytes);
+        free(buf);
+        return 0;
+    }
+    if (wa_write_atomic(dest, mode, buf, size) != 0) {
+        /* With --output, FILE was never a destination; what OUT holds after
+         * a failed write is atomic_write.h's to say, not this line's. */
+        if (out)
+            me_say(log, "macho9 edit: writing %s failed; %s left unmodified\n", out, path);
+        else
+            me_say(log, "macho9 edit: %s left unmodified (write failed)\n", path);
+        free(buf);
+        return MR_FAIL;
+    }
+    if (verbose) me_say(log, "%s: written (%s bytes)\n", dest, bytes);
+    free(buf);
+    return 0;
+}
+
+/* The first four bytes of `path`, or 0 if they cannot be read. */
+static uint32_t me_magic(const char *path) {
     uint32_t magic = 0;
     int fd = open(path, O_RDONLY);
-    ssize_t got = fd >= 0 ? read(fd, &magic, sizeof magic) : -1;
-    if (fd >= 0) close(fd);
-    if (got == (ssize_t)sizeof magic &&
-        (magic == FAT_MAGIC || magic == FAT_CIGAM ||
-         magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64)) {
-        me_say(log, "macho9 edit: %s is a fat (universal) Mach-O; edit applies a script to "
-                    "one thin 64-bit image. `fixups set classic` converts a thin image only, "
-                    "and running a script over each slice is not supported -- extract one "
-                    "with `lipo -thin ARCH` first\n", path);
-    } else {
-        me_say(log, "macho9 edit: %s: not a readable 64-bit Mach-O\n", path);
+    if (fd < 0) return 0;
+    if (read(fd, &magic, sizeof magic) != (ssize_t)sizeof magic) magic = 0;
+    close(fd);
+    return magic;
+}
+
+/* Everything the fat path's slice callbacks need. */
+typedef struct {
+    const ms_script *s;
+    const char *path, *out;
+    FILE *log;
+    int verbose;
+    const unsigned char *selected;   /* per slice: does the script apply to it? */
+    uint32_t last;                   /* the last selected slice, in arch-table order */
+    mr_hits *hits;
+    int *renamed;
+} me_fat_ctx;
+
+static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
+                        uint32_t index, int *changed, void *ctx_) {
+    me_fat_ctx *c = (me_fat_ctx *)ctx_;
+    char name[32];
+    ma_describe(a->cputype, a->cpusubtype, name);
+    if (!c->selected[index]) {
+        if (c->verbose)
+            me_say(c->log, "slice %s: %s; passed through unchanged\n", name,
+                   (a->cputype & CPU_ARCH_ABI64) ? "not selected by arch" : "32-bit");
+        return 0;
     }
+    if (c->verbose) me_say(c->log, "slice %s:\n", name);
+    int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log, c->verbose,
+                           c->hits, c->renamed, index == c->last, name);
+    if (rc != 0) return rc;
+    /* Each slice's own final verification: always, and never subject to
+     * MACHO_NO_VERIFY, exactly as a thin file's. */
+    if (mg_plausible(*pbuf, *psize) != 0) {
+        me_say(c->log, "macho9 edit: refused at verification of slice %s; ", name);
+        me_say_left(c->log, c->path, c->out);
+        return MR_REFUSED;
+    }
+    if (c->verbose) me_say(c->log, "slice %s: verified\n", name);
+    *changed = 1;
+    return 0;
+}
+
+/* After the new layout is fixed: a slice that moved says so. Its bytes are
+ * unchanged if nothing selected it, but where it lives is not. */
+static void me_fat_placed(const mfat_arch *a, uint32_t index,
+                          uint64_t off, uint64_t size, void *ctx_) {
+    me_fat_ctx *c = (me_fat_ctx *)ctx_;
+    (void)index; (void)size;
+    if (!c->verbose || off == a->offset) return;
+    char name[32];
+    ma_describe(a->cputype, a->cpusubtype, name);
+    me_say(c->log, "slice %s: moved from offset 0x%llx to 0x%llx\n", name,
+           (unsigned long long)a->offset, (unsigned long long)off);
+}
+
+static int me_run_fat(const char *path, const char *out, const ms_script *s,
+                      FILE *log, int verbose, int dry_run) {
+    /* Read the whole container once. */
+    int fd = open(path, O_RDONLY);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0) {
+        if (fd >= 0) close(fd);
+        me_say(log, "macho9 edit: %s: cannot open or read\n", path);
+        return MR_FAIL;
+    }
+    size_t size = (size_t)st.st_size;
+    uint8_t *buf = (uint8_t *)malloc(size ? size : 1);
+    if (!buf || read(fd, buf, size) != (ssize_t)size) {
+        close(fd); free(buf);
+        me_say(log, "macho9 edit: %s: cannot open or read\n", path);
+        return MR_FAIL;
+    }
+    close(fd);
+
+    uint32_t narch; int swap;
+    int prc = mfat_parse(buf, size, &narch, &swap);
+    if (prc != 0) {
+        free(buf);
+        if (prc == MFAT_IO_ERROR) {
+            me_say(log, "macho9 edit: out of memory reading %s's arch table\n", path);
+            return MR_FAIL;
+        }
+        me_say(log, "macho9 edit: %s: malformed fat file; ", path);
+        me_say_left(log, path, out);
+        return MR_REFUSED;
+    }
+
+    /* Which slices the script applies to, and whether it names any the file
+     * lacks or cannot edit -- all decided before any slice is touched. */
+    unsigned char *selected = (unsigned char *)calloc(narch ? narch : 1, 1);
+    size_t nst = s->n ? (size_t)s->n : 1;
+    mr_hits *hits = (mr_hits *)calloc(nst, sizeof *hits);
+    int *renamed = (int *)calloc(nst, sizeof *renamed);
+    if (!selected || !hits || !renamed) {
+        free(selected); free(hits); free(renamed); free(buf);
+        me_say(log, "macho9 edit: out of memory\n");
+        return MR_FAIL;
+    }
+    char have[256] = "";
+    int nselected = 0; uint32_t last = 0;
+    for (uint32_t j = 0; j < narch; j++) {
+        mfat_arch a; mfat_get(buf, swap, j, &a);
+        char name[32]; ma_describe(a.cputype, a.cpusubtype, name);
+        size_t hl = strlen(have);
+        snprintf(have + hl, sizeof have - hl, "%s%s", j ? ", " : "", name);
+        int row = ma_index(a.cputype, a.cpusubtype);
+        int is64 = (a.cputype & CPU_ARCH_ABI64) != 0;
+        selected[j] = s->arch_mask ? (row >= 0 && (s->arch_mask & (1u << row)) ? 1 : 0)
+                                   : (unsigned char)is64;
+        if (selected[j]) { nselected++; last = j; }
+    }
+    int rc = 0;
+    const char *rname; uint32_t rct, rcs;
+    for (int r = 0; rc == 0 && ma_row(r, &rname, &rct, &rcs); r++) {
+        if (!(s->arch_mask & (1u << r))) continue;
+        int found = 0, found64 = 0;
+        for (uint32_t j = 0; j < narch; j++) {
+            mfat_arch a; mfat_get(buf, swap, j, &a);
+            if (ma_index(a.cputype, a.cpusubtype) == r) {
+                found = 1; found64 = (a.cputype & CPU_ARCH_ABI64) != 0;
+            }
+        }
+        if (!found) {
+            me_say(log, "macho9 edit: %s has no %s slice (it has: %s); ", path, rname, have);
+            rc = MR_REFUSED;
+        } else if (!found64) {
+            me_say(log, "macho9 edit: %s's %s slice is 32-bit, and statements apply only to "
+                        "64-bit slices; ", path, rname);
+            rc = MR_REFUSED;
+        }
+    }
+    if (rc == 0 && nselected == 0) {
+        me_say(log, "macho9 edit: %s has no 64-bit slice to edit (it has: %s); ", path, have);
+        rc = MR_REFUSED;
+    }
+    if (rc != 0) {
+        me_say_left(log, path, out);
+        free(selected); free(hits); free(renamed); free(buf);
+        return rc;
+    }
+
+    me_fat_ctx ctx = { s, path, out, log, verbose, selected, last, hits, renamed };
+    int modified = 0;
+    rc = mfat_rewrite(&buf, &size, narch, swap, me_fat_slice, me_fat_placed, &ctx, &modified);
+    free(selected); free(hits); free(renamed);
+    if (rc != 0) {
+        if (rc == MFAT_IO_ERROR || rc == MFAT_MALFORMED) {
+            me_say(log, "macho9 edit: could not lay out %s's slices again; ", path);
+            me_say_left(log, path, out);
+            rc = (rc == MFAT_IO_ERROR) ? MR_FAIL : MR_REFUSED;
+        }
+        /* A slice's own failure already printed its refusal line. */
+        free(buf);
+        return rc;
+    }
+    /* The container itself, as it will be written. */
+    if (mfat_parse(buf, size, &narch, &swap) != 0) {
+        me_say(log, "macho9 edit: the reassembled %s fails validation; ", path);
+        me_say_left(log, path, out);
+        free(buf);
+        return MR_REFUSED;
+    }
+    if (verbose) me_say(log, "%s: verified\n", path);
+    return me_write_once(buf, size, st.st_mode, path, out, log, verbose, dry_run);
+}
+
+/* mi_open said MI_NOT_MACHO, and me_run has already dispatched every fat
+ * container to its own path or refusal: what is left is not an image this
+ * tool reads at all. */
+static int me_refuse_input(const char *path, FILE *log) {
+    me_say(log, "macho9 edit: %s: not a readable 64-bit Mach-O\n", path);
     return MR_REFUSED;
 }
 
@@ -415,8 +662,16 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     FILE *log = (o && o->log) ? o->log : stderr;
     int verbose = o ? o->verbose : 0;
     int dry_run = o ? o->dry_run : 0;
-    const char *dest = out ? out : path;
-    char bytes[32];
+
+    uint32_t magic = me_magic(path);
+    if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
+        me_say(log, "macho9 edit: %s is a 64-bit fat container (fat_arch_64), which this "
+                    "tool does not read; ", path);
+        me_say_left(log, path, out);
+        return MR_REFUSED;
+    }
+    if (magic == FAT_MAGIC || magic == FAT_CIGAM)
+        return me_run_fat(path, out, s, log, verbose, dry_run);
 
     /* Read the image once. */
     mi_image im;
@@ -426,6 +681,20 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         return MR_FAIL;
     }
     if (mo != 0) return me_refuse_input(path, log);
+    /* A thin file has one image, so an `arch` directive that does not name
+     * its architecture leaves the script nothing to apply to. */
+    if (s->arch_mask) {
+        int row = ma_index((uint32_t)im.hdr->cputype, (uint32_t)im.hdr->cpusubtype);
+        if (row < 0 || !(s->arch_mask & (1u << row))) {
+            char name[32];
+            ma_describe((uint32_t)im.hdr->cputype, (uint32_t)im.hdr->cpusubtype, name);
+            me_say(log, "macho9 edit: %s is %s, which the script's arch directives do not "
+                        "name; ", path, name);
+            me_say_left(log, path, out);
+            mi_close(&im);
+            return MR_REFUSED;
+        }
+    }
     struct stat st;
     if (stat(path, &st) != 0) {
         me_say(log, "macho9 edit: %s: cannot stat\n", path);
@@ -436,28 +705,20 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     uint8_t *buf = mi_release(&im);
 
     /* Apply each statement in order, each to the image the one before it
-     * left. WHY NOT BATCH THEM into one operation set, the way `macho9
-     * dylib` batches its flags into one mr_ops: because `fixups set classic`
-     * cannot batch with anything -- every later statement has to see the
-     * lowered image, with its new LC_DYLD_INFO_ONLY and extended __LINKEDIT
-     * -- and because running in sequence is what a reader of the script
-     * assumes. `dylib append X` followed by `dylib replace X Y` means
-     * something only in sequence. The cost is rebuilding the load-command
-     * table once per statement: a few KB, against I/O that happens once
-     * either way. */
-    for (int i = 0; i < s->n; i++) {
-        const ms_stmt *stmt = &s->stmts[i];
-        if (verbose) me_log_stmt(log, stmt);
-        int rc = me_apply(&buf, &size, path, s, stmt, log, verbose);
-        if (rc != 0) {
-            if (rc != MR_REFUSED) rc = MR_FAIL;
-            me_say(log, "macho9 edit: %s at statement %d of %d (line %d); ",
-                   rc == MR_REFUSED ? "refused" : "failed", i + 1, s->n, stmt->line);
-            me_say_left(log, path, out);
-            free(buf);
-            return rc;
-        }
+     * left. The one image is the last selected one, so every statement's
+     * "matched nothing" verdict is taken right after it, as it always has
+     * been. */
+    size_t nst = s->n ? (size_t)s->n : 1;
+    mr_hits *hits = (mr_hits *)calloc(nst, sizeof *hits);
+    int *renamed = (int *)calloc(nst, sizeof *renamed);
+    if (!hits || !renamed) {
+        free(hits); free(renamed); free(buf);
+        me_say(log, "macho9 edit: out of memory\n");
+        return MR_FAIL;
     }
+    int rc = me_statements(&buf, &size, path, out, s, log, verbose, hits, renamed, 1, NULL);
+    free(hits); free(renamed);
+    if (rc != 0) { free(buf); return rc; }
 
     /* Verify the finished image: always, and never subject to
      * MACHO_NO_VERIFY. A failure is a refusal -- including an allocation
@@ -479,25 +740,5 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     }
     if (verbose) me_say(log, "%s: verified\n", path);
 
-    me_commas(bytes, size);
-    if (dry_run) {
-        me_say(log, "%s: NOT written (--dry-run) -- would be %s bytes\n", dest, bytes);
-        free(buf);
-        return 0;
-    }
-
-    /* Write once. */
-    if (wa_write_atomic(dest, st.st_mode, buf, size) != 0) {
-        /* With --output, FILE was never a destination; what OUT holds after
-         * a failed write is atomic_write.h's to say, not this line's. */
-        if (out)
-            me_say(log, "macho9 edit: writing %s failed; %s left unmodified\n", out, path);
-        else
-            me_say(log, "macho9 edit: %s left unmodified (write failed)\n", path);
-        free(buf);
-        return MR_FAIL;
-    }
-    if (verbose) me_say(log, "%s: written (%s bytes)\n", dest, bytes);
-    free(buf);
-    return 0;
+    return me_write_once(buf, size, st.st_mode, path, out, log, verbose, dry_run);
 }

@@ -58,6 +58,7 @@ static int fails = 0;
 
 #define IMPLAUSIBLE 1   /* the initializer names no function start */
 #define DYLD_INFO   2   /* carry an (empty) LC_DYLD_INFO_ONLY: already classic */
+#define NO_UUID     4   /* leave out LC_UUID */
 
 static void set16(char *field, const char *name) {
     size_t len = strlen(name);
@@ -117,10 +118,12 @@ static uint8_t *build_image(int flags) {
                                             LE_OFF, LE_SIZE, 0);
     p += le->cmdsize; ncmds++;
 
-    struct uuid_command *uu = (struct uuid_command *)p;
-    uu->cmd = LC_UUID; uu->cmdsize = sizeof *uu;
-    memset(uu->uuid, 0xab, sizeof uu->uuid);
-    p += uu->cmdsize; ncmds++;
+    if (!(flags & NO_UUID)) {
+        struct uuid_command *uu = (struct uuid_command *)p;
+        uu->cmd = LC_UUID; uu->cmdsize = sizeof *uu;
+        memset(uu->uuid, 0xab, sizeof uu->uuid);
+        p += uu->cmdsize; ncmds++;
+    }
 
     struct linkedit_data_command *fs = (struct linkedit_data_command *)p;
     fs->cmd = LC_FUNCTION_STARTS; fs->cmdsize = sizeof *fs;
@@ -251,6 +254,71 @@ static void check_untouched(const char *what, const char *path, snap *before) {
           what, dir_entries(), before->entries);
     free(now);
     free(before->bytes);
+}
+
+/* ---- fat containers ----------------------------------------------------- */
+
+/* A fat container of n slices, each at a 0x1000-aligned offset in the order
+ * given, big-endian as every real fat file is. ct/cs label the fat_arch
+ * entry; edit names a slice by its fat_arch entry, so an x86_64 image can
+ * stand in for arm64 without its own header saying so. */
+static uint8_t *build_fat(int n, uint8_t *const *slice, const size_t *len,
+                          const uint32_t *ct, const uint32_t *cs, size_t *outlen) {
+    size_t off[8], total = 0x1000;
+    for (int i = 0; i < n; i++) { off[i] = total; total += (len[i] + 0xfff) & ~(size_t)0xfff; }
+    uint8_t *buf = (uint8_t *)calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)buf;
+    fh->magic = OSSwapHostToBigInt32(FAT_MAGIC);
+    fh->nfat_arch = OSSwapHostToBigInt32((uint32_t)n);
+    struct fat_arch *fa = (struct fat_arch *)(fh + 1);
+    for (int i = 0; i < n; i++) {
+        fa[i].cputype = (cpu_type_t)OSSwapHostToBigInt32(ct[i]);
+        fa[i].cpusubtype = (cpu_subtype_t)OSSwapHostToBigInt32(cs[i]);
+        fa[i].offset = OSSwapHostToBigInt32((uint32_t)off[i]);
+        fa[i].size = OSSwapHostToBigInt32((uint32_t)len[i]);
+        fa[i].align = OSSwapHostToBigInt32(12);
+        memcpy(buf + off[i], slice[i], len[i]);
+    }
+    *outlen = total;
+    return buf;
+}
+
+/* A 32-bit slice: just enough header to be one. */
+static uint8_t *build_i386_stub(size_t *len) {
+    *len = 0x1000;
+    uint8_t *b = (uint8_t *)calloc(1, *len);
+    struct mach_header *h = (struct mach_header *)b;
+    h->magic = MH_MAGIC; h->cputype = CPU_TYPE_I386; h->cpusubtype = CPU_SUBTYPE_I386_ALL;
+    h->filetype = MH_DYLIB;
+    return b;
+}
+
+/* Copy slice `idx` of the fat file at `path` into its own file at `out`. */
+static void slice_to_file(const char *path, int idx, const char *out) {
+    size_t len;
+    uint8_t *b = read_file(path, &len);
+    const struct fat_arch *fa = (const struct fat_arch *)(b + sizeof(struct fat_header));
+    uint32_t off = OSSwapBigToHostInt32(fa[idx].offset), sz = OSSwapBigToHostInt32(fa[idx].size);
+    write_file(out, b + off, sz, 0644);
+    free(b);
+}
+
+/* The standard two- or three-slice fixture: x86_64, arm64 (the same image,
+ * relabelled), and optionally an i386 stub. flags0/flags1 go to build_image. */
+static void write_fat(const char *path, int flags0, int flags1, int with_i386) {
+    uint8_t *s[3]; size_t l[3];
+    uint32_t ct[3] = { (uint32_t)CPU_TYPE_X86_64, (uint32_t)CPU_TYPE_ARM64, (uint32_t)CPU_TYPE_I386 };
+    uint32_t cs[3] = { (uint32_t)CPU_SUBTYPE_X86_64_ALL, (uint32_t)CPU_SUBTYPE_ARM64_ALL,
+                       (uint32_t)CPU_SUBTYPE_I386_ALL };
+    s[0] = build_image(flags0); l[0] = IMG_SIZE;
+    s[1] = build_image(flags1); l[1] = IMG_SIZE;
+    int n = 2;
+    if (with_i386) { s[2] = build_i386_stub(&l[2]); n = 3; }
+    size_t flen;
+    uint8_t *fat = build_fat(n, s, l, ct, cs, &flen);
+    write_file(path, fat, flen, 0755);
+    for (int i = 0; i < n; i++) free(s[i]);
+    free(fat);
 }
 
 /* ---- image inspection -------------------------------------------------- */
@@ -684,36 +752,29 @@ static void test_output_leaves_the_input_alone(void) {
     rm_dir();
 }
 
-/* Only a thin 64-bit Mach-O is accepted. A fat one is refused, saying why; so
- * is anything else; an input that cannot be read is an error, not a refusal. */
-static void test_only_a_thin_image_is_accepted(void) {
+/* A thin 64-bit Mach-O and a 32-bit-header fat container are accepted; a
+ * 64-bit-header fat container is refused, saying why; so is anything else; an
+ * input that cannot be read is an error, not a refusal. */
+static void test_what_edit_accepts(void) {
     fresh_dir();
     char path[512];
-    in_dir(path, sizeof path, "fat");
+    in_dir(path, sizeof path, "fat64");
 
-    /* A one-slice fat container around the ordinary thin image. */
-    size_t fatlen = 0x1000 + IMG_SIZE;
+    /* A fat_arch_64 container, which this tool does not read. */
+    size_t fatlen = 0x1000;
     uint8_t *fat = (uint8_t *)calloc(1, fatlen);
-    uint8_t *thin = build_image(0);
     struct fat_header *fh = (struct fat_header *)fat;
-    struct fat_arch *fa = (struct fat_arch *)(fh + 1);
-    fh->magic = OSSwapHostToBigInt32(FAT_MAGIC);
-    fh->nfat_arch = OSSwapHostToBigInt32(1);
-    fa->cputype = (cpu_type_t)OSSwapHostToBigInt32(CPU_TYPE_X86_64);
-    fa->cpusubtype = (cpu_subtype_t)OSSwapHostToBigInt32(CPU_SUBTYPE_X86_64_ALL);
-    fa->offset = OSSwapHostToBigInt32(0x1000);
-    fa->size = OSSwapHostToBigInt32(IMG_SIZE);
-    fa->align = OSSwapHostToBigInt32(12);
-    memcpy(fat + 0x1000, thin, IMG_SIZE);
-    free(thin);
+    fh->magic = OSSwapHostToBigInt32(FAT_MAGIC_64);
+    fh->nfat_arch = OSSwapHostToBigInt32(0);
     write_file(path, fat, fatlen, 0755);
     free(fat);
 
     snap before = take(path);
     int rc = run(path, NULL, "load-command delete uuid\n", 0, 0);
-    CHECK(rc == MR_REFUSED, "thin only: a fat input is refused (got %d)", rc);
-    check_untouched("fat input", path, &before);
-    CHECK(strstr(g_log, "fat") != NULL, "thin only: the refusal says the input is fat (log: %s)", g_log);
+    CHECK(rc == MR_REFUSED, "accepts: a 64-bit fat input is refused (got %d)", rc);
+    check_untouched("fat64 input", path, &before);
+    CHECK(strstr(g_log, "64-bit fat") != NULL,
+          "accepts: the refusal says the container is 64-bit fat (log: %s)", g_log);
 
     in_dir(path, sizeof path, "text");
     write_file(path, (const uint8_t *)"not a Mach-O at all\n", 20, 0644);
@@ -731,6 +792,147 @@ static void test_only_a_thin_image_is_accepted(void) {
     rm_dir();
 }
 
+static void test_fat_every_64bit_slice_by_default(void) {
+    fresh_dir();
+    char path[512], s0[512], s1[512], s2[512];
+    in_dir(path, sizeof path, "fat"); in_dir(s0, sizeof s0, "s0");
+    in_dir(s1, sizeof s1, "s1"); in_dir(s2, sizeof s2, "s2");
+    write_fat(path, 0, 0, 1);
+    size_t stub_len; uint8_t *stub = build_i386_stub(&stub_len);
+    int rc = run(path, NULL, "load-command delete uuid\n", 0, 0);
+    CHECK(rc == 0, "fat, no arch: succeeds (got %d; log: %s)", rc, g_log);
+    slice_to_file(path, 0, s0); slice_to_file(path, 1, s1); slice_to_file(path, 2, s2);
+    CHECK(count_lc(s0, LC_UUID, NULL) == 0, "fat, no arch: the x86_64 slice lost LC_UUID");
+    CHECK(count_lc(s1, LC_UUID, NULL) == 0, "fat, no arch: the arm64 slice lost LC_UUID");
+    size_t l2; uint8_t *b2 = read_file(s2, &l2);
+    CHECK(l2 == stub_len && memcmp(b2, stub, l2) == 0, "fat, no arch: the i386 slice is byte-identical");
+    free(b2); free(stub);
+    rm_dir();
+}
+
+static void test_fat_arch_selects_named_slices(void) {
+    fresh_dir();
+    char path[512], s0[512], s1[512], orig1[512];
+    in_dir(path, sizeof path, "fat"); in_dir(s0, sizeof s0, "s0");
+    in_dir(s1, sizeof s1, "s1"); in_dir(orig1, sizeof orig1, "orig1");
+    write_fat(path, 0, 0, 0);
+    slice_to_file(path, 1, orig1);
+    int rc = run(path, NULL, "arch x86_64\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == 0, "fat, arch x86_64: succeeds (got %d; log: %s)", rc, g_log);
+    slice_to_file(path, 0, s0); slice_to_file(path, 1, s1);
+    CHECK(count_lc(s0, LC_UUID, NULL) == 0, "fat, arch x86_64: the named slice was edited");
+    size_t la, lb; uint8_t *a = read_file(orig1, &la), *b = read_file(s1, &lb);
+    CHECK(la == lb && memcmp(a, b, la) == 0, "fat, arch x86_64: the arm64 slice is byte-identical");
+    free(a); free(b);
+    rm_dir();
+}
+
+static void test_arch_on_a_thin_file(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "thin");
+    uint8_t *img = build_image(0);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+    int rc = run(path, NULL, "arch x86_64\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == 0, "thin, arch x86_64: runs on an x86_64 image (got %d; log: %s)", rc, g_log);
+    img = build_image(0);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+    snap before = take(path);
+    rc = run(path, NULL, "arch arm64\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "thin, arch arm64: an x86_64 image is refused (got %d)", rc);
+    check_untouched("thin, arch arm64", path, &before);
+    CHECK(strstr(g_log, "x86_64") != NULL, "thin, arch arm64: the refusal names the image's arch (log: %s)", g_log);
+    rm_dir();
+}
+
+static void test_fat_missing_or_32bit_arch_is_refused(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat");
+    write_fat(path, 0, 0, 1);
+    snap before = take(path);
+    int rc = run(path, NULL, "arch arm64e\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fat, arch arm64e: a slice the file lacks is refused (got %d)", rc);
+    check_untouched("fat, missing arch", path, &before);
+    CHECK(strstr(g_log, "x86_64, arm64, i386") != NULL,
+          "fat, missing arch: the refusal lists the file's slices (log: %s)", g_log);
+    before = take(path);
+    rc = run(path, NULL, "arch i386\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fat, arch i386: naming a 32-bit slice is refused (got %d)", rc);
+    check_untouched("fat, 32-bit arch", path, &before);
+    CHECK(strstr(g_log, "32-bit") != NULL, "fat, arch i386: the refusal says 32-bit (log: %s)", g_log);
+    rm_dir();
+}
+
+static void test_fat_fatal_warnings_counts_a_match_in_any_slice(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat");
+    write_fat(path, 0, NO_UUID, 0);   /* only the x86_64 slice has LC_UUID */
+    int rc = run(path, NULL, "fatal-warnings\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == 0, "fat, fatal-warnings: a match in one slice is not a miss (got %d; log: %s)", rc, g_log);
+    /* The same, with the miss FIRST: the verdict has to wait for the last
+     * selected slice. Deciding in each slice would refuse this one and not
+     * the case above, where the counts a later slice reads already carry an
+     * earlier slice's match. */
+    write_fat(path, NO_UUID, 0, 0);   /* only the arm64 slice has LC_UUID */
+    rc = run(path, NULL, "fatal-warnings\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == 0, "fat, fatal-warnings: a match in a LATER slice is not a miss "
+          "(got %d; log: %s)", rc, g_log);
+    write_fat(path, NO_UUID, NO_UUID, 0);   /* neither has it */
+    snap before = take(path);
+    rc = run(path, NULL, "fatal-warnings\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fat, fatal-warnings: matching in no slice refuses (got %d)", rc);
+    check_untouched("fat, miss everywhere", path, &before);
+    CHECK(strstr(g_log, "matched nothing in any selected slice") != NULL,
+          "fat, fatal-warnings: the refusal says it matched in no slice (log: %s)", g_log);
+    rm_dir();
+}
+
+static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat");
+    write_fat(path, 0, IMPLAUSIBLE, 0);   /* slice 1 fails its final verification */
+    snap before = take(path);
+    int rc = run(path, NULL, "load-command delete uuid\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fat: the second slice's verification refuses the run (got %d)", rc);
+    check_untouched("fat, second slice refused", path, &before);
+    CHECK(strstr(g_log, "slice arm64") != NULL, "fat: the refusal names the slice (log: %s)", g_log);
+    rm_dir();
+}
+
+static void test_fat_verbose_accounts_for_every_slice(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat");
+    write_fat(path, 0, 0, 1);
+    int rc = run(path, NULL, "arch x86_64\nload-command delete uuid\n", 1, 0);
+    CHECK(rc == 0, "fat, verbose: succeeds (got %d)", rc);
+    CHECK(strstr(g_log, "slice x86_64:\n") != NULL, "fat, verbose: the edited slice's header (log: %s)", g_log);
+    CHECK(strstr(g_log, "slice x86_64: verified") != NULL, "fat, verbose: the edited slice verified");
+    CHECK(strstr(g_log, "slice arm64: not selected by arch; passed through unchanged") != NULL,
+          "fat, verbose: the unselected slice is accounted for (log: %s)", g_log);
+    CHECK(strstr(g_log, "slice i386: 32-bit; passed through unchanged") != NULL,
+          "fat, verbose: the 32-bit slice is accounted for (log: %s)", g_log);
+    rm_dir();
+}
+
+static void test_fat_dry_run_writes_nothing(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat");
+    write_fat(path, 0, 0, 0);
+    snap before = take(path);
+    int rc = run(path, NULL, "load-command delete uuid\n", 0, 1);
+    CHECK(rc == 0, "fat, dry run: succeeds (got %d)", rc);
+    check_untouched("fat, dry run", path, &before);
+    CHECK(strstr(g_log, "NOT written") != NULL, "fat, dry run: says it did not write (log: %s)", g_log);
+    rm_dir();
+}
+
 int main(void) {
     test_statements_apply_in_order();
     test_a_failure_part_way_writes_nothing();
@@ -742,7 +944,15 @@ int main(void) {
     test_fatal_warnings_refuses_an_unmatched_segment_rename();
     test_the_file_level_operations_run_in_memory();
     test_output_leaves_the_input_alone();
-    test_only_a_thin_image_is_accepted();
+    test_what_edit_accepts();
+    test_fat_every_64bit_slice_by_default();
+    test_fat_arch_selects_named_slices();
+    test_arch_on_a_thin_file();
+    test_fat_missing_or_32bit_arch_is_refused();
+    test_fat_fatal_warnings_counts_a_match_in_any_slice();
+    test_fat_a_refusal_in_the_second_slice_writes_nothing();
+    test_fat_verbose_accounts_for_every_slice();
+    test_fat_dry_run_writes_nothing();
 
     printf("edit_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
