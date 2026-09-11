@@ -35,20 +35,27 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
     return 0;   /* nothing here ever needs to stop the walk early */
 }
 
+/* cli/macho9.c's cmd_minos forwards this function's return value verbatim
+ * (`return mv_add_version_min(path);`), the same arrangement mr_apply_file
+ * has with dylib/rpath/lc -- so every return below is bound by the same
+ * exit-code rule: 0 on success, 2 for everything else. Never 1: this
+ * function has no notion of a considered refusal (MR_REFUSED's contract, in
+ * rewrite.h, is EX_REFUSED-only), so nothing here can honestly claim 1 --
+ * see cli/macho9.c's own top-of-file comment for why. */
 int mv_add_version_min(const char *path) {
     /* Open O_RDWR early so an unwritable file fails immediately, before any
      * analysis; mi_open (O_RDONLY) does the actual read and validation, same
      * split as change_dylib and patch_macho use. */
     int fd = open(path, O_RDWR);
-    if (fd < 0) { perror("open"); return 1; }
+    if (fd < 0) { perror("open"); return 2; }
     struct stat st0;
-    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return 1; }
+    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return 2; }
 
     mi_image im;
     if (mi_open(path, &im) != 0) {
         fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
         close(fd);
-        return 1;
+        return 2;
     }
 
     /* mi_open reads `path` through its OWN, separate O_RDONLY descriptor --
@@ -69,7 +76,7 @@ int mv_add_version_min(const char *path) {
         fprintf(stderr, "%s: changed underneath us between open and validation; refusing\n", path);
         mi_close(&im);
         close(fd);
-        return 1;
+        return 2;
     }
 
     size_t fsize = im.size;
@@ -108,7 +115,7 @@ int mv_add_version_min(const char *path) {
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
         free(buf);
         close(fd);
-        return 1;
+        return 2;
     }
 
     struct version_min_command *vm = (struct version_min_command *)(buf + lc_end);
@@ -121,7 +128,7 @@ int mv_add_version_min(const char *path) {
     hdr->sizeofcmds += sizeof(*vm);
 
     lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return 1; }
+    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return 2; }
     close(fd);
     printf("Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=%u, sizeofcmds=%u)\n",
            hdr->ncmds, hdr->sizeofcmds);

@@ -198,7 +198,7 @@ typedef struct {
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 
-/* Returned by mr_apply_file, instead of its usual 1, when ops->fatal_unmatched
+/* Returned by mr_apply_file, instead of its usual 2, when ops->fatal_unmatched
  * turned "an operation matched nothing" into a refusal (see that field's own
  * comment above). Deliberately equal to cli/macho9.c's own EX_REFUSED: that
  * is the ONLY caller today, `dylib`/`rpath`/`lc` all forward mr_apply_file's
@@ -206,8 +206,18 @@ typedef struct {
  * that forwarding keeps meaning what --capabilities documents without the
  * caller having to translate a rewrite-library code into its own exit-code
  * vocabulary. cli/macho9.c enforces this equality as a build failure, not
- * just this comment -- see the typedef next to EX_REFUSED's definition. */
-#define MR_REFUSED 2
+ * just this comment -- see the typedef next to EX_REFUSED's definition.
+ *
+ * Deliberately 1, not 2: `diff`/`grep`/`cmp` all reserve their HIGHEST code
+ * for "the tool could not do its job" and use a lower one for "a normal,
+ * expected, non-success answer" -- the opposite of what this codebase shipped
+ * first. binutils has no equivalent at all (it returns a flat 0 or 1 and
+ * never distinguishes a considered refusal from a genuine failure), so this
+ * is not matching an existing convention so much as choosing the one that
+ * generalizes past this repo's own history. Nothing outside this repo has
+ * ever run the compat wrappers this couples to, so Task 0 is the last chance
+ * to fix the numbering before `edit` ships and callers start relying on it. */
+#define MR_REFUSED 1
 
 /*
  * Apply `ops` to the Mach-O at `path`, in place, and write it back atomically
@@ -218,13 +228,16 @@ typedef struct {
  * through byte-for-byte.
  *
  * Returns 0 on success -- including the "nothing matched, file untouched"
- * case -- or 1 with a message already printed on stderr. On any failure the
- * file on disk is left exactly as it was found: every refusal happens before
- * the single atomic replace at the end.
+ * case -- or 2 with a message already printed on stderr, for an operational
+ * failure (a syscall or malloc that failed, a slice that IS a 64-bit Mach-O
+ * whose edit failed): a genuine "something went wrong running this", not a
+ * considered refusal. On any failure the file on disk is left exactly as it
+ * was found: every refusal happens before the single atomic replace at the
+ * end.
  *
  * The one exception to "every refusal happens before the write": when
  * ops->fatal_unmatched is set and at least one operation matched nothing,
- * this returns MR_REFUSED (2) instead of 0 -- but only AFTER the rewrite it
+ * this returns MR_REFUSED (1) instead of 0 -- but only AFTER the rewrite it
  * examined has already been written to `path`, if anything changed. This
  * mode reports, on stderr, after the fact; it does not rewind the write it
  * is refusing about.

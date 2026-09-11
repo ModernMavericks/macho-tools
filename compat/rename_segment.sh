@@ -112,9 +112,13 @@
 # including every one compat/change_dylib.sh can reach.
 #
 # EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else -- the three
-# rename_segment had. Every nonzero from `macho9 segment` is mapped to 1: its
-# own EX_REFUSED is 2, which HERE would be read as "nothing matched", the one
-# thing it does not mean.
+# rename_segment had. Every nonzero from `macho9 segment` is mapped to 1
+# rather than read directly, on purpose: "nothing matched" here is decided
+# from the match COUNT (`mw_n -eq 0`, below), never from macho9's own exit
+# code, so a coincidence between the two numberings is never load-bearing.
+# That is just as well -- macho9's own EX_REFUSED is 1, the SAME number this
+# wrapper uses for "everything else", not for "nothing matched" (its 2); this
+# wrapper's mapping does not depend on which way that coincidence runs.
 #
 # THE WRITABILITY CHECK. rename_segment opened the file O_RDWR before it
 # looked at it, so an unwritable (or absent) file failed immediately, with no

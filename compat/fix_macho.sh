@@ -180,7 +180,7 @@
 # 0 and 1, the only two fix_macho had -- so every nonzero from macho9 is
 # mapped to 1. It is the same mapping compat/rename_segment.sh and
 # compat/patch_macho.sh make and for the same reason: macho9's own EX_REFUSED
-# is 2, a value no fix_macho caller has ever seen, and forwarding it would
+# is 1, a value no fix_macho caller has ever seen, and forwarding it would
 # invent a third outcome for a grammar that has two. (No line this translation
 # emits can reach mr_apply_file's own MR_REFUSED anyway, because that needs
 # --fatal-warnings and this never emits it.)

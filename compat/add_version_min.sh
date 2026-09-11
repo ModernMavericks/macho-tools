@@ -14,9 +14,11 @@
 # can name it literally rather than passing something through.
 #
 # EXIT CODES. Forwarded unchanged. Both front-ends return
-# mv_add_version_min's own 0/1; `macho9 minos`' one exit code of its own
-# (EX_REFUSED, for a version other than 10.9) is unreachable from here, since
-# this wrapper only ever emits 10.9.
+# mv_add_version_min's own 0/2 (0 ok, 2 an operational failure -- that
+# function has no notion of a considered refusal, so it never returns 1; see
+# cli/macho9.c's top-of-file comment for the scheme); `macho9 minos`' one exit
+# code of its own (EX_REFUSED=1, for a version other than 10.9) is
+# unreachable from here, since this wrapper only ever emits 10.9.
 #
 # STDOUT. Byte-identical, and not by construction alone -- every one of the
 # five add_version_min rows in tests/compat-matrix.tsv compared equal on

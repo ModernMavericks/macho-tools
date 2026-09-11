@@ -23,11 +23,11 @@
 # EXIT CODES -- MAPPED. patch_macho returns a FLAT 1 for everything that goes
 # wrong. `macho9 declassify` tells two kinds of wrong apart (cli/macho9.c's
 # cmd_declassify, "FOUR DELIBERATE DIVERGENCES FROM patch_macho"): EX_REFUSED
-# (2) where it examined the input and declined on purpose -- not a readable
+# (1) where it examined the input and declined on purpose -- not a readable
 # 64-bit Mach-O, no chained fixups to convert, any of declassify.h's LIMITS --
-# and 1 for an operational failure. So: ANY nonzero becomes 1. Zero stays
-# zero. tests/leaf-tool-crashes.sh depends on this, checking for exit 1 on a
-# fixture whose refusal reaches macho9 as EX_REFUSED.
+# and EX_FAIL (2) for an operational failure. So: ANY nonzero becomes 1. Zero
+# stays zero. tests/leaf-tool-crashes.sh depends on this, checking for exit 1
+# on a fixture whose refusal reaches macho9 as EX_REFUSED.
 #
 # THE WRITE, AND THE FOURTH OBSERVABLE. patch_macho created OUT with
 # open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755) and wrote into it. That fixes

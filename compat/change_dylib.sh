@@ -45,12 +45,13 @@
 # reintroduced in shell.)
 #
 # EXIT CODES. Forwarded unchanged, and no mapping is needed: change_dylib
-# returned mr_apply_file's own 0/1, and `dylib`, `rpath` and `lc` still do
-# too PAST THEIR OWN ARGUMENT CHECKS -- for this wrapper specifically. That
-# stopped being true of `dylib`/`rpath`/`lc` in general the moment macho9
-# grew `--fatal-warnings` (mr_apply_file can now also return MR_REFUSED,
-# which cli/macho9.c forwards as EX_REFUSED=2): it stays true HERE only
-# because this translation never emits that flag -- change_dylib's own
+# returned mr_apply_file's own 0/2 (0 ok, 2 an operational failure -- see
+# cli/macho9.c's top-of-file comment for the scheme), and `dylib`, `rpath`
+# and `lc` still do too PAST THEIR OWN ARGUMENT CHECKS -- for this wrapper
+# specifically. That stopped being true of `dylib`/`rpath`/`lc` in general the
+# moment macho9 grew `--fatal-warnings` (mr_apply_file can now also return
+# MR_REFUSED, which cli/macho9.c forwards as EX_REFUSED=1): it stays true HERE
+# only because this translation never emits that flag -- change_dylib's own
 # grammar has no spelling for it, and never will, since `-change` matching
 # nothing has always exited 0 and that is compat surface. If translate.sh
 # ever grows a --fatal-warnings-shaped flag, this comment is the one to

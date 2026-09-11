@@ -82,7 +82,7 @@
 #   The class ignores the EXACT exit code, only whether it was zero. Two
 #   rows differ there and say so in their columns rather than their class:
 #   patch_macho on a non-Mach-O and on an absent file exit 1, where macho9
-#   declassify exits 2 (EX_REFUSED). That is deliberate -- cli/macho9.c's
+#   declassify exits 1 (EX_REFUSED). That is deliberate -- cli/macho9.c's
 #   cmd_declassify names it as one of FOUR DELIBERATE DIVERGENCES FROM
 #   patch_macho -- but it is invisible to anyone grepping by class.
 #

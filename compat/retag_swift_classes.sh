@@ -19,9 +19,10 @@
 # hand-built ones, so what ships is what tests/translate_test.sh pinned.
 #
 # EXIT CODES -- MAPPED, per cli/macho9.c's cmd_retag_swift ("TWO DELIBERATE
-# DIVERGENCES FROM retag_swift_classes"):
+# DIVERGENCES FROM retag_swift_classes"). macho9's own scheme is 0 ok, 1
+# refused, 2 error (cli/macho9.c's top-of-file comment):
 #
-#   macho9 2 (EX_REFUSED)  -> SKIPPED, silently, and the loop keeps going.
+#   macho9 1 (EX_REFUSED)  -> SKIPPED, silently, and the loop keeps going.
 #       This is MSWIFT_NOT_MACHO and nothing else. retag_swift_classes treated
 #       a non-Mach-O argument as a benign skip -- it printed nothing and did
 #       not set had_error -- so macho9's diagnostic for it is discarded too,
@@ -29,7 +30,7 @@
 #       straight through. tests/compat-matrix.tsv has three "blocked" rows
 #       that are exactly this case (`nm`, `f nm`, `f nm f`); this is what
 #       unblocks them.
-#   macho9 1               -> had_error, and the loop keeps going. That covers
+#   macho9 2 (EX_FAIL)     -> had_error, and the loop keeps going. That covers
 #       MSWIFT_ERROR (which is what retag_swift_classes counted as an error
 #       too) and MSWIFT_RACED (which it did not). The two are indistinguishable
 #       from outside macho9, and treating a race -- "the file changed under us,
@@ -92,7 +93,7 @@ for mw_f in "$@"; do
             mw_total=$((mw_total + mw_n))
         fi
         ;;
-    2)
+    1)
         # MSWIFT_NOT_MACHO: the benign skip. No message, no error flag.
         ;;
     *)

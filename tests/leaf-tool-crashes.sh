@@ -133,10 +133,10 @@ rc=0
 "$BIN/add_version_min" "$T/av.macho" >"$T/av.out" 2>"$T/av.err" || rc=$?
 if [ "$rc" -gt 127 ]; then
     bad "add_version_min: nosect fixture" "killed by a signal (exit $rc) -- the heap overflow this fixture exists to catch"
-elif [ "$rc" -eq 1 ] && grep -q "no room for LC_VERSION_MIN_MACOSX" "$T/av.err"; then
+elif [ "$rc" -eq 2 ] && grep -q "no room for LC_VERSION_MIN_MACOSX" "$T/av.err"; then
     ok "add_version_min: refuses (not crashes) a file with no sectioned segment"
 else
-    bad "add_version_min: nosect fixture" "expected exit 1 + 'no room' message, got exit $rc: $(cat "$T/av.err")"
+    bad "add_version_min: nosect fixture" "expected exit 2 + 'no room' message, got exit $rc: $(cat "$T/av.err")"
 fi
 
 if [ -f /usr/lib/libgmalloc.dylib ]; then

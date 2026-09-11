@@ -214,7 +214,7 @@ cd_usage="Usage: $BIN/change_dylib input [-grow] [-change old new] [-delete path
 
 # ---- patch_macho --------------------------------------------------------
 #
-# EXIT CODES ARE MAPPED. `macho9 declassify` returns EX_REFUSED (2) where it
+# EXIT CODES ARE MAPPED. `macho9 declassify` returns EX_REFUSED (1) where it
 # examined the input and declined; patch_macho returned a flat 1 for
 # everything. A caller that tested `!= 0` is unaffected either way, but
 # tests/leaf-tool-crashes.sh tests for exactly 1.

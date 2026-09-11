@@ -993,12 +993,16 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
      * hand-rolled walk and they disagreed about validation (fix_macho
      * trusted an arch's offset/size outright); see fat.h's file header for
      * the fuller story. */
+    /* mr_process_fat's return value flows straight into mr_apply_file's own
+     * `rc` (its one caller assigns it directly), so it is bound by the same
+     * rule as every return there: 2, not MR_REFUSED (1), for an operational
+     * failure -- see the comment at the top of mr_apply_file. */
     uint32_t narch; int swap;
     if (mfat_parse(buf, fsize, &narch, &swap) != 0) {
         fprintf(stderr, "ERROR: malformed fat file (bad magic, arch table past the end, "
                         "a slice overlapping the header, or two slices overlapping "
                         "each other)\n");
-        return 1;
+        return 2;
     }
 
     /* Per-slice working state, gathered up front so a mid-loop failure can
@@ -1014,7 +1018,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
         fprintf(stderr, "ERROR: out of memory\n");
         free(sbuf); free(ssize); free(ooff); free(osize);
         free(cputype); free(cpusubtype); free(align);
-        return 1;
+        return 2;
     }
 
     int aborted = 0;
@@ -1058,7 +1062,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
         for (uint32_t j = 0; j < i; j++) free(sbuf[j]);
         free(sbuf); free(ssize); free(ooff); free(osize);
         free(cputype); free(cpusubtype); free(align);
-        return 1;
+        return 2;
     }
 
     if (!*out_modified) {
@@ -1130,7 +1134,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
                 for (uint32_t k = 0; k < narch; k++) free(sbuf[k]);
                 free(sbuf); free(ssize); free(ooff); free(osize);
                 free(cputype); free(cpusubtype); free(align); free(noff);
-                return 1;
+                return 2;
             }
         }
     }
@@ -1141,7 +1145,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
         for (uint32_t j = 0; j < narch; j++) free(sbuf[j]);
         free(sbuf); free(ssize); free(ooff); free(osize);
         free(cputype); free(cpusubtype); free(align); free(noff);
-        return 1;
+        return 2;
     }
     struct fat_header *nfh = (struct fat_header *)newbuf;
     nfh->magic = swap ? mr_swap32(FAT_MAGIC) : FAT_MAGIC;
@@ -1272,21 +1276,27 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * magic, since a fat file's magic isn't MH_MAGIC_64 and mi_open (thin
      * only) would refuse it outright. This is the one place that has to tell
      * fat from thin apart before choosing how to read the rest. */
+    /* 2, not MR_REFUSED (1), for every return in this function that is not
+     * ops->fatal_unmatched's own refusal below: a syscall/malloc failure or
+     * an unreadable/malformed input is an operational failure, never a
+     * considered "examined this and declined" the way MR_REFUSED is -- see
+     * MR_REFUSED's own comment in rewrite.h for why the two numbers cannot
+     * be interchanged now that MR_REFUSED == cli/macho9.c's EX_REFUSED == 1. */
     int fd = open(path, O_RDWR);
-    if (fd < 0) { perror("open"); return 1; }
+    if (fd < 0) { perror("open"); return 2; }
 
     struct stat st;
-    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 1; }
+    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
     if (st.st_size < 4) {
         fprintf(stderr, "%s: too small to be a Mach-O\n", path);
         close(fd);
-        return 1;
+        return 2;
     }
     mode_t orig_mode = st.st_mode;
 
     uint32_t magic;
     if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, &magic, sizeof magic) != (ssize_t)sizeof magic) {
-        perror("read"); close(fd); return 1;
+        perror("read"); close(fd); return 2;
     }
 
     uint8_t *buf;
@@ -1303,7 +1313,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
         fprintf(stderr, "%s: 64-bit fat Mach-O (fat_arch_64); not supported -- only the "
                         "32-bit-offset fat_arch container is\n", path);
         close(fd);
-        return 1;
+        return 2;
     }
 
     if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
@@ -1313,9 +1323,9 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
          * validation. */
         fsize = (size_t)st.st_size;
         buf = (uint8_t *)malloc(fsize);
-        if (!buf) { fprintf(stderr, "out of memory\n"); close(fd); return 1; }
+        if (!buf) { fprintf(stderr, "out of memory\n"); close(fd); return 2; }
         if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, buf, fsize) != (ssize_t)fsize) {
-            perror("read"); close(fd); free(buf); return 1;
+            perror("read"); close(fd); free(buf); return 2;
         }
         close(fd);
         rc = mr_process_fat(&buf, &fsize, ops, &modified, hit_dylib, hit_rpath, hit_strip);
@@ -1350,7 +1360,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
                                 "validation -- truncated, misaligned, or out of bounds; "
                                 "see any earlier message)\n", path);
             }
-            return 1;
+            return 2;
         }
         fsize = im.size;
         buf = mi_release(&im);
@@ -1365,14 +1375,14 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
              * used to give now lives at the mi_open failure site above,
              * where it is actually reachable. */
             fprintf(stderr, "%s: not a 64-bit Mach-O (rejected during processing)\n", path);
-            rc = 1;
+            rc = 2;
         } else {
-            rc = (po == MR_ERROR) ? 1 : 0;
+            rc = (po == MR_ERROR) ? 2 : 0;
         }
     }
 
     /* Captured before the write attempt below, which can turn `rc` from 0 to
-     * 1 on its own failure -- the miss report's gate has to stay "did
+     * 2 on its own failure -- the miss report's gate has to stay "did
      * mr_process_thin/mr_process_fat succeed", not "is the file on disk now
      * what we intended", or a failed write would silently swallow it. */
     int processed_ok = (rc == 0);
@@ -1380,7 +1390,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
     if (rc == 0 && modified) {
         if (wa_write_atomic(path, orig_mode, buf, fsize) != 0) {
             fprintf(stderr, "ERROR: %s left unmodified (atomic replace failed)\n", path);
-            rc = 1;
+            rc = 2;
         } else {
             printf("Updated %s (%zu bytes)\n", path, fsize);
         }
@@ -1399,7 +1409,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
         int nunmatched = mr_report_unmatched(ops, hit_dylib, hit_rpath, hit_strip);
         /* ops->fatal_unmatched turns that report into a refusal -- but only
          * when the run otherwise succeeded (rc == 0): a failed atomic write
-         * (rc already 1, above) is a genuine operational failure and stays
+         * (rc already 2, above) is a genuine operational failure and stays
          * one, rather than being overwritten by a DIFFERENT reason to be
          * unhappy. THIS NEVER ROLLS BACK A WRITE IT MADE: if some other
          * operation in the same run DID match, that write (or "Updated ..."
@@ -1411,7 +1421,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
          * file, above) and no write was attempted at all, so there is
          * nothing here to roll back OR preserve; the file is untouched
          * either way. MR_REFUSED, not a
-         * bare 2, so the one caller (cli/macho9.c) and this library cannot
+         * bare 1, so the one caller (cli/macho9.c) and this library cannot
          * drift about what number means "fatal_unmatched fired" -- see
          * MR_REFUSED's own comment in rewrite.h for why it is safe to
          * forward verbatim. */

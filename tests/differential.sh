@@ -176,10 +176,10 @@ tool() {
 #
 # The macho9 half runs on EVERY file, not only the ones patch_macho converted:
 # where patch_macho declines, declassify must decline too (with its own code --
-# EX_REFUSED for a judgement about the input, 1 for an operational failure --
-# but never 0, which would be a silent success on an input the other front-end
-# refused). Keeping it inside the success branch would have left the sentence
-# below true of patch_macho and false of declassify.
+# EX_REFUSED for a judgement about the input, EX_FAIL for an operational
+# failure -- but never 0, which would be a silent success on an input the
+# other front-end refused). Keeping it inside the success branch would have
+# left the sentence below true of patch_macho and false of declassify.
 #
 # A 10.9 corpus has no chained fixups in it, so what this exercises on the
 # target machine -- for BOTH front-ends -- is the read path, the pass-through,

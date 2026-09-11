@@ -148,10 +148,10 @@
 #     mg_plausible: src/rewrite.c skips that gate for a rename-only operation
 #     set, so it is no longer one of this verb's divergences from
 #     rename_segment.
-#   macho9 retag-swift refuses (exit 2) a non-Mach-O argument that
-#     retag_swift_classes skipped silently, and exits 1 on the raced path
+#   macho9 retag-swift refuses (exit 1) a non-Mach-O argument that
+#     retag_swift_classes skipped silently, and exits 2 on the raced path
 #     where retag_swift_classes exited 0.
-#   macho9 declassify uses exit 2 where patch_macho returns a flat 1, writes
+#   macho9 declassify uses exit 1 where patch_macho returns a flat 1, writes
 #     atomically, and names the file it wrote even on the pass-through.
 #   fix_macho is the one tool whose divergences are NOT closed by its wrapper,
 #     because the repo owner ruled them improvements to ADOPT: a longer
