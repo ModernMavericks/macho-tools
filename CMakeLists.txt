@@ -55,7 +55,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -203,6 +203,16 @@ add_executable(trie_test tests/trie_test.c)
 target_compile_options(trie_test PRIVATE -O2 -Wall)
 target_link_libraries(trie_test PRIVATE macho9core)
 add_test(NAME trie_test COMMAND trie_test)
+
+# Hermetic tests for src/script.c's tokenizer: hand-written script text and
+# the field vector it must produce, so no fixture file is needed -- same
+# reasoning as trie_test. The quoting cases are exactly the shapes
+# compat/translate.sh's mt_quote emits, because the spec requires the
+# generator and the parser cannot drift.
+add_executable(script_test tests/script_test.c)
+target_compile_options(script_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(script_test PRIVATE macho9core)
+add_test(NAME script_test COMMAND script_test)
 
 # Hermetic tests for src/linkedit.c's ml_bump_all (Task 2b): a synthetic
 # image built by hand via mi_wrap, so no fixture file is needed -- same
