@@ -102,20 +102,30 @@ const char *ms_op_name(int op) {
     return "unknown";
 }
 
-/* Room for a statement's kind, op, and both operands, plus enough slack that
- * a malformed line reports as the right error (unknown statement / wrong
- * arity) rather than "too many fields on one line" swallowing a case the
- * tests care about naming precisely. No accepted statement needs more than
- * 4 fields. */
+/* Room for a statement's kind, op, and both operands, plus slack above the
+ * largest accepted arity (2) so that a handful of stray extra fields on an
+ * otherwise-recognizable line is matched against MS_TABLE and refused for
+ * its arity (see test_extra_fields_report_arity_not_overflow in
+ * tests/script_test.c), rather than every overlong line getting the same
+ * generic "too many fields on one line" from ms_split. No accepted
+ * statement needs more than 4 fields; a line with more than MS_MAX_FIELDS
+ * still falls back to that generic message. */
 #define MS_MAX_FIELDS 16
 
-/* Zeros *out, formats "line N: " + the given message into err (best-effort;
- * silently truncated if errsz is too small, same as every other ms_err use
- * in this file), and returns -1. Every ms_parse failure that stems from a
- * specific source line goes through here so none of them forget either the
- * zeroing or the "line N" prefix the spec requires. */
-static int ms_failf(ms_script *out, char *err, size_t errsz, int line, const char *fmt, ...) {
-    memset(out, 0, sizeof *out);
+/* Formats "line N: " + the given message into err (best-effort; silently
+ * truncated if errsz is too small, same as every other ms_err use in this
+ * file), THEN frees `stmts` and `text` and zeros *out, and returns -1.
+ *
+ * The order matters: `fmt`'s varargs are frequently a field straight out of
+ * the line just rejected (e.g. fields[0]), and those fields point into
+ * `text` -- so formatting has to happen before `text` is freed, not after.
+ * Freeing here rather than at each call site also means every ms_parse
+ * failure that stems from a specific source line goes through the exact
+ * same sequence, so none of them can get the order wrong, forget to free,
+ * or forget the "line N" prefix the spec requires. `stmts`/`text` may be
+ * NULL (pass 1 hasn't allocated either yet); free(NULL) is a no-op. */
+static int ms_failf(ms_stmt *stmts, char *text, ms_script *out,
+                     char *err, size_t errsz, int line, const char *fmt, ...) {
     if (err && errsz) {
         int off = snprintf(err, errsz, "line %d: ", line);
         if (off > 0 && (size_t)off < errsz) {
@@ -125,6 +135,9 @@ static int ms_failf(ms_script *out, char *err, size_t errsz, int line, const cha
             va_end(ap);
         }
     }
+    free(stmts);
+    free(text);
+    memset(out, 0, sizeof *out);
     return -1;
 }
 
@@ -132,33 +145,32 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
     memset(out, 0, sizeof *out);
 
     /* Pass 1: an upper bound on the statement count, from a disposable
-     * per-line copy. Directive lines (allow-grow, fatal-warnings) count too,
-     * since telling them apart from statements needs the same field split
-     * pass 2 does anyway -- so this may over-allocate by a few slots, never
-     * under, and there is no fixed cap: the array is sized from the script,
-     * however long that is. */
+     * per-line copy. It does not try to tell a directive line from a
+     * statement line -- that distinction doesn't matter yet, since counting
+     * a directive only costs the final array one unused slot, which is
+     * harmless, and skipping the distinction keeps this pass simple. It
+     * likewise does not fail when ms_split reports a syntax error on some
+     * line: it just doesn't count that line, and moves on. Reporting is
+     * pass 2's job entirely (see pass 2's own comment for why), so a script
+     * with an early semantic error and a later syntax error still gets the
+     * earlier one reported, in source order, regardless of which pass would
+     * otherwise have noticed which problem first. There is no fixed cap:
+     * the array is sized from the script, however long that is. */
     char *scratch = len ? malloc(len + 1) : NULL;
     if (len && !scratch) return ms_err(err, errsz, "out of memory");
     int cap = 0;
     {
         size_t i = 0;
-        int lineno = 0;
         while (i < len) {
-            lineno++;
             size_t start = i;
             while (i < len && buf[i] != '\n') i++;
             size_t linelen = i - start;
             char *fields[MS_MAX_FIELDS];
-            char lerr[128] = {0};
             int n;
             memcpy(scratch, buf + start, linelen);
             scratch[linelen] = '\0';
             if (i < len) i++;   /* skip the newline */
-            n = ms_split(scratch, fields, MS_MAX_FIELDS, lerr, sizeof lerr);
-            if (n < 0) {
-                free(scratch);
-                return ms_failf(out, err, errsz, lineno, "%s", lerr);
-            }
+            n = ms_split(scratch, fields, MS_MAX_FIELDS, NULL, 0);
             if (n > 0) cap++;
         }
     }
@@ -174,7 +186,15 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
 
     /* Pass 2: fills the array, this time from `text` itself -- every
      * ms_stmt.a/.b ends up pointing straight into it, so ms_free frees
-     * exactly two allocations (this and `stmts`). */
+     * exactly two allocations (this and `stmts`). This is the ONLY pass
+     * that reports an error, and it walks the script strictly in source
+     * order and returns on the first line that fails any check -- syntax
+     * (ms_split), an embedded control byte, or a semantic rule (unknown
+     * statement, wrong arity, a directive out of place, a value outside the
+     * accepted vocabulary) alike. That is what guarantees the error
+     * reported is always the earliest one in the script, never whichever
+     * category of mistake this code happens to check first on a given
+     * line. */
     int n_stmts = 0;
     int allow_grow = 0, fatal_warnings = 0, seen_operation = 0;
     size_t i = 0;
@@ -182,7 +202,18 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
     while (i < len) {
         lineno++;
         size_t start = i;
-        while (i < len && text[i] != '\n') i++;
+        /* A NUL or other control byte (CR included) partway through a line
+         * would make ms_split stop early and silently hand back a truncated
+         * field instead of the error this is -- so this has to catch it
+         * BEFORE ms_split ever sees the line. Tab is a field separator and
+         * newline is the line separator; both are fine. */
+        while (i < len && text[i] != '\n') {
+            unsigned char c = (unsigned char)text[i];
+            if (c == '\0' || (c < 0x20 && c != '\t') || c == 0x7f)
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "control character");
+            i++;
+        }
         int had_nl = (i < len);
         char *line = text + start;
         char *fields[MS_MAX_FIELDS];
@@ -193,54 +224,42 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
         if (had_nl) i++;
 
         n = ms_split(line, fields, MS_MAX_FIELDS, lerr, sizeof lerr);
-        if (n < 0) {
-            free(stmts); free(text);
-            return ms_failf(out, err, errsz, lineno, "%s", lerr);
-        }
+        if (n < 0)
+            return ms_failf(stmts, text, out, err, errsz, lineno, "%s", lerr);
         if (n == 0) continue;   /* blank or comment */
 
         if (strcmp(fields[0], "allow-grow") == 0 ||
             strcmp(fields[0], "fatal-warnings") == 0) {
-            if (n != 1) {
-                free(stmts); free(text);
-                return ms_failf(out, err, errsz, lineno,
+            if (n != 1)
+                return ms_failf(stmts, text, out, err, errsz, lineno,
                     "directive '%s' takes no operands", fields[0]);
-            }
-            if (seen_operation) {
-                free(stmts); free(text);
-                return ms_failf(out, err, errsz, lineno,
+            if (seen_operation)
+                return ms_failf(stmts, text, out, err, errsz, lineno,
                     "directive '%s' must precede every operation", fields[0]);
-            }
             if (strcmp(fields[0], "allow-grow") == 0) allow_grow = 1;
             else fatal_warnings = 1;
             continue;
         }
 
-        if (n < 2) {
-            free(stmts); free(text);
-            return ms_failf(out, err, errsz, lineno,
+        if (n < 2)
+            return ms_failf(stmts, text, out, err, errsz, lineno,
                 "unknown statement '%s'", fields[0]);
-        }
 
         found = -1;
         for (t = 0; t < MS_TABLE_N; t++) {
             if (strcmp(fields[0], MS_TABLE[t].kind) == 0 &&
                 strcmp(fields[1], MS_TABLE[t].op) == 0) { found = t; break; }
         }
-        if (found < 0) {
-            free(stmts); free(text);
-            return ms_failf(out, err, errsz, lineno,
+        if (found < 0)
+            return ms_failf(stmts, text, out, err, errsz, lineno,
                 "unknown statement '%s %s'", fields[0], fields[1]);
-        }
 
         nargs = n - 2;
-        if (nargs != MS_TABLE[found].nargs) {
-            free(stmts); free(text);
-            return ms_failf(out, err, errsz, lineno,
+        if (nargs != MS_TABLE[found].nargs)
+            return ms_failf(stmts, text, out, err, errsz, lineno,
                 "%s %s takes %d argument%s (got %d)", fields[0], fields[1],
                 MS_TABLE[found].nargs, MS_TABLE[found].nargs == 1 ? "" : "s",
                 nargs);
-        }
 
         {
             int kind = MS_TABLE[found].k, op = MS_TABLE[found].o;
@@ -250,25 +269,20 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                 int ok = 0;
                 for (k = 0; k < LC_STRIP_KINDS_COUNT; k++)
                     if (strcmp(fields[2], LC_STRIP_KINDS[k].name) == 0) { ok = 1; break; }
-                if (!ok) {
-                    free(stmts); free(text);
-                    return ms_failf(out, err, errsz, lineno,
+                if (!ok)
+                    return ms_failf(stmts, text, out, err, errsz, lineno,
                         "load-command delete: unknown kind '%s'", fields[2]);
-                }
             } else if (kind == MS_VERSION_MIN && op == MS_SET &&
                        strcmp(fields[2], "10.9") != 0) {
-                free(stmts); free(text);
-                return ms_failf(out, err, errsz, lineno,
+                return ms_failf(stmts, text, out, err, errsz, lineno,
                     "version-min set accepts only '10.9' (got '%s')", fields[2]);
             } else if (kind == MS_SWIFT_ABI && op == MS_SET &&
                        strcmp(fields[2], "legacy") != 0) {
-                free(stmts); free(text);
-                return ms_failf(out, err, errsz, lineno,
+                return ms_failf(stmts, text, out, err, errsz, lineno,
                     "swift-abi set accepts only 'legacy' (got '%s')", fields[2]);
             } else if (kind == MS_FIXUPS && op == MS_SET &&
                        strcmp(fields[2], "classic") != 0) {
-                free(stmts); free(text);
-                return ms_failf(out, err, errsz, lineno,
+                return ms_failf(stmts, text, out, err, errsz, lineno,
                     "fixups set accepts only 'classic' (got '%s')", fields[2]);
             }
 

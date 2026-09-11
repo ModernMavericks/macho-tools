@@ -301,14 +301,18 @@ else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
 
-# Every row of the statement table must appear in --capabilities, and
-# --capabilities must advertise nothing the table lacks. The point of
-# generating one from the other is that this can never go stale; this
-# assertion is what makes that claim testable rather than aspirational.
-"$MACHO9" --capabilities >"$T/caps2.out" 2>&1
-grep -q "statement dylib replace 2" "$T/caps2.out" \
+# --capabilities' statement lines are generated from MS_TABLE (src/script.c)
+# by looping ms_table_row, not hand-copied -- but a shell script can't know
+# the table's row count without its own second, hand-copied list, which is
+# exactly the defect this design exists to prevent. So full row-for-row
+# agreement (every row present, nothing extra) is asserted in
+# tests/script_test.c's test_capabilities_table_round_trips, which walks
+# ms_table_row directly. This just spot-checks that the generation actually
+# ran, reusing the $caps already captured above rather than invoking
+# --capabilities again.
+echo "$caps" | grep -q "statement dylib replace 2" \
     && ok "capabilities: statement table is advertised" \
-    || bad "capabilities statements" "no 'statement dylib replace 2' line: $(cat "$T/caps2.out")"
+    || bad "capabilities statements" "no 'statement dylib replace 2' line: $(echo "$caps" | grep '^statement')"
 
 # --fatal-warnings promotes "an operation matched nothing" from a stderr
 # report to a refusal (dylib/rpath/lc only -- segment and retag-swift take no

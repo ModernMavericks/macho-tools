@@ -55,13 +55,18 @@ typedef struct {
 /* Parses a whole edit script from `buf`/`len` (need not be NUL-terminated;
  * a final line with no trailing newline is fine, and there is no fixed cap
  * on the number of statements -- the array is sized from the script itself).
+ * Every byte in [0, len) must be a printable byte, tab, or newline -- any
+ * other control byte (a NUL or a CR included) is refused, not silently
+ * folded into an operand.
  *
  * On success, returns 0, fills `*out`, and the caller must eventually call
- * ms_free(out). On error, returns -1, and (if `err` and `errsz` are
- * non-zero) sets `err` to a message that names the offending 1-based source
- * line as "line N". On error, ms_parse has already freed everything it
- * allocated and zeroed `*out` -- so ms_free(out) is not necessary after a
- * failed ms_parse, though it remains safe (a no-op) if called anyway. */
+ * ms_free(out). On error, returns -1 and (if `err` and `errsz` are
+ * non-zero) sets `err` to a message. On a PARSE error -- the script itself
+ * is malformed -- that message names the offending 1-based source line as
+ * "line N"; an allocation failure has no line to name, and says so instead.
+ * Either way, ms_parse has already freed everything it allocated and zeroed
+ * `*out` -- so ms_free(out) is not necessary after a failed ms_parse, though
+ * it remains safe (a no-op) if called anyway. */
 int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errsz);
 
 /* Frees an ms_script filled by a successful ms_parse. Safe to call on an

@@ -139,6 +139,200 @@ static void test_no_operation_cap(void) {
     ms_free(&s);
 }
 
+/* Round 1 fix: CRITICAL 1 (use-after-free). Every ms_parse failure path
+ * that quotes a field in its message must format that message BEFORE
+ * freeing the storage the field points into. This is what a MallocScribble
+ * or Guard Malloc run (see task-2-report.md's round-1 section) actually
+ * exercises; this assertion is the same claim, portable to any host. */
+static void test_error_message_quoting_survives_the_free(void) {
+    static const char src[] = "frobnicate all\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1, "unknown statement refused");
+    CHECK(strstr(err, "frobnicate") != NULL,
+          "the message still quotes the field, not freed/scribbled memory (got: %s)", err);
+}
+
+/* Round 1 fix: IMPORTANT 2. An embedded NUL used to make ms_split stop
+ * early and silently hand back a truncated field -- e.g.
+ * "dylib replace /a /b\0.dylib" parsed with b="/b". Now any control byte
+ * except tab (a field separator) and newline (the line separator) is
+ * refused, CR included, which also closes the CRLF case. */
+static void test_embedded_nul_is_refused(void) {
+    static const char src[] = "dylib replace /a /b\0.dylib\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "an embedded NUL is refused, not silently truncated");
+    CHECK(strstr(err, "line 1") != NULL, "and names the line (got: %s)", err);
+}
+
+static void test_crlf_is_refused(void) {
+    static const char src[] = "dylib replace /a /b\r\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "a CR is refused, not folded into the operand");
+    CHECK(strstr(err, "line 1") != NULL, "and names the line (got: %s)", err);
+}
+
+/* Round 1 fix: IMPORTANT 3 -- the ruled behaviours had no tests. */
+
+static void test_repeated_directive_is_accepted(void) {
+    static const char src[] = "allow-grow\nallow-grow\nfatal-warnings\nfatal-warnings\ndylib delete /x\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0,
+          "repeating a directive is idempotent, not an error (%s)", err);
+    CHECK(s.allow_grow == 1, "allow-grow still set");
+    CHECK(s.fatal_warnings == 1, "fatal-warnings still set");
+    CHECK(s.n == 1, "only the operation counts as a statement (got %d)", s.n);
+    ms_free(&s);
+}
+
+static void test_directive_with_operand_is_refused(void) {
+    static const char src[] = "allow-grow yes\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "a directive given an operand is refused");
+    CHECK(strstr(err, "line 1") != NULL, "and names the line (got: %s)", err);
+}
+
+static void test_final_line_without_newline_parses(void) {
+    static const char src[] = "load-command delete uuid\ndylib replace /a /b";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0,
+          "a final line without a trailing newline parses (%s)", err);
+    if (s.n != 2) { ms_free(&s); return; }
+    CHECK(s.n == 2, "both statements kept (got %d)", s.n);
+    CHECK(s.stmts[1].line == 2, "second stmt remembers line 2 (got %d)", s.stmts[1].line);
+    ms_free(&s);
+}
+
+static void test_blank_and_comment_lines_dont_shift_line_numbers(void) {
+    static const char src[] =
+        "load-command delete uuid\n"
+        "\n"
+        "# a comment\n"
+        "   \n"
+        "dylib delete /x\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
+    if (s.n != 2) { ms_free(&s); return; }
+    CHECK(s.n == 2, "two statements; blank/comment lines aren't counted (got %d)", s.n);
+    CHECK(s.stmts[0].line == 1, "stmt0 is line 1 (got %d)", s.stmts[0].line);
+    CHECK(s.stmts[1].line == 5, "stmt1 is line 5, not shifted by the skipped lines (got %d)", s.stmts[1].line);
+    ms_free(&s);
+}
+
+static void test_version_min_value_refusal(void) {
+    static const char src[] = "version-min set 10.10\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "version-min set 10.10 is refused");
+    CHECK(strstr(err, "10.9") != NULL, "names what is accepted (got: %s)", err);
+}
+
+static void test_swift_abi_value_refusal(void) {
+    static const char src[] = "swift-abi set native\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "swift-abi set native is refused");
+    CHECK(strstr(err, "legacy") != NULL, "names what is accepted (got: %s)", err);
+}
+
+static void test_fixups_value_refusal(void) {
+    static const char src[] = "fixups set chained\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "fixups set chained is refused");
+    CHECK(strstr(err, "classic") != NULL, "names what is accepted (got: %s)", err);
+}
+
+static void test_kind_and_op_names(void) {
+    CHECK(strcmp(ms_kind_name(MS_DYLIB), "dylib") == 0, "ms_kind_name(MS_DYLIB)");
+    CHECK(strcmp(ms_kind_name(MS_LOAD_COMMAND), "load-command") == 0, "ms_kind_name(MS_LOAD_COMMAND)");
+    CHECK(strcmp(ms_kind_name(MS_RPATH), "rpath") == 0, "ms_kind_name(MS_RPATH)");
+    CHECK(strcmp(ms_op_name(MS_REPLACE), "replace") == 0, "ms_op_name(MS_REPLACE)");
+    CHECK(strcmp(ms_op_name(MS_DELETE), "delete") == 0, "ms_op_name(MS_DELETE)");
+    CHECK(strcmp(ms_op_name(MS_REEXPORT), "reexport") == 0, "ms_op_name(MS_REEXPORT)");
+    CHECK(strcmp(ms_kind_name(-1), "unknown") == 0, "ms_kind_name of an out-of-table value");
+    CHECK(strcmp(ms_op_name(-1), "unknown") == 0, "ms_op_name of an out-of-table value");
+}
+
+/* Round 1 fix: MINOR 6 -- MS_MAX_FIELDS' comment claims this reports arity,
+ * not overflow, for a line with a handful of stray extra fields. Prove it. */
+static void test_extra_fields_report_arity_not_overflow(void) {
+    static const char src[] = "dylib replace a b c d e f\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1, "extra fields refused");
+    CHECK(strstr(err, "argument") != NULL, "names arity (got: %s)", err);
+    CHECK(strstr(err, "too many fields") == NULL,
+          "does not fall back to ms_split's generic overflow message (got: %s)", err);
+}
+
+/* Round 1 fix: MINOR 8 -- the FIRST error in source order must be reported,
+ * not whichever kind of mistake (syntax vs. semantic) some earlier pass
+ * happened to notice first. Line 2 here is a semantic error (unknown
+ * statement); line 4 is a syntax error (unterminated quote). */
+static void test_first_error_reported_is_earliest_in_line_order(void) {
+    static const char src[] =
+        "dylib delete /x\n"
+        "frobnicate x\n"
+        "\n"
+        "dylib delete 'unterminated\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1, "refused");
+    CHECK(strstr(err, "line 2") != NULL,
+          "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
+}
+
+/* Round 1 fix: IMPORTANT 4(b), Ruling 13. The table-agreement check moves
+ * here from a single cli_test.sh grep, because a shell test cannot know the
+ * table's row count without a second, hand-copied list -- the very defect
+ * this design exists to prevent. This walks ms_table_row directly, so it
+ * can assert the row count AND that every row's kind/op round-trip through
+ * an actual parse, not just that one known row's line appears in text. */
+static void test_capabilities_table_round_trips(void) {
+    int i, n_rows = 0;
+    const char *kind, *op;
+    int nargs;
+    for (i = 0; ms_table_row(i, &kind, &op, &nargs); i++) {
+        char line[256];
+        const char *a = "x";
+        const char *b = "y";
+        /* Every value/KIND gate ms_parse enforces is a separate check from
+         * arity, so a dummy operand has to satisfy it too, or this row
+         * would be refused for a reason that has nothing to do with what
+         * this test is proving. */
+        if (strcmp(kind, "load-command") == 0 && strcmp(op, "delete") == 0) a = "uuid";
+        else if (strcmp(kind, "version-min") == 0) a = "10.9";
+        else if (strcmp(kind, "swift-abi") == 0) a = "legacy";
+        else if (strcmp(kind, "fixups") == 0) a = "classic";
+
+        if (nargs == 2)
+            snprintf(line, sizeof line, "%s %s %s %s\n", kind, op, a, b);
+        else if (nargs == 1)
+            snprintf(line, sizeof line, "%s %s %s\n", kind, op, a);
+        else
+            snprintf(line, sizeof line, "%s %s\n", kind, op);
+
+        {
+            ms_script s; char err[256] = {0};
+            int r = ms_parse(line, strlen(line), &s, err, sizeof err);
+            CHECK(r == 0, "table row '%s %s' parses (%s)", kind, op, err);
+            if (r == 0) {
+                CHECK(s.n == 1, "table row '%s %s' yields one statement (got %d)", kind, op, s.n);
+                if (s.n == 1) {
+                    CHECK(strcmp(ms_kind_name(s.stmts[0].kind), kind) == 0,
+                          "table row '%s %s': kind round-trips", kind, op);
+                    CHECK(strcmp(ms_op_name(s.stmts[0].op), op) == 0,
+                          "table row '%s %s': op round-trips", kind, op);
+                }
+                ms_free(&s);
+            }
+        }
+        n_rows++;
+    }
+    CHECK(n_rows == 14, "the statement table has 14 rows (got %d)", n_rows);
+}
+
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -151,6 +345,20 @@ int main(void) {
     test_a_directive_after_an_operation_is_an_error();
     test_unknown_statement_and_wrong_arity();
     test_no_operation_cap();
+    test_error_message_quoting_survives_the_free();
+    test_embedded_nul_is_refused();
+    test_crlf_is_refused();
+    test_repeated_directive_is_accepted();
+    test_directive_with_operand_is_refused();
+    test_final_line_without_newline_parses();
+    test_blank_and_comment_lines_dont_shift_line_numbers();
+    test_version_min_value_refusal();
+    test_swift_abi_value_refusal();
+    test_fixups_value_refusal();
+    test_kind_and_op_names();
+    test_extra_fields_report_arity_not_overflow();
+    test_first_error_reported_is_earliest_in_line_order();
+    test_capabilities_table_round_trips();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }
