@@ -148,8 +148,11 @@ typedef struct {
  * is short, growing it is mg_ensure_pad's decision (src/grow.h) instead of a
  * refusal. It does not cover `fixups set classic`: growth refuses an image
  * that still has chained fixups, since chained pointers encode offsets from
- * the image base that growing moves -- and the conversion removes three
- * commands (up to 56 bytes) before adding its 48. So on a chained image
+ * the image base that growing moves -- and the conversion frees at least 56
+ * bytes (LC_DYLD_EXPORTS_TRIE 16 + LC_DYLD_CHAINED_FIXUPS 16 +
+ * LC_BUILD_VERSION at least 24, usually 32 with one tool entry -- more still
+ * on a zippered binary, which strips a second LC_BUILD_VERSION) before adding
+ * its 48. So on a chained image
  * nothing can grow until `fixups set classic` has run: put it first.
  * Growth works only on a 64-bit PIE executable. `segment rename` and
  * `load-command delete` never add bytes to the load commands, so they never

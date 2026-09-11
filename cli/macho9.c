@@ -11,7 +11,7 @@
  *   macho9 retag-swift FILE
  *   macho9 lc FILE [--fatal-warnings] -delete KIND
  *   macho9 grow FILE N
- *   macho9 minos FILE 10.9
+ *   macho9 minos FILE 10.9 [--allow-grow]
  *   macho9 info FILE
  *   macho9 verify FILE
  *   macho9 edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]
@@ -331,7 +331,7 @@ static int print_capabilities(void) {
      * cmd_segment for why, and compat/rename_segment.sh for who needs it. */
     printf("verb segment reports=renamed\n");
     printf("verb retag-swift\n");
-    printf("verb minos versions=10.9\n");
+    printf("verb minos versions=10.9 flags=allow-grow\n");
     printf("verb lc ops=delete kinds=");
     print_kinds_csv();
     printf(" flags=fatal-warnings\n");
@@ -372,7 +372,7 @@ static void usage(const char *prog) {
         "                                                    uuid | codesig | source-version |\n"
         "                                                    build-version | code-sign-drs\n"
         "       %s grow FILE N\n"
-        "       %s minos FILE 10.9\n"
+        "       %s minos FILE 10.9 [--allow-grow]\n"
         "       %s info FILE\n"
         "       %s verify FILE\n"
         "       %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n"
@@ -576,12 +576,12 @@ static int cmd_grow(const char *path, const char *n_str) {
  * why this verb's grammar spells the floor literally rather than taking any
  * version: there is only one this build can honor, so refusing anything else
  * up front is a clearer failure than calling in and hoping. */
-static int cmd_minos(const char *path, const char *version) {
+static int cmd_minos(const char *path, const char *version, int allow_grow) {
     if (strcmp(version, "10.9") != 0) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
     }
-    return mv_add_version_min(path, 0);
+    return mv_add_version_min(path, allow_grow);
 }
 
 /* ---- lc -delete: a thin shell over mr_apply_file's strip_cmds -----------
@@ -1236,8 +1236,12 @@ int main(int argc, char **argv) {
         return cmd_grow(argv[2], argv[3]);
     }
     if (strcmp(verb, "minos") == 0) {
-        if (argc != 4) { fprintf(stderr, "usage: %s minos FILE 10.9\n", argv[0]); return EX_FAIL; }
-        return cmd_minos(argv[2], argv[3]);
+        int allow_grow = (argc == 5 && strcmp(argv[4], "--allow-grow") == 0);
+        if (argc != 4 && !allow_grow) {
+            fprintf(stderr, "usage: %s minos FILE 10.9 [--allow-grow]\n", argv[0]);
+            return EX_FAIL;
+        }
+        return cmd_minos(argv[2], argv[3], allow_grow);
     }
     if (strcmp(verb, "segment") == 0) {
         if (argc != 5) { fprintf(stderr, "usage: %s segment FILE OLD NEW\n", argv[0]); return EX_FAIL; }

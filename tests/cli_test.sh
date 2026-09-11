@@ -3052,6 +3052,41 @@ rc=0
     && ok "edit: allow-grow: the grown image passes macho9 verify" \
     || bad "edit version-min" "verify refused: $(cat "$T/vm_verify.err")"
 
+# macho9 minos takes --allow-grow, after the version, as dylib/rpath take
+# their flags; without it the verb refuses exactly as before.
+cp "$T/vm_tight" "$T/vm_m"
+rc=0
+"$MACHO9" minos "$T/vm_m" 10.9 >/dev/null 2>"$T/vm_m_no.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "minos: without --allow-grow a short pad is refused (1)" \
+    || bad "minos --allow-grow" "without the flag: expected 1, got $rc: $(cat "$T/vm_m_no.err")"
+grep -q "allow-grow" "$T/vm_m_no.err" \
+    && ok "minos: ... and the refusal names allow-grow" \
+    || bad "minos --allow-grow" "no allow-grow remedy in: $(cat "$T/vm_m_no.err")"
+rc=0
+"$MACHO9" minos "$T/vm_m" 10.9 --allow-grow >/dev/null 2>"$T/vm_m_yes.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "minos: --allow-grow grows the header and adds the command" \
+    || bad "minos --allow-grow" "with the flag: expected 0, got $rc: $(cat "$T/vm_m_yes.err")"
+"$MACHO9" info "$T/vm_m" | grep -q "LC_VERSION_MIN_MACOSX" \
+    && ok "minos: --allow-grow: LC_VERSION_MIN_MACOSX is present" \
+    || bad "minos --allow-grow" "no LC_VERSION_MIN_MACOSX after the grow"
+"$MACHO9" verify "$T/vm_m" >/dev/null 2>"$T/vm_m_verify.err" \
+    && ok "minos: --allow-grow: the grown file passes macho9 verify" \
+    || bad "minos --allow-grow" "verify refused: $(cat "$T/vm_m_verify.err")"
+"$MACHO9" minos "$T/vm_m" 10.9 --bogus >/dev/null 2>&1 \
+    && bad "minos" "an unknown flag was accepted" \
+    || ok "minos: an unknown flag is a usage error"
+
+# The historical add_version_min never grew, so its wrapper still refuses.
+cp "$T/vm_tight" "$T/vm_w"
+rc=0
+"$BIN/add_version_min" "$T/vm_w" >/dev/null 2>"$T/vm_w.err" || rc=$?
+[ "$rc" -ne 0 ] && ok "add_version_min: still refuses a short pad (never grows)" \
+    || bad "add_version_min" "the wrapper grew or succeeded: $(cat "$T/vm_w.err")"
+
+echo "$caps" | grep -q "^verb minos versions=10.9 flags=allow-grow$" \
+    && ok "capabilities: minos advertises allow-grow" \
+    || bad "capabilities minos" "expected 'verb minos versions=10.9 flags=allow-grow': $(echo "$caps" | grep '^verb minos')"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]

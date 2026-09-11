@@ -1,8 +1,11 @@
 /*
- * mv_ -- see version_min.h. This is compat/add_version_min.c's former main(),
- * unchanged in behaviour and in every message it prints; only the argument
- * check stayed behind in that tool. Its in-memory middle is
- * mv_add_version_min_image, so an edit script can apply it to a buffer.
+ * mv_ -- see version_min.h. This started as compat/add_version_min.c's
+ * main(); only the argument check stayed behind in that tool. It now takes
+ * an allow_grow flag: with it set, a short header pad is grown instead of
+ * refused, via mg_ensure_pad (src/grow.h), whose own "ERROR: ... growing the
+ * header needs allow-grow" line precedes this file's "no room for
+ * LC_VERSION_MIN_MACOSX" when growth isn't permitted. Its in-memory middle
+ * is mv_add_version_min_image, so an edit script can apply it to a buffer.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +43,8 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
     return 0;   /* nothing here ever needs to stop the walk early */
 }
 
-/* cli/macho9.c's cmd_minos forwards this function's return value verbatim
- * (`return mv_add_version_min(path);`), the same arrangement mr_apply_file
+/* cli/macho9.c's cmd_minos forwards this function's return value verbatim,
+ * passing through its own allow_grow flag, the same arrangement mr_apply_file
  * has with dylib/rpath/lc -- so every return below is MR_REFUSED or MR_FAIL,
  * the same two codes and the same dividing line mr_apply_file's own comment
  * (rewrite.h) draws: MR_FAIL for this function's own open/fstat/write, for
