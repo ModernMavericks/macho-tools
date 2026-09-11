@@ -1,9 +1,11 @@
 /*
  * md_ -- see declassify.h. This is compat/patch_macho.c's former main(),
- * unchanged in what it does to an image: every bounds check, refusal, message
- * and opcode it emitted before, it emits here. Only the driver (parse two
- * arguments, open the output, write it, decide an exit code) stayed behind in
- * that tool. The static helpers below kept their bodies too; the pm_ ones took
+ * moved here unchanged in what it did to an image: every bounds check,
+ * refusal, message and opcode it emitted there, it emitted here. Since the
+ * move it has gained refusals of its own -- the opcode buffers' bound, the
+ * append slack's, and the header pad's -- each commented where it fires. Only
+ * the driver (parse two arguments, open the output, write it, decide an exit
+ * code) stayed behind in that tool. The static helpers below kept their bodies too; the pm_ ones took
  * this module's md_ prefix on the way in, and ob_ stayed as it was -- it is
  * the opcode buffer's own prefix, not the tool's.
  */
@@ -510,7 +512,8 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
 
     /* Check space for new load command.
      * __TEXT segment starts at fileoff=0 (includes header), but actual section
-     * data starts much later. Find first section offset. */
+     * data starts much later. Find first section offset: it is where the
+     * header pad ends. */
     uint32_t first_sect_off = 0;
     for (int i = 0; i < nsegs; i++) {
         struct section_64 *sect = (struct section_64 *)((uint8_t *)segs[i] + sizeof(struct segment_command_64));
@@ -519,7 +522,21 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
                 first_sect_off = sect[j].offset;
         }
     }
-    if (first_sect_off == 0) first_sect_off = 4096; /* fallback */
+    /* No section has file data, so nothing in the image says where the pad
+     * ends. This used to assume 4096, a guess rather than a bound. */
+    if (first_sect_off == 0) {
+        fprintf(stderr, "ERROR: no section data bounds the header pad; "
+                        "refusing rather than guess where it ends\n");
+        goto refuse;
+    }
+    /* The offset is read from the file (mi_wrap validates load commands, not
+     * section file ranges), and past the end of the image it is no bound. */
+    if (first_sect_off > fsize) {
+        fprintf(stderr, "ERROR: the first section's file offset (%u) lies past the end "
+                        "of the %zu-byte image; refusing rather than guess where the "
+                        "header pad ends\n", first_sect_off, fsize);
+        goto refuse;
+    }
     uint8_t *first_data = buf + first_sect_off;
     if (lcmds_end + 48 > first_data) {
         fprintf(stderr, "ERROR: No room for LC_DYLD_INFO_ONLY (need 48 bytes, have %ld)\n",

@@ -110,7 +110,10 @@
  *     finished streams plus their 8-byte alignment must fit inside --
  *     MDCL_REFUSED otherwise.
  *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY, and a __LINKEDIT
- *     segment to extend -- MDCL_REFUSED without either.
+ *     segment to extend -- MDCL_REFUSED without either. The pad ends at the
+ *     first section's file data, so an image with no section data, or whose
+ *     first section's offset lies past its end, is MDCL_REFUSED too, rather
+ *     than given a guessed bound.
  *   An unknown chained-fixups pointer format is MDCL_REFUSED. A fixup that
  *     points outside the file, or a bind naming an ordinal the import table
  *     does not have, abandons THAT CHAIN with a message and keeps going --

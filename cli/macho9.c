@@ -476,7 +476,12 @@ static int cmd_info(const char *path) {
     mi_each_lc(&im, info_cb, &ctx);
 
     uint32_t first_sect_off = mg_first_sect_off(im.buf, im.size);
-    if (first_sect_off != UINT32_MAX) {
+    if (first_sect_off == MG_NO_SECTION_DATA) {
+        /* Nothing in the image says where the pad ends, so no number would
+         * be true; the rewriting verbs refuse such an image for the same
+         * reason. */
+        printf("header pad: unknown (no section data bounds it)\n");
+    } else if (first_sect_off != UINT32_MAX) {
         uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) + im.hdr->sizeofcmds;
         uint32_t pad = first_sect_off > lc_end ? first_sect_off - lc_end : 0;
         printf("header pad: %u bytes available (LC end=%u, first sect=%u)\n",

@@ -507,7 +507,7 @@ esac
 # mkswift helper below already use.
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../src" && pwd)
 cat > "$T/mkchained.c" <<'EOF'
-/* mkchained make|make-weak|make-big OUT
+/* mkchained make|make-weak|make-big|make-nosect|make-sectpast OUT
  *                        -- write a tiny 64-bit Mach-O that uses CHAINED
  *                          FIXUPS, the format `declassify`/patch_macho exists
  *                          to lower. No linker on any host this repo supports
@@ -541,6 +541,12 @@ cat > "$T/mkchained.c" <<'EOF'
  * single rebase chain, ~262k fixups. At about 5 opcode bytes each that is well
  * past the 1MB the conversion buffers, so it must REFUSE. Before the bound
  * existed this fixture walked straight off the end of a 1MB malloc.
+ *
+ * make-nosect differs in its two sections' file offsets: both are 0, so no
+ * section has file data and nothing bounds the header pad the new
+ * LC_DYLD_INFO_ONLY goes into. make-sectpast puts __text's offset past the end
+ * of the file (and __data's at 0), so the pad's bound lies outside the image.
+ * The conversion must refuse both rather than guess where the pad ends.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -568,7 +574,7 @@ cat > "$T/mkchained.c" <<'EOF'
 #define BIND_SLOT_OFF    8
 #define SYMNAME          "_mkchained_sym"
 
-enum { MK_PLAIN, MK_WEAK, MK_BIG };
+enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST };
 
 /* segname/sectname are char[16] and need NOT be NUL-terminated; see
  * tests/README.md's host-portability section for why strcpy is wrong here. */
@@ -624,12 +630,15 @@ static int make(const char *path, int mode) {
     uint8_t *p = buf + sizeof *h;
 
     struct segment_command_64 *text = put_seg(p, "__TEXT", TEXT_VMADDR, 0x1000, 0, 0x1000, 1);
-    put_sect(text, 0, "__text", "__TEXT", TEXT_VMADDR + SECT_OFF, 4, SECT_OFF);
+    uint32_t text_off = (mode == MK_NOSECT) ? 0
+                      : (mode == MK_SECTPAST) ? (uint32_t)fsize + 0x1000 : SECT_OFF;
+    put_sect(text, 0, "__text", "__TEXT", TEXT_VMADDR + SECT_OFF, 4, text_off);
     p += text->cmdsize;
 
     struct segment_command_64 *data = put_seg(p, "__DATA", TEXT_VMADDR + DATA_OFF, data_size,
                                               DATA_OFF, data_size, 1);
-    put_sect(data, 0, "__data", "__DATA", TEXT_VMADDR + DATA_OFF, data_size, DATA_OFF);
+    put_sect(data, 0, "__data", "__DATA", TEXT_VMADDR + DATA_OFF, data_size,
+             (mode == MK_NOSECT || mode == MK_SECTPAST) ? 0 : DATA_OFF);
     p += data->cmdsize;
 
     struct segment_command_64 *le = put_seg(p, "__LINKEDIT", TEXT_VMADDR + linkedit_off, 0x1000,
@@ -788,12 +797,14 @@ static int check(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|check FILE\n"); return 2; }
+    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|check FILE\n"); return 2; }
     if (strcmp(argv[1], "make") == 0) return make(argv[2], MK_PLAIN);
     if (strcmp(argv[1], "make-weak") == 0) return make(argv[2], MK_WEAK);
     if (strcmp(argv[1], "make-big") == 0) return make(argv[2], MK_BIG);
+    if (strcmp(argv[1], "make-nosect") == 0) return make(argv[2], MK_NOSECT);
+    if (strcmp(argv[1], "make-sectpast") == 0) return make(argv[2], MK_SECTPAST);
     if (strcmp(argv[1], "check") == 0) return check(argv[2]);
-    fprintf(stderr, "usage: mkchained make|make-weak|make-big|check FILE\n");
+    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|check FILE\n");
     return 2;
 }
 EOF
@@ -906,6 +917,28 @@ if [ -x "$BIN/patch_macho" ]; then
     [ "$rc" -eq 1 ] && ok "declassify: patch_macho refuses the same over-large input with its flat 1" \
         || bad "declassify: opcode overflow (patch_macho)" "expected 1, got $rc"
 fi
+
+# THE HEADER PAD'S BOUND. The new LC_DYLD_INFO_ONLY goes after the load
+# commands and must end before the first section's file data. With no section
+# data (make-nosect) there is no such bound, and the conversion used to assume
+# 4096; with the first section past the end of the file (make-sectpast) the
+# bound lies outside the image. Either way it must refuse, say why, and write
+# nothing.
+for dcl_mode in nosect sectpast; do
+    "$T/mkchained" make-$dcl_mode "$T/$dcl_mode.in"
+    rm -f "$T/$dcl_mode.out"
+    "$MACHO9" declassify "$T/$dcl_mode.in" "$T/$dcl_mode.out" >/dev/null 2>"$T/$dcl_mode.err" \
+        && rc=0 || rc=$?
+    case $dcl_mode in
+        nosect)   dcl_why="no section data bounds the header pad" ;;
+        sectpast) dcl_why="lies past the end of the" ;;
+    esac
+    [ "$rc" -eq 1 ] && grep -q "$dcl_why" "$T/$dcl_mode.err" \
+        && ok "declassify: $dcl_mode: refuses (1), saying '$dcl_why'" \
+        || bad "declassify: $dcl_mode" "expected 1 + '$dcl_why', got $rc: $(cat "$T/$dcl_mode.err")"
+    [ -e "$T/$dcl_mode.out" ] && bad "declassify: $dcl_mode" "wrote an output for an input it refused" \
+        || ok "declassify: $dcl_mode: produces no output file"
+done
 
 # BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting
 # the conversion into src/declassify.c did not change it: the two front-ends

@@ -757,15 +757,23 @@ static uint8_t *build_minimal_pie(size_t *fsize_out, int with_pagezero,
         lcp += pz->cmdsize; sizeofcmds += pz->cmdsize; h->ncmds++;
     }
 
+    /* One section with file data, at 4096: mg_grow_header refuses an image
+     * with none before it reaches the checks these fixtures exist for. */
     struct segment_command_64 *tx = (struct segment_command_64 *)lcp;
     tx->cmd = LC_SEGMENT_64;
-    tx->cmdsize = sizeof *tx;
+    tx->cmdsize = sizeof *tx + sizeof(struct section_64);
     strcpy(tx->segname, "__TEXT");
     tx->vmaddr = 0x100000000ull;
     tx->vmsize = fsize;
     tx->fileoff = text_fileoff;
     tx->filesize = (text_fileoff == 0) ? fsize : 0;
-    tx->nsects = 0;
+    tx->nsects = 1;
+    struct section_64 *ts = (struct section_64 *)(tx + 1);
+    memcpy(ts->sectname, "__text", 6);
+    memcpy(ts->segname, "__TEXT", 6);
+    ts->addr = tx->vmaddr + 4096;
+    ts->size = 16;
+    ts->offset = 4096;
     sizeofcmds += tx->cmdsize; h->ncmds++;
 
     h->sizeofcmds = sizeofcmds;
@@ -1325,14 +1333,12 @@ static void check_ensure_refuses_unchanged(const char *what, int opts,
     free(buf);
 }
 
-/* A header and one LC_SEGMENT_64 with no sections: 104 bytes, and no section
- * data to bound the pad, so mg_first_sect_off answers its 4096 default --
- * past the end of the buffer. Trusting that bound is what sent
- * mr_process_thin's commit memset off the end of the buffer
- * (tests/leaf-tool-crashes.sh); answering "fits" against it would invite a
- * caller to make the same mistake. */
-static void test_ensure_pad_refuses_an_image_with_no_section_data(void) {
-    size_t fsize = sizeof(struct mach_header_64) + sizeof(struct segment_command_64);
+/* A PIE executable of `fsize` bytes whose one LC_SEGMENT_64 has no sections:
+ * nothing in it has section data, so nothing bounds the header pad. At 104
+ * bytes -- a header and the segment command, nothing else -- this is
+ * tests/leaf-tool-crashes.sh's nosect shape; larger, the bytes past the load
+ * commands are 0xAB, so a write into them shows. */
+static uint8_t *build_sectionless_image(size_t fsize) {
     uint8_t *buf = (uint8_t *)calloc(1, fsize);
     struct mach_header_64 *h = (struct mach_header_64 *)buf;
     h->magic = MH_MAGIC_64;
@@ -1344,8 +1350,104 @@ static void test_ensure_pad_refuses_an_image_with_no_section_data(void) {
     seg->cmd = LC_SEGMENT_64;
     seg->cmdsize = sizeof *seg;
     memcpy(seg->segname, "__DATA", 6);
-    CHECK(mg_first_sect_off(buf, fsize) == 4096,
-          "ensure_pad no-section fixture: first section defaults to 4096 (got %u)",
+    size_t lc_end = sizeof *h + h->sizeofcmds;
+    if (fsize > lc_end) memset(buf + lc_end, 0xAB, fsize - lc_end);
+    return buf;
+}
+
+static uint32_t g_first;
+static int first_sect_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
+    (void)unused;
+    g_first = mg_first_sect_off(*pbuf, *pfsize);
+    return 0;
+}
+
+/* With no section data there is no first-section offset to report, and
+ * mg_first_sect_off says so -- MG_NO_SECTION_DATA, and nothing on stderr,
+ * so each caller words its own refusal -- rather than naming an offset
+ * nothing in the file supports. It used to answer 4096, which on an image
+ * of 4096 bytes or more lies inside the buffer and passed for a real pad
+ * boundary. */
+static void test_first_sect_off_reports_no_section_data(void) {
+    size_t sizes[] = { sizeof(struct mach_header_64) + sizeof(struct segment_command_64), 8192 };
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        size_t fsize = sizes[i];
+        uint8_t *buf = build_sectionless_image(fsize);
+        int r;
+        int said = stderr_contains_during(first_sect_thunk, &buf, &fsize, 0, "", &r);
+        CHECK(g_first == MG_NO_SECTION_DATA,
+              "first_sect_off on a %zu-byte image with no section data: "
+              "MG_NO_SECTION_DATA (got %u)", fsize, g_first);
+        CHECK(!said, "first_sect_off on a %zu-byte image with no section data: "
+              "prints nothing to stderr", fsize);
+        free(buf);
+    }
+}
+
+/* mg_ensure_pad on an image with no section data: refused, image untouched,
+ * whether or not growth is permitted and whether or not the new commands
+ * would have fitted below the 4096 mg_first_sect_off used to answer. The
+ * 104-byte image is the one whose 4096 lay past the buffer (and so was
+ * refused, before, for that); the 8192-byte one is the image whose 4096 lay
+ * inside it, where "fits" was the answer and real data sat in the "pad". */
+static void test_ensure_pad_refuses_an_image_with_no_section_data(void) {
+    size_t sizes[] = { sizeof(struct mach_header_64) + sizeof(struct segment_command_64), 8192 };
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        size_t fsize = sizes[i];
+        uint8_t *buf = build_sectionless_image(fsize);
+        const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
+        uint8_t *orig = buf;
+        size_t fsize0 = fsize;
+        uint8_t *before = (uint8_t *)malloc(fsize0);
+        memcpy(before, buf, fsize0);
+        uint32_t lc_end = (uint32_t)(sizeof *h + h->sizeofcmds);
+
+        for (int allow = 0; allow <= 1; allow++) {
+            g_ensure_need = lc_end + 16; g_ensure_allow = allow;
+            int r;
+            int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
+                                              "no section data bounds the header pad; "
+                                              "refusing rather than guess where it ends", &r);
+            CHECK(r == -1, "ensure_pad on a %zu-byte image with no section data "
+                  "(allow_grow=%d): refused (got %d)", fsize0, allow, r);
+            CHECK(said, "ensure_pad on a %zu-byte image with no section data "
+                  "(allow_grow=%d): the refusal says no section data bounds the pad",
+                  fsize0, allow);
+            CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+                  "ensure_pad on a %zu-byte image with no section data (allow_grow=%d): "
+                  "the image is byte-identical and not reallocated", fsize0, allow);
+        }
+        free(before);
+        free(buf);
+    }
+}
+
+/* A section whose file offset lies past the end of the image: that offset is
+ * the pad boundary mg_first_sect_off reports, and past the buffer's end it
+ * bounds nothing, so answering "fits" against it would let a caller write
+ * past the buffer. Refused, image untouched. */
+static void test_ensure_pad_refuses_a_section_past_the_image(void) {
+    size_t fsize = sizeof(struct mach_header_64) + sizeof(struct segment_command_64)
+                 + sizeof(struct section_64);
+    uint8_t *buf = (uint8_t *)calloc(1, fsize);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+    h->ncmds = 1;
+    h->sizeofcmds = (uint32_t)(sizeof(struct segment_command_64) + sizeof(struct section_64));
+    struct segment_command_64 *seg = (struct segment_command_64 *)(h + 1);
+    seg->cmd = LC_SEGMENT_64;
+    seg->cmdsize = h->sizeofcmds;
+    seg->nsects = 1;
+    memcpy(seg->segname, "__DATA", 6);
+    struct section_64 *sect = (struct section_64 *)(seg + 1);
+    memcpy(sect->sectname, "__data", 6);
+    memcpy(sect->segname, "__DATA", 6);
+    sect->offset = 0x7000;
+    sect->size = 0x10;
+    CHECK(mg_first_sect_off(buf, fsize) == 0x7000,
+          "ensure_pad past-the-image fixture: the first section is at 0x7000 (got %u)",
           mg_first_sect_off(buf, fsize));
 
     uint8_t *orig = buf;
@@ -1359,14 +1461,35 @@ static void test_ensure_pad_refuses_an_image_with_no_section_data(void) {
         int r;
         int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
                                           "no section data within the image; refusing", &r);
-        CHECK(r == -1, "ensure_pad on a no-section image (allow_grow=%d): refused, "
-              "though 4096 would 'fit' (got %d)", allow, r);
-        CHECK(said, "ensure_pad on a no-section image (allow_grow=%d): the refusal "
-              "says there is no section data", allow);
+        CHECK(r == -1, "ensure_pad on a section past the image (allow_grow=%d): refused, "
+              "though 0x7000 would 'fit' (got %d)", allow, r);
+        CHECK(said, "ensure_pad on a section past the image (allow_grow=%d): the refusal "
+              "says there is no section data within the image", allow);
         CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
-              "ensure_pad on a no-section image (allow_grow=%d): the image is "
+              "ensure_pad on a section past the image (allow_grow=%d): the image is "
               "byte-identical and not reallocated", allow);
     }
+    free(before);
+    free(buf);
+}
+
+/* mg_grow_header inserts its new page at the first section's file offset;
+ * with no section data there is no such offset, and it refuses before it
+ * moves anything, rather than inserting at an offset it made up. */
+static void test_grow_refuses_an_image_with_no_section_data(void) {
+    size_t fsize = 8192;
+    uint8_t *buf = build_sectionless_image(fsize);
+    uint8_t *before = (uint8_t *)malloc(fsize);
+    memcpy(before, buf, fsize);
+    size_t got_fsize = fsize;
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &got_fsize, 0x1000,
+                                      "no section data bounds the header pad", &r);
+    CHECK(r == -1, "grow refuses an image with no section data (got %d)", r);
+    CHECK(said, "grow's refusal says no section data bounds the header pad");
+    CHECK(got_fsize == fsize, "size unchanged on refusal (got %zu want %zu)", got_fsize, fsize);
+    if (got_fsize == fsize)
+        CHECK(memcmp(before, buf, fsize) == 0, "buffer byte-identical on refusal");
     free(before);
     free(buf);
 }
@@ -1548,7 +1671,10 @@ int main(void) {
     test_ensure_pad_short_and_not_permitted_refuses();
     test_ensure_pad_grows_when_permitted();
     test_ensure_pad_refuses_what_cannot_grow();
+    test_first_sect_off_reports_no_section_data();
     test_ensure_pad_refuses_an_image_with_no_section_data();
+    test_ensure_pad_refuses_a_section_past_the_image();
+    test_grow_refuses_an_image_with_no_section_data();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

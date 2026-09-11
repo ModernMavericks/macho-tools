@@ -699,12 +699,19 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
         fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", label);
         return MR_ERROR;
     }
-    /* first_sect_off bounds the commit's memset below, and it is read from
-     * the file (mi_wrap does not check section file ranges) or is
-     * mg_first_sect_off's 4096 for an image with no section data at all. Past
-     * the buffer's end it bounds nothing: a 104-byte image with one sectionless
-     * LC_SEGMENT_64 had the memset clear up to byte 4096 of a 104-byte buffer
-     * (SIGSEGV under libgmalloc; see tests/leaf-tool-crashes.sh). */
+    /* first_sect_off bounds the commit's memset below. With no section data
+     * there is no bound at all: mg_first_sect_off used to answer 4096 here,
+     * and the memset cleared up to it -- past the end of a 104-byte image
+     * (SIGSEGV under libgmalloc), and through real data in an 8192-byte one
+     * (exit 0, 3904 bytes changed; see tests/leaf-tool-crashes.sh). Refused
+     * before anything uses it. */
+    if (first_sect_off == MG_NO_SECTION_DATA) {
+        fprintf(stderr, "ERROR: %s: no section data bounds the header pad; "
+                        "refusing to rewrite its load commands\n", label);
+        return MR_ERROR;
+    }
+    /* Otherwise it is read from the file (mi_wrap does not check section
+     * file ranges), and past the buffer's end it bounds nothing. */
     if (first_sect_off > fsize) {
         fprintf(stderr, "ERROR: %s: no section data within the image; refusing\n", label);
         return MR_ERROR;
@@ -802,6 +809,15 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
         first_sect_off = mg_first_sect_off(buf, fsize);
         if (first_sect_off == UINT32_MAX) {
             fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
+            free(new_lcs);
+            return MR_ERROR;
+        }
+        /* Unreachable: growth only ran because the image had section data,
+         * which it moves and never removes. Refused anyway, the same way as
+         * above, because first_sect_off bounds the commit memset below. */
+        if (first_sect_off == MG_NO_SECTION_DATA) {
+            fprintf(stderr, "ERROR: %s: no section data bounds the header pad; "
+                            "refusing to rewrite its load commands\n", label);
             free(new_lcs);
             return MR_ERROR;
         }

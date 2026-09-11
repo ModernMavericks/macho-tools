@@ -66,18 +66,30 @@
 
 #define MG_PAGE 0x1000UL
 
+/* mg_first_sect_off's answer for an image in which no section has file data
+ * (every section's offset is 0, or there are no sections). A real answer is
+ * never 0: sections at offset 0 are exactly the ones it skips. */
+#define MG_NO_SECTION_DATA 0
+
 /* Lowest section file offset — this bounds the header pad. `fsize` is the
  * buffer's real size, wrapped through mi_wrap so this walk cannot stride past
- * it -- the bug class this whole extraction exists to prevent.
+ * it -- the bug class this whole extraction exists to prevent. The offset is
+ * read from the file and not checked against `fsize` (mi_wrap validates load
+ * commands, not section file ranges): a caller that writes up to it must
+ * check it against the buffer's size first.
  *
- * Returns UINT32_MAX, with a message on stderr, if the buffer fails to wrap
- * (bad magic, or load commands that don't fit): refuse rather than guess. A
- * fixed fallback here would be a real hazard, not a theoretical one --
- * change_dylib.c's memset(buf + 32, 0, first_sect_off - 32) turns a wrong
- * guess directly into an out-of-bounds write. Every caller must check for
- * UINT32_MAX. This differs from the UINT32_MAX -> 4096 default a few lines
- * down, which is a validated image that simply has no sections -- a real,
- * if unusual, answer rather than a guess about an image we couldn't read. */
+ * Two answers are not offsets, and every caller must check for both:
+ *
+ * UINT32_MAX, with a message on stderr, if the buffer fails to wrap (bad
+ * magic, or load commands that don't fit).
+ *
+ * MG_NO_SECTION_DATA, printing nothing, if the image validates but no section
+ * has file data, so nothing in the file says where the header pad ends. The
+ * caller words its own refusal. This used to answer 4096, and that was a guess,
+ * not an answer: on an image smaller than 4096 bytes mr_process_thin's commit
+ * memset cleared past the end of the buffer, and on a larger one 4096 lay
+ * inside it, passed every bounds check, and the same memset zeroed real data
+ * up to it. */
 uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
 
 
@@ -95,11 +107,13 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
  * fit and growth was not permitted, or when growth failed. Also -1, with the
- * image untouched and whether or not it would fit, when the first section's
- * file offset lies past the end of the buffer -- including an image with no
- * section data at all, for which mg_first_sect_off answers 4096: "no section
- * data within the image; refusing". That offset is the bound on every write
- * into the pad, and past the buffer's end it bounds nothing. If growth was
+ * image untouched and whether or not it would fit, in two cases where there is
+ * no pad boundary to check against: when no section has file data
+ * (mg_first_sect_off's MG_NO_SECTION_DATA; "no section data bounds the header
+ * pad; refusing rather than guess where it ends"), and when the first
+ * section's file offset lies past the end of the buffer ("no section data
+ * within the image; refusing"). That offset is the bound on every write into
+ * the pad, and past the buffer's end it bounds nothing. If growth was
  * refused on a precondition (not a PIE executable, chained fixups, a load
  * command whose payload grow cannot re-base) the image is untouched; a
  * failure partway through growing can leave it modified. Either way the

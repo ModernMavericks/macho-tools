@@ -43,7 +43,9 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
 
     uint32_t first = UINT32_MAX;
     mi_each_lc(&im, mg_first_sect_cb, &first);
-    return first == UINT32_MAX ? 4096 : first;
+    /* Still the sentinel: no section has file data. Say so; see grow.h for
+     * why this is not a default offset. */
+    return first == UINT32_MAX ? MG_NO_SECTION_DATA : first;
 }
 
 int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
@@ -53,11 +55,15 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
         fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", label);
         return -1;
     }
+    if (first == MG_NO_SECTION_DATA) {
+        fprintf(stderr, "ERROR: %s: no section data bounds the header pad; "
+                        "refusing rather than guess where it ends\n", label);
+        return -1;
+    }
     /* `first` bounds every write into the pad, and it comes straight from
-     * the file (mi_wrap does not check section file ranges) or is
-     * mg_first_sect_off's 4096 for an image with no section data at all.
-     * Past the buffer's end it is no bound: answering "fits" against it
-     * would let a caller write past the end of the buffer. */
+     * the file (mi_wrap does not check section file ranges). Past the
+     * buffer's end it is no bound: answering "fits" against it would let a
+     * caller write past the end of the buffer. */
     if (first > *pfsize) {
         fprintf(stderr, "ERROR: %s: no section data within the image; refusing\n", label);
         return -1;
@@ -85,6 +91,13 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     first = mg_first_sect_off(*pbuf, *pfsize);
     if (first == UINT32_MAX) {
         fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
+        return -1;
+    }
+    /* Growth moves section data and never removes it, and this function
+     * refused an image with none above. Checked anyway: `first` is printed
+     * as the new boundary just below. */
+    if (first == MG_NO_SECTION_DATA) {
+        fprintf(stderr, "ERROR: %s: header grow left no section data to bound the pad\n", label);
         return -1;
     }
     printf("%s: grew header pad: first sect now at %u (%u bytes available)\n",
@@ -977,6 +990,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
 
     uint32_t insert = mg_first_sect_off(buf, fsize);
     if (insert == UINT32_MAX) return -1;   /* already explained itself on stderr */
+    if (insert == MG_NO_SECTION_DATA) {
+        fprintf(stderr, "macho_grow: no section data bounds the header pad; refusing to "
+                        "grow it rather than guess where it ends\n");
+        return -1;
+    }
 
     /* We insert space at `insert` (the first section's file offset) and shift
      * everything from there onward. That point must be at/after the end of the
