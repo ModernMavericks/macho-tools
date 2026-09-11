@@ -123,7 +123,7 @@ struct md_collect_ctx {
     uint32_t exports_off, exports_size;
     uint32_t fixups_off, fixups_size;
     int has_dyld_info_only;
-    struct { uint8_t *pos; uint32_t size; } to_remove[16];
+    struct { uint8_t *pos; uint32_t size; uint32_t cmd; } to_remove[MDCL_MAX_STRIP];
     int n_remove;
 };
 
@@ -148,7 +148,8 @@ struct md_collect_ctx {
  * something that didn't); see tests/leaf-tool-crashes.sh (which now targets
  * the current [16] boundary, not the original [4] one this incident found
  * it at). Returns 1 (stop the walk) on overflow, 0 on success. */
-static int md_remove_push(struct md_collect_ctx *ctx, uint8_t *pos, uint32_t size) {
+static int md_remove_push(struct md_collect_ctx *ctx, uint8_t *pos, uint32_t size,
+                          uint32_t cmd) {
     int cap = (int)(sizeof ctx->to_remove / sizeof ctx->to_remove[0]);
     if (ctx->n_remove >= cap) {
         fprintf(stderr, "ERROR: more than %d load commands to strip (LC_DYLD_EXPORTS_TRIE/"
@@ -156,7 +157,7 @@ static int md_remove_push(struct md_collect_ctx *ctx, uint8_t *pos, uint32_t siz
                         "overflowing the removal table\n", cap);
         return 1;
     }
-    ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){pos, size};
+    ctx->to_remove[ctx->n_remove++] = (typeof(ctx->to_remove[0])){pos, size, cmd};
     return 0;
 }
 
@@ -189,17 +190,17 @@ static int md_collect_lc(const struct load_command *lc_, void *ctx_) {
     } else if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
         uint32_t *d = (uint32_t *)lc;
         ctx->exports_off = d[2]; ctx->exports_size = d[3];
-        if (md_remove_push(ctx, (uint8_t *)lc, lc->cmdsize)) return 1;
+        if (md_remove_push(ctx, (uint8_t *)lc, lc->cmdsize, lc->cmd)) return 1;
         printf("Exports trie: off=%u size=%u\n", ctx->exports_off, ctx->exports_size);
     } else if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) {
         uint32_t *d = (uint32_t *)lc;
         ctx->fixups_off = d[2]; ctx->fixups_size = d[3];
-        if (md_remove_push(ctx, (uint8_t *)lc, lc->cmdsize)) return 1;
+        if (md_remove_push(ctx, (uint8_t *)lc, lc->cmdsize, lc->cmd)) return 1;
         printf("Chained fixups: off=%u size=%u\n", ctx->fixups_off, ctx->fixups_size);
     } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
         ctx->has_dyld_info_only = 1;
     } else if (lc->cmd == LC_BUILD_VERSION) {
-        if (md_remove_push(ctx, (uint8_t *)lc, lc->cmdsize)) return 1;
+        if (md_remove_push(ctx, (uint8_t *)lc, lc->cmdsize, lc->cmd)) return 1;
     }
     return 0;
 }
@@ -237,7 +238,7 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     size_t fsize = im.size, cap = im.cap;
     uint8_t *buf = mi_release(&im);
     size_t len = 0;
-    int rc = md_declassify_buf(buf, fsize, cap, &len);
+    int rc = md_declassify_buf(buf, fsize, cap, &len, NULL);
     if (rc == MDCL_CONVERTED || rc == MDCL_PASSTHROUGH) {
         *out_buf = buf;
         *out_len = len;
@@ -247,7 +248,8 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     return rc;
 }
 
-int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len) {
+int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
+                      md_report *rep) {
     /* What the two cleanup labels at the bottom hand back. Declared here
      * because a goto may not jump over its initialization. */
     int rc;
@@ -552,6 +554,7 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len) {
     uint64_t needed_end = new_end;
     uint64_t new_filesize = needed_end - linkedit->fileoff;
     uint64_t new_vmsize = (new_filesize + 0xFFF) & ~0xFFFUL;
+    uint64_t linkedit_before = linkedit->filesize;
     if (new_filesize > linkedit->filesize) {
         printf("Extending __LINKEDIT: filesize %llu -> %llu, vmsize %llu -> %llu\n",
                linkedit->filesize, new_filesize, linkedit->vmsize, new_vmsize);
@@ -559,8 +562,23 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len) {
         linkedit->vmsize = new_vmsize;
     }
 
-    free(rebase.data); free(bind.data);
     *out_len = new_end;
+    if (rep) {
+        /* The removal table in load-command order is md_collect_lc's own,
+         * cctx.to_remove: the local copy above was sorted by position
+         * descending for the removal loop. */
+        memset(rep, 0, sizeof *rep);
+        rep->rebases = total_rebases;
+        rep->binds = total_binds;
+        rep->rebase_bytes = rebase.len;
+        rep->bind_bytes = bind.len;
+        rep->appended = new_end - fsize;
+        for (int i = 0; i < cctx.n_remove; i++) rep->stripped[i] = cctx.to_remove[i].cmd;
+        rep->n_stripped = cctx.n_remove;
+        rep->linkedit_before = linkedit_before;
+        rep->linkedit_after = linkedit->filesize;
+    }
+    free(rebase.data); free(bind.data);
     return MDCL_CONVERTED;
 
     /* Every refusal raised after the opcode buffers exist reaches here instead

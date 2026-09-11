@@ -6,7 +6,11 @@
  * verbs; what lives here is the lowering from a statement to that call (the
  * switch in me_apply), the sequencing, the final verify and the single
  * write. The operations print what they have always printed, to stdout and
- * stderr; this module's own report goes to me_opts.log.
+ * stderr; this module's own report goes to me_opts.log. That report includes
+ * the follow-up work an operation does beyond what its statement names, from
+ * figures the operation hands back through an out-parameter -- mr_ops'
+ * `renumbering`, md_declassify_buf's md_report, mswift_retag_image's return
+ * -- and never from a second look at the image.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +52,99 @@ static void me_log_stmt(FILE *log, const ms_stmt *st) {
     fprintf(log, "\n");
 }
 
+/* A count the way the report prints one: with commas. */
+static const char *me_count(char out[32], long n) {
+    me_commas(out, n < 0 ? 0 : (size_t)n);
+    return out;
+}
+
+/* A load command kind by its LC_* name, or in hex for one lc_cmd_name does
+ * not list. */
+static const char *me_lc(char out[16], uint32_t cmd) {
+    const char *name = lc_cmd_name(cmd);
+    if (name) return name;
+    snprintf(out, 16, "0x%08x", cmd);
+    return out;
+}
+
+/* The follow-up a dylib insert or delete carries: the library-ordinal
+ * renumbering, as the rewrite's own map and mo_map_apply's own counts
+ * describe it (rewrite.h's mr_renumbering). Indented under the statement
+ * line, in the spec's shape:
+ *
+ *       removed LC_LOAD_DYLIB (was ordinal 4)
+ *       renumbered 3 surviving ordinals: 5->4, 6->5, 7->6
+ *           12 nlist entries updated
+ *           847 SET_DYLIB_ORDINAL opcodes updated (bind 811, weak 0, lazy 36)
+ *
+ * "existing" in place of "surviving" when nothing was removed. An inserted
+ * command is named LC_LOAD_DYLIB because that is the one kind the rewrite
+ * emits for an insert (rewrite.h, mr_ops' dylib_inserts). */
+static void me_log_renumbering(FILE *log, const mr_renumbering *r) {
+    char k[16], c1[32], c2[32], c3[32], c4[32];
+    int removed = 0, moved = 0;
+    for (int i = 1; i <= r->inserted; i++)
+        fprintf(log, "      inserted LC_LOAD_DYLIB as ordinal %d\n", i);
+    for (int o = 1; o <= r->n; o++) {
+        int to = r->old_to_new[o];
+        if (to == 0) {
+            fprintf(log, "      removed %s (was ordinal %d)\n", me_lc(k, r->old_cmd[o]), o);
+            removed++;
+        } else if (to != o) {
+            moved++;
+        }
+    }
+    const char *which = removed ? "surviving" : "existing";
+    if (r->counts.flat) {
+        /* mo_map_apply walked nothing: a flat-namespace image names no
+         * library by ordinal, so a moved load command moves no reference. */
+        fprintf(log, "      flat namespace: no symbol records a library ordinal, "
+                     "so none was renumbered\n");
+        return;
+    }
+    if (moved == 0) {
+        fprintf(log, "      no %s ordinal changed\n", which);
+        return;
+    }
+    fprintf(log, "      renumbered %d %s ordinal%s:", moved, which, moved == 1 ? "" : "s");
+    const char *sep = " ";
+    for (int o = 1; o <= r->n; o++) {
+        int to = r->old_to_new[o];
+        if (to == 0 || to == o) continue;
+        fprintf(log, "%s%d->%d", sep, o, to);
+        sep = ", ";
+    }
+    fprintf(log, "\n");
+    long ops = r->counts.bind + r->counts.weak + r->counts.lazy;
+    fprintf(log, "          %s nlist entr%s updated\n",
+            me_count(c1, r->counts.nlist), r->counts.nlist == 1 ? "y" : "ies");
+    fprintf(log, "          %s SET_DYLIB_ORDINAL opcode%s updated (bind %s, weak %s, lazy %s)\n",
+            me_count(c1, ops), ops == 1 ? "" : "s", me_count(c2, r->counts.bind),
+            me_count(c3, r->counts.weak), me_count(c4, r->counts.lazy));
+}
+
+/* The follow-up `fixups set classic` carries when it converts: __LINKEDIT's
+ * opcode streams rebuilt wholesale, in md_declassify_buf's own figures
+ * (declassify.h's md_report). */
+static void me_log_declassify(FILE *log, const md_report *r) {
+    char k[16], c1[32], c2[32], c3[32], c4[32];
+    fprintf(log, "      chained fixups -> LC_DYLD_INFO_ONLY\n");
+    fprintf(log, "      %s rebase%s and %s bind%s emitted (%s bytes of opcodes, %s bytes appended)\n",
+            me_count(c1, r->rebases), r->rebases == 1 ? "" : "s",
+            me_count(c2, r->binds), r->binds == 1 ? "" : "s",
+            me_count(c3, (long)(r->rebase_bytes + r->bind_bytes)),
+            me_count(c4, (long)r->appended));
+    if (r->n_stripped > 0) {
+        fprintf(log, "      stripped");
+        for (int i = 0; i < r->n_stripped; i++)
+            fprintf(log, "%s%s", i ? ", " : " ", me_lc(k, r->stripped[i]));
+        fprintf(log, "\n");
+    }
+    if (r->linkedit_after > r->linkedit_before)
+        fprintf(log, "      __LINKEDIT extended by %s bytes\n",
+                me_count(c1, (long)(r->linkedit_after - r->linkedit_before)));
+}
+
 /* One mr_ops through the rewrite, then the verdict on anything it asked for
  * that matched nothing: a report on stderr, and a refusal under
  * fatal-warnings (ops->fatal_unmatched). The hit counts are per statement,
@@ -74,13 +171,21 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
  * 0, MR_REFUSED or MR_FAIL. *pbuf and *psize always name the current image
  * afterwards, whether or not the statement succeeded, because two of these
  * reallocate it: allow-grow's header grow inside the rewrite, and the room
- * `fixups set classic` appends its opcode streams into. */
+ * `fixups set classic` appends its opcode streams into.
+ *
+ * Under `verbose`, a statement that succeeded logs, indented beneath its
+ * statement line, the work it did beyond what it names: the ordinal
+ * renumbering of a dylib insert or delete, what `fixups set classic`
+ * converted or that it passed the image through, and what `swift-abi set
+ * legacy` retagged. */
 static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
-                    const ms_script *s, const ms_stmt *st, FILE *log) {
+                    const ms_script *s, const ms_stmt *st, FILE *log, int verbose) {
     mr_ops ops;
     mr_change change;
+    mr_renumbering renum;
     memset(&ops, 0, sizeof ops);
     memset(&change, 0, sizeof change);
+    memset(&renum, 0, sizeof renum);
     ops.fatal_unmatched = s->fatal_warnings;
 
     switch (st->kind) {
@@ -150,7 +255,14 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * mr_is_rename_only's scoping of the rewrite's own plausibility
          * check. */
         ops.allow_grow = s->allow_grow;
-        return me_rewrite(pbuf, psize, path, &ops);
+        /* Only a dylib statement can renumber: an LC_RPATH bears no
+         * ordinal. The rewrite fills renum only when it did renumber --
+         * an insert, or a delete that matched -- so a replace, an append, a
+         * reexport or a delete that matched nothing logs no follow-up. */
+        if (!rpath) ops.renumbering = &renum;
+        int rc = me_rewrite(pbuf, psize, path, &ops);
+        if (rc == 0 && verbose && renum.done) me_log_renumbering(log, &renum);
+        return rc;
     }
 
     case MS_VERSION_MIN: {
@@ -168,7 +280,14 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * retag, as `macho9 retag-swift` reports with exit 0. */
         mi_image im;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        (void)mswift_retag_image(&im);
+        int retagged = mswift_retag_image(&im);
+        if (verbose) {
+            if (retagged > 0)
+                fprintf(log, "      retagged %d class record%s\n", retagged,
+                        retagged == 1 ? "" : "s");
+            else
+                fprintf(log, "      nothing to retag\n");
+        }
         return 0;
     }
 
@@ -191,10 +310,22 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         }
         *pbuf = nb;
         memset(nb + len, 0, MDCL_SLACK);
-        int rc = md_declassify_buf(nb, len, len + MDCL_SLACK, &newlen);
+        md_report rep;
+        int rc = md_declassify_buf(nb, len, len + MDCL_SLACK, &newlen, &rep);
         /* Tested by name, as declassify.h requires: PASSTHROUGH is a nonzero
-         * success. */
-        if (rc == MDCL_CONVERTED || rc == MDCL_PASSTHROUGH) { *psize = newlen; return 0; }
+         * success. rep is filled only on CONVERTED. */
+        if (rc == MDCL_CONVERTED) {
+            *psize = newlen;
+            if (verbose) me_log_declassify(log, &rep);
+            return 0;
+        }
+        if (rc == MDCL_PASSTHROUGH) {
+            *psize = newlen;
+            if (verbose)
+                fprintf(log, "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): "
+                             "passed through unchanged\n");
+            return 0;
+        }
         if (rc == MDCL_REFUSED) return MR_REFUSED;   /* the reason is on stderr */
         if (rc == MDCL_ERROR) return MR_FAIL;        /* likewise */
         if (rc == MDCL_NOT_MACHO) {
@@ -272,7 +403,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     for (int i = 0; i < s->n; i++) {
         const ms_stmt *stmt = &s->stmts[i];
         if (verbose) me_log_stmt(log, stmt);
-        int rc = me_apply(&buf, &size, path, s, stmt, log);
+        int rc = me_apply(&buf, &size, path, s, stmt, log, verbose);
         if (rc != 0) {
             if (rc != MR_REFUSED) rc = MR_FAIL;
             fprintf(log, "macho9 edit: %s at statement %d of %d (line %d); %s left unmodified\n",

@@ -21,7 +21,9 @@
 #include "script.h"
 
 typedef struct {
-    int   verbose;        /* log each statement to `log` as it runs */
+    int   verbose;        /* log each statement to `log` as it runs, and
+                           * beneath it any follow-up work it did (see
+                           * REPORT, below) */
     int   dry_run;        /* apply and verify, but do not write */
     FILE *log;            /* where the report goes; stderr in the CLI, and
                            * stderr when NULL */
@@ -74,6 +76,24 @@ typedef struct {
  * given, else `path`. The operations keep printing their own progress to
  * stdout and their own refusals to stderr, exactly as they do for the CLI
  * verbs.
+ *
+ * FOLLOW-UPS, also under o->verbose: a statement that succeeds logs,
+ * indented beneath its statement line, the work it did beyond what it names
+ * -- the part a user cannot see for themselves. Every figure is one the
+ * operation computed while doing the work and handed back, never a second
+ * look at the image:
+ *   `dylib insert` and `dylib delete`: the command inserted or removed and
+ *     its ordinal, the renumbering map (old->new), and how many nlist
+ *     entries and SET_DYLIB_ORDINAL opcodes -- bind, weak and lazy -- the
+ *     renumbering changed (rewrite.h's mr_renumbering). A delete that
+ *     matched nothing renumbered nothing and logs none of this.
+ *   `fixups set classic`: that an already-classic image passed through, or
+ *     the rebases and binds the conversion emitted, the bytes of opcodes and
+ *     bytes appended, the commands it stripped, and how far it extended
+ *     __LINKEDIT (declassify.h's md_report).
+ *   `swift-abi set legacy`: how many class records it retagged, or
+ *     "nothing to retag".
+ * Every other statement logs only its statement line.
  *
  * DIRECTIVES.
  *

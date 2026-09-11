@@ -39,4 +39,12 @@ const char *lc_kind_name(uint32_t cmd);
  * words its own refusal. */
 int lc_kind_by_name(const char *name, uint32_t *cmd);
 
+/* A load command's own LC_* name ("LC_LOAD_DYLIB", "LC_BUILD_VERSION", ...),
+ * for every kind this toolkit names back to a user -- a different
+ * vocabulary from the KIND names above, which cover only what `lc -delete`
+ * can strip. Returns NULL for a kind not in its list, so each caller decides
+ * how to show one it does not know. cli/macho9.c's `info` dump and
+ * src/edit.c's verbose report both ask this; it is the one list. */
+const char *lc_cmd_name(uint32_t cmd);
+
 #endif

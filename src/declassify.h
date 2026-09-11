@@ -77,6 +77,11 @@
                                 * refusal from failure (the `declassify` verb
                                 * does) must NOT report this as a refusal */
 
+/* The most load commands one conversion strips: the size of its removal
+ * table (see LIMITS, below, and src/declassify.c's md_collect_ctx for why 16),
+ * and so of md_report's list of them. */
+#define MDCL_MAX_STRIP 16
+
 /* LIMITS, and what happens at each -- every one of them is a refusal, never a
  * truncated or corrupted output. The conversion works inside two fixed
  * budgets, both of them deliberate: it appends into slack allocated with the
@@ -137,6 +142,26 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len);
  * same way. */
 #define MDCL_SLACK (2*1024*1024)
 
+/* What one conversion did, for a caller that reports it (src/edit.c's
+ * verbose log). Every field is a figure the conversion already has in hand
+ * as it works -- the counters behind its "Processed N rebases, M binds"
+ * line, the lengths of the two streams it emits, the commands it strips, and
+ * __LINKEDIT's size before and after -- copied out, never recounted. */
+typedef struct {
+    int      rebases;          /* fixups lowered to REBASE_ opcodes */
+    int      binds;            /* fixups lowered to BIND_ opcodes */
+    size_t   rebase_bytes;     /* the rebase stream's length */
+    size_t   bind_bytes;       /* the bind stream's length */
+    size_t   appended;         /* bytes past the input's end: both streams
+                                * and their 8-byte alignment */
+    uint32_t stripped[MDCL_MAX_STRIP]; /* the commands removed, as LC_*
+                                        * values, in load-command order */
+    int      n_stripped;
+    uint64_t linkedit_before;  /* __LINKEDIT's filesize as found */
+    uint64_t linkedit_after;   /* ... and as left: larger when the conversion
+                                * extended it over the streams, else equal */
+} md_report;
+
 /*
  * md_declassify's conversion, without the file: the same work on an image
  * already in memory. buf[0..fsize) is the image and buf[fsize..cap) is
@@ -156,7 +181,13 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len);
  * so a caller must discard it, never write it.
  *
  * It never allocates or frees `buf`: the caller owns it throughout.
+ *
+ * `rep`, if non-NULL, receives what the conversion did (md_report) on
+ * MDCL_CONVERTED, and is left alone on every other return -- a pass-through
+ * did nothing to report, and a refusal's figures describe no output.
+ * md_declassify passes NULL.
  */
-int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len);
+int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
+                      md_report *rep);
 
 #endif /* MACHO9_DECLASSIFY_H */

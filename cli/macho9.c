@@ -415,34 +415,6 @@ struct info_ctx {
     int ordinal;
 };
 
-static const char *lc_name(uint32_t cmd) {
-    switch (cmd) {
-    case LC_SEGMENT_64:         return "LC_SEGMENT_64";
-    case LC_SYMTAB:              return "LC_SYMTAB";
-    case LC_DYSYMTAB:            return "LC_DYSYMTAB";
-    case LC_LOAD_DYLIB:          return "LC_LOAD_DYLIB";
-    case LC_ID_DYLIB:            return "LC_ID_DYLIB";
-    case LC_LOAD_WEAK_DYLIB:     return "LC_LOAD_WEAK_DYLIB";
-    case LC_REEXPORT_DYLIB:      return "LC_REEXPORT_DYLIB";
-    case LC_LOAD_UPWARD_DYLIB:   return "LC_LOAD_UPWARD_DYLIB";
-    case LC_RPATH:                return "LC_RPATH";
-    case LC_UUID:                 return "LC_UUID";
-    case LC_CODE_SIGNATURE:      return "LC_CODE_SIGNATURE";
-    case LC_VERSION_MIN_MACOSX:  return "LC_VERSION_MIN_MACOSX";
-    case LC_MAIN:                 return "LC_MAIN";
-    case LC_DYLD_INFO:            return "LC_DYLD_INFO";
-    case LC_DYLD_INFO_ONLY:      return "LC_DYLD_INFO_ONLY";
-    case LC_FUNCTION_STARTS:     return "LC_FUNCTION_STARTS";
-    case LC_DATA_IN_CODE:        return "LC_DATA_IN_CODE";
-    case LC_SOURCE_VERSION:      return "LC_SOURCE_VERSION";
-    case LC_BUILD_VERSION:       return "LC_BUILD_VERSION";
-    case LC_DYLIB_CODE_SIGN_DRS: return "LC_DYLIB_CODE_SIGN_DRS";
-    case LC_DYLD_EXPORTS_TRIE:   return "LC_DYLD_EXPORTS_TRIE";
-    case LC_DYLD_CHAINED_FIXUPS: return "LC_DYLD_CHAINED_FIXUPS";
-    default:                      return NULL;
-    }
-}
-
 /* dylib_command/rpath_command names are an lc_str offset relative to the
  * command's own start; the bounds check against cmdsize lives once, in
  * mo_lc_str_at (ordinals.h), which change_dylib.c's build_lcs and
@@ -455,7 +427,7 @@ static const char *lc_str_at(const struct load_command *lc, uint32_t offset) {
 
 static int info_cb(const struct load_command *lc, void *ctx_) {
     struct info_ctx *ctx = ctx_;
-    const char *name = lc_name(lc->cmd);
+    const char *name = lc_cmd_name(lc->cmd);
     if (name) printf("LC[%d] %s cmdsize=%u\n", ctx->idx, name, lc->cmdsize);
     else      printf("LC[%d] 0x%08x cmdsize=%u\n", ctx->idx, lc->cmd, lc->cmdsize);
 

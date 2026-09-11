@@ -594,7 +594,7 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * paragraph above, and decides whether the new field belongs in the
  * conjunction.
  *
- * 144 and 140 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) -- the LAST
+ * 152 and 148 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) -- the LAST
  * declared field -- on the only architecture this project builds (CMakeLists.txt
  * pins CMAKE_OSX_ARCHITECTURES to x86_64), so literals are stable here. They
  * are a tripwire, not a portability claim: on some other target the fix is to
@@ -637,7 +637,7 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * correctly. This version names one member of it as an example of what
  * "invisible to it" means in practice, and stops there on purpose. */
 typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
-    (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 140) ? 1 : -1];
+    (sizeof(mr_ops) == 152 && offsetof(mr_ops, allow_grow) == 148) ? 1 : -1];
 
 static int mr_is_rename_only(const mr_ops *ops) {
     return ops->segment_rename_old != NULL && ops->segment_rename_new != NULL &&
@@ -742,8 +742,10 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * survivor shifts up by that much; each deletion shifts the ones after it
      * back down. */
     int ord_map[MO_MAX_DYLIBS + 1];
+    uint32_t ord_cmd[MO_MAX_DYLIBS + 1];
     memset(ord_map, 0, sizeof ord_map);
-    mo_map omap = { ord_map, 0 };
+    memset(ord_cmd, 0, sizeof ord_cmd);
+    mo_map omap = { ord_map, 0, ord_cmd };
     int nnew;
     if (mo_map_build(buf, hdr->ncmds, ops->n_dylib_inserts, mr_is_deleted, (void *)ops, &omap, &nnew) != 0)
         return MR_ERROR;
@@ -855,7 +857,9 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
 
     /* Ordinals last, against the committed table — and before any write, so a
      * refusal leaves the input untouched rather than half-rewritten. */
-    if (needs_renumber && mo_map_apply(buf, fsize, &omap, 1) != 0) {
+    mo_counts ord_counts;
+    memset(&ord_counts, 0, sizeof ord_counts);
+    if (needs_renumber && mo_map_apply(buf, fsize, &omap, 1, &ord_counts) != 0) {
         fprintf(stderr, "ERROR: %s left unmodified\n", label);
         return MR_ERROR;
     }
@@ -931,6 +935,19 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * value is whatever the LAST mr_build_lcs produced (a rebuild after a
      * header grow replaces it rather than doubling it). */
     if (ops->segment_renamed) *ops->segment_renamed += renames;
+
+    /* The renumbering, on the same terms and for the same reason: a report
+     * of the map this rewrite built and the counts its one mo_map_apply
+     * walk kept, copied out, not re-derived. */
+    if (needs_renumber && ops->renumbering) {
+        mr_renumbering *r = ops->renumbering;
+        r->n = omap.n;
+        r->inserted = ops->n_dylib_inserts;
+        memcpy(r->old_to_new, ord_map, sizeof r->old_to_new);
+        memcpy(r->old_cmd, ord_cmd, sizeof r->old_cmd);
+        r->counts = ord_counts;
+        r->done = 1;
+    }
 
     *pbuf = buf; *pfsize = fsize;
     *out_modified = 1;

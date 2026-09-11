@@ -69,6 +69,7 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
                 return -1;
             }
             map->old_to_new[nold] = is_deleted(name, ctx) ? 0 : ++nnew;
+            if (map->cmd) map->cmd[nold] = lc->cmd;
         }
         p += lc->cmdsize;
     }
@@ -151,10 +152,12 @@ static const uint8_t *mo_uleb_skip(const uint8_t *p, const uint8_t *end) {
  * be decoded, not just scanned for, because operands (ULEBs, symbol names) would
  * otherwise be mistaken for opcodes. Returns 0 on success, -1 on a stream we
  * can't safely rewrite (unknown opcode, or a new ordinal that no longer fits the
- * encoding the linker chose — both refuse rather than corrupt).
+ * encoding the linker chose — both refuse rather than corrupt). *changed is
+ * incremented once per SET_DYLIB_ORDINAL_* opcode whose ordinal this walk
+ * changed (see mo_counts).
  */
 static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
-                                int nold, const char *what) {
+                                int nold, const char *what, long *changed) {
     uint8_t *p = base, *end = base + size;
     while (p < end) {
         uint8_t op = *p & BIND_OPCODE_MASK, imm = *p & BIND_IMMEDIATE_MASK;
@@ -184,6 +187,7 @@ static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
                 return -1;
             }
             *p = (uint8_t)(BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | (neu & BIND_IMMEDIATE_MASK));
+            if (neu != old) (*changed)++;
             p++;
             break;
         }
@@ -215,6 +219,7 @@ static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
                 if (i + 1 < len) byte |= 0x80;
                 p[1 + i] = byte;
             }
+            if ((uint64_t)neu != v) (*changed)++;
             p += 1 + len;
             break;
         }
@@ -250,7 +255,8 @@ static int mo_fits(uint64_t off, uint64_t len, size_t size) {
     return off <= (uint64_t)size && len <= (uint64_t)size - off;
 }
 
-int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose) {
+int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose,
+                 mo_counts *counts) {
     const int *map = m->old_to_new;
     int nold = m->n;
     struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
@@ -280,11 +286,20 @@ int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose) {
                         "not implemented. Refusing rather than corrupting.\n");
         return -1;
     }
+    /* Filled as each walk below goes, and handed back only once every one of
+     * them has succeeded: a refused renumbering changed nothing a caller may
+     * keep. */
+    mo_counts c = { 0, 0, 0, 0, 0 };
     if (!(hdr->flags & MH_TWOLEVEL)) {
         if (verbose) printf("  Flat namespace: no library ordinals to renumber.\n");
+        c.flat = 1;
+        if (counts) *counts = c;
         return 0;
     }
 
+    /* The nlist figure, under the name this function has always kept it by
+     * -- the summary printf below reports it -- and copied into c.nlist at
+     * the end. */
     long changed = 0;
     if (st) {
         /* image.h and fat.h both bound every access they make against a size
@@ -350,7 +365,8 @@ int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose) {
                         di->bind_off, di->bind_size, size);
                 return -1;
             }
-            if (mo_bind_stream(buf + di->bind_off, di->bind_size, map, nold, "bind") != 0)
+            if (mo_bind_stream(buf + di->bind_off, di->bind_size, map, nold, "bind",
+                               &c.bind) != 0)
                 return -1;
         }
         if (di->weak_bind_size) {
@@ -361,7 +377,7 @@ int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose) {
                 return -1;
             }
             if (mo_bind_stream(buf + di->weak_bind_off, di->weak_bind_size, map, nold,
-                                "weak bind") != 0)
+                                "weak bind", &c.weak) != 0)
                 return -1;
         }
         if (di->lazy_bind_size) {
@@ -372,12 +388,14 @@ int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose) {
                 return -1;
             }
             if (mo_bind_stream(buf + di->lazy_bind_off, di->lazy_bind_size, map, nold,
-                                "lazy bind") != 0)
+                                "lazy bind", &c.lazy) != 0)
                 return -1;
         }
     }
 
     if (verbose)
         printf("  Renumbered library ordinals: %ld symbol entries + bind streams\n", changed);
+    c.nlist = changed;
+    if (counts) *counts = c;
     return 0;
 }

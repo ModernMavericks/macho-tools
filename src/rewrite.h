@@ -54,6 +54,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "ordinals.h"
+
 /* One dylib-path (or rpath) operation.
  *
  * new_path == NULL  -- delete the command naming old_path
@@ -70,6 +72,22 @@ typedef struct {
     const char *new_path;
     int reexport;
 } mr_change;
+
+/* What a rewrite's ordinal renumbering did: the follow-up work an insert or
+ * a delete of a dylib does unasked (LIBRARY ORDINALS, above), handed back so
+ * a front-end can report it. Every field is copied from the one map and the
+ * one renumbering the rewrite already made -- mo_map_build's map, with the
+ * load command kind it saw at each old ordinal, and mo_map_apply's
+ * mo_counts -- and nothing here is recomputed. */
+typedef struct {
+    int       done;                          /* 1 once the rest is filled in */
+    int       n;                             /* ordinals the image had: 1..n */
+    int       inserted;                      /* the new LC_LOAD_DYLIBs took
+                                              * ordinals 1..inserted */
+    int       old_to_new[MO_MAX_DYLIBS + 1]; /* mo_map's: 0 = deleted */
+    uint32_t  old_cmd[MO_MAX_DYLIBS + 1];    /* the kind at each old ordinal */
+    mo_counts counts;                        /* what mo_map_apply changed */
+} mr_renumbering;
 
 /* Everything one run of the rewriter is being asked to do. Each array is
  * caller-owned and read-only for the duration of the call; a count of 0 means
@@ -105,8 +123,8 @@ typedef struct {
      * (src/segname.h), shared with the rename_segment grammar. */
     const char      *segment_rename_old;
     const char      *segment_rename_new;
-    /* OUT, and the only field here that is not an instruction: if non-NULL,
-     * the rewriter ADDS to it the number of LC_SEGMENT_64s it actually
+    /* OUT, one of the two fields here that are not instructions
+     * (renumbering, next, is the other): if non-NULL, the rewriter ADDS to it the number of LC_SEGMENT_64s it actually
      * renamed -- summed over every slice of a fat container, and left alone
      * entirely when the rewrite is refused, since a refused rewrite renamed
      * nothing on disk.
@@ -121,6 +139,17 @@ typedef struct {
      * nothing matched, so the count has to come from the code that did the
      * matching. cli/macho9.c's `segment` verb reports it. */
     int             *segment_renamed;
+    /* OUT, filled on the same terms as segment_renamed: only past every
+     * gate, never by a refused rewrite. If non-NULL and the rewrite renumbered library
+     * ordinals -- it inserted or deleted a dylib -- *renumbering is
+     * OVERWRITTEN with what that renumbering did (see mr_renumbering) and
+     * its `done` set to 1. Otherwise it is left alone, so a caller zeroes it
+     * first and reads `done`. Overwritten rather than added to, because a map
+     * does not sum: for a fat container each slice that renumbers replaces
+     * the previous slice's. src/edit.c, the only caller that sets it, edits
+     * thin images only. Being an OUT, it is not consulted by
+     * mr_is_rename_only, any more than segment_renamed is. */
+    mr_renumbering  *renumbering;
     /* If non-zero, mr_apply_file refuses (returns MR_REFUSED, below) when
      * mr_report_unmatched finds that any dylib_changes/rpath_changes/
      * strip_cmds entry matched nothing -- the same report Task 1 already

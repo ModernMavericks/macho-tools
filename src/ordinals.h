@@ -49,10 +49,17 @@
  * ordinal `old`, or 0 if that dylib was deleted. Index 0 is unused (ordinals
  * are 1-based); valid indices are 1..n. `old_to_new` is caller-owned, sized
  * at least MO_MAX_DYLIBS+1, so a caller can put it on the stack and know
- * exactly how long it needs to stay alive -- this module never allocates. */
+ * exactly how long it needs to stay alive -- this module never allocates.
+ *
+ * `cmd` is optional and caller-owned the same way (NULL for none): when
+ * given, mo_map_build records in cmd[old] the load command kind (LC_LOAD_DYLIB,
+ * LC_LOAD_WEAK_DYLIB, ...) it found at old ordinal `old` -- in the same walk
+ * that assigns the ordinal, so a report of what was deleted names the command
+ * the map actually deleted. */
 typedef struct mo_map {
     int *old_to_new;
     int n;
+    uint32_t *cmd;
 } mo_map;
 
 /* Is `cmd` a load command that consumes a library ordinal? LC_ID_DYLIB is
@@ -82,7 +89,8 @@ const char *mo_lc_str_at(const struct load_command *lc, uint32_t offset);
  * its new ordinal: `is_deleted(name, ctx)` true maps it to 0, otherwise it
  * gets the next ordinal after `base` (so -insert, which claims 1..ninserts
  * ahead of the existing dylibs, passes ninserts as `base`). Fills
- * map->old_to_new[1..map->n] and map->n itself; map->old_to_new must already
+ * map->old_to_new[1..map->n], map->n itself, and map->cmd[1..map->n] when
+ * map->cmd is non-NULL; map->old_to_new must already
  * point at a caller-owned array of at least MO_MAX_DYLIBS+1 ints. *out_nnew
  * receives the highest new ordinal handed out (base + count of survivors),
  * which is also the ordinal ceiling for mo_map_validate. Returns 0, or -1
@@ -128,6 +136,25 @@ int mo_count_ordinal_lcs(const uint8_t *lcs, uint32_t ncmds);
 int mo_map_validate(const mo_map *map, int base, int max_new, int nadds,
                      const uint8_t *new_lcs, uint32_t new_ncmds);
 
+/* What one mo_map_apply changed, place by place. Each figure is counted in
+ * the walk that makes the change -- the symtab loop for `nlist`, the one
+ * opcode walk per stream for the other three -- never by walking again, so
+ * a count cannot disagree with the rewrite it describes.
+ *
+ * "Changed" means the recorded ordinal is now different: an entry or opcode
+ * whose dylib kept its ordinal is not counted (for an opcode, even though
+ * the walk re-encodes it in place with the same value). The three opcode
+ * figures count SET_DYLIB_ORDINAL_IMM and SET_DYLIB_ORDINAL_ULEB together,
+ * per stream. */
+typedef struct {
+    int  flat;   /* 1: a flat-namespace image records no library ordinals,
+                  * so nothing was walked and every count is 0 */
+    long nlist;  /* undefined/prebound symtab entries whose n_desc changed */
+    long bind;   /* SET_DYLIB_ORDINAL_* opcodes changed in the bind stream */
+    long weak;   /* ... in the weak-bind stream */
+    long lazy;   /* ... in the lazy-bind stream */
+} mo_counts;
+
 /* Apply `map` to every place the `size`-byte buffer at `buf` records a
  * library ordinal: the symtab's undefined/prebound symbols, and the
  * LC_DYLD_INFO bind/weak-bind/lazy-bind streams. Must run against the
@@ -142,7 +169,9 @@ int mo_map_validate(const mo_map *map, int base, int max_new, int nadds,
  * opcode, a new ordinal that no longer fits the encoding the linker chose, a
  * symbol still bound to a deleted dylib, or a symtab/bind-stream region that
  * does not fit within `size`. `verbose` prints a one-line summary on
- * success. */
-int mo_map_apply(uint8_t *buf, size_t size, const mo_map *map, int verbose);
+ * success, to stdout. `counts`, if non-NULL, receives what changed (see
+ * mo_counts) on success and is left alone on a refusal. */
+int mo_map_apply(uint8_t *buf, size_t size, const mo_map *map, int verbose,
+                 mo_counts *counts);
 
 #endif /* MACHO9_ORDINALS_H */
