@@ -94,7 +94,12 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * "grew header pad: ...").
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
- * fit and growth was not permitted, or when growth failed. If growth was
+ * fit and growth was not permitted, or when growth failed. Also -1, with the
+ * image untouched and whether or not it would fit, when the first section's
+ * file offset lies past the end of the buffer -- including an image with no
+ * section data at all, for which mg_first_sect_off answers 4096: "no section
+ * data within the image; refusing". That offset is the bound on every write
+ * into the pad, and past the buffer's end it bounds nothing. If growth was
  * refused on a precondition (not a PIE executable, chained fixups, a load
  * command whose payload grow cannot re-base) the image is untouched; a
  * failure partway through growing can leave it modified. Either way the

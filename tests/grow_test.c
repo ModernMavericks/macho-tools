@@ -1325,6 +1325,52 @@ static void check_ensure_refuses_unchanged(const char *what, int opts,
     free(buf);
 }
 
+/* A header and one LC_SEGMENT_64 with no sections: 104 bytes, and no section
+ * data to bound the pad, so mg_first_sect_off answers its 4096 default --
+ * past the end of the buffer. Trusting that bound is what sent
+ * mr_process_thin's commit memset off the end of the buffer
+ * (tests/leaf-tool-crashes.sh); answering "fits" against it would invite a
+ * caller to make the same mistake. */
+static void test_ensure_pad_refuses_an_image_with_no_section_data(void) {
+    size_t fsize = sizeof(struct mach_header_64) + sizeof(struct segment_command_64);
+    uint8_t *buf = (uint8_t *)calloc(1, fsize);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+    h->ncmds = 1;
+    h->sizeofcmds = sizeof(struct segment_command_64);
+    struct segment_command_64 *seg = (struct segment_command_64 *)(h + 1);
+    seg->cmd = LC_SEGMENT_64;
+    seg->cmdsize = sizeof *seg;
+    memcpy(seg->segname, "__DATA", 6);
+    CHECK(mg_first_sect_off(buf, fsize) == 4096,
+          "ensure_pad no-section fixture: first section defaults to 4096 (got %u)",
+          mg_first_sect_off(buf, fsize));
+
+    uint8_t *orig = buf;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    uint32_t lc_end = (uint32_t)(sizeof *h + h->sizeofcmds);
+
+    for (int allow = 0; allow <= 1; allow++) {
+        g_ensure_need = lc_end + 16; g_ensure_allow = allow;
+        int r;
+        int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
+                                          "no section data within the image; refusing", &r);
+        CHECK(r == -1, "ensure_pad on a no-section image (allow_grow=%d): refused, "
+              "though 4096 would 'fit' (got %d)", allow, r);
+        CHECK(said, "ensure_pad on a no-section image (allow_grow=%d): the refusal "
+              "says there is no section data", allow);
+        CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+              "ensure_pad on a no-section image (allow_grow=%d): the image is "
+              "byte-identical and not reallocated", allow);
+    }
+    free(before);
+    free(buf);
+}
+
 static void test_ensure_pad_refuses_what_cannot_grow(void) {
     check_ensure_refuses_unchanged("a dylib", 0, MH_DYLIB, MH_PIE,
                                    "cannot grow a dylib or bundle");
@@ -1502,6 +1548,7 @@ int main(void) {
     test_ensure_pad_short_and_not_permitted_refuses();
     test_ensure_pad_grows_when_permitted();
     test_ensure_pad_refuses_what_cannot_grow();
+    test_ensure_pad_refuses_an_image_with_no_section_data();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

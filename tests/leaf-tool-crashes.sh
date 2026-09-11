@@ -16,7 +16,11 @@
 #                      a nonzero file offset, so add_version_min's "is there
 #                      room before the first section" check never found a
 #                      bound and wrote LC_VERSION_MIN_MACOSX 16 bytes past a
-#                      buffer whose allocation was exactly file-sized.
+#                      buffer whose allocation was exactly file-sized. The
+#                      load-command rewriter (`macho9 dylib`) had the same
+#                      blind spot: its commit cleared the pad up to 4096,
+#                      the first-section offset it assumes for an image
+#                      with no section data.
 #   oobsection.macho   one LC_SEGMENT_64/__DATA with one section,
 #                      __objc_classlist, whose offset/size (0x7000/0x8000)
 #                      point entirely past this tiny file -- retag_swift_
@@ -36,6 +40,7 @@ BIN="${1:?usage: leaf-tool-crashes.sh <bindir>}"
 [ -x "$BIN/add_version_min" ] || { echo "leaf-tool-crashes: $BIN/add_version_min not found" >&2; exit 1; }
 [ -x "$BIN/retag_swift_classes" ] || { echo "leaf-tool-crashes: $BIN/retag_swift_classes not found" >&2; exit 1; }
 [ -x "$BIN/patch_macho" ] || { echo "leaf-tool-crashes: $BIN/patch_macho not found" >&2; exit 1; }
+[ -x "$BIN/macho9" ] || { echo "leaf-tool-crashes: $BIN/macho9 not found" >&2; exit 1; }
 
 CC="${CC:-clang}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -152,6 +157,42 @@ if [ -f /usr/lib/libgmalloc.dylib ]; then
 else
     skip "add_version_min: nosect fixture (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
+
+# --- macho9 dylib ------------------------------------------------------------
+# The same fixture reached the load-command rewriter's commit, whose memset
+# cleared the pad up to the first section's offset -- 4096 when there is no
+# section data at all, in a 104-byte buffer. It must refuse, with or without
+# --allow-grow, and leave the file as it was.
+sha_of() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
+for grow in "" --allow-grow; do
+    for gm in "" /usr/lib/libgmalloc.dylib; do
+        what="macho9 dylib -append${grow:+ $grow}: nosect fixture${gm:+ (libgmalloc)}"
+        if [ -n "$gm" ] && [ ! -f "$gm" ]; then
+            skip "$what" "no $gm on this host"
+            continue
+        fi
+        cp "$T/nosect.macho" "$T/dy.macho"
+        before=$(sha_of "$T/dy.macho")
+        rc=0
+        if [ -n "$gm" ]; then
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/dy.macho" -append /x $grow \
+                >"$T/dy.out" 2>"$T/dy.err" || rc=$?
+        else
+            "$BIN/macho9" dylib "$T/dy.macho" -append /x $grow \
+                >"$T/dy.out" 2>"$T/dy.err" || rc=$?
+        fi
+        if [ "$rc" -gt 127 ]; then
+            bad "$what" "killed by a signal (exit $rc) -- the heap overflow this fixture exists to catch"
+        elif [ "$rc" -eq 1 ] && grep -q "no section data within the image; refusing" "$T/dy.err"; then
+            ok "$what: refuses (1), naming the missing section data"
+        else
+            bad "$what" "expected exit 1 + 'no section data' message, got exit $rc: $(cat "$T/dy.err")"
+        fi
+        [ "$(sha_of "$T/dy.macho")" = "$before" ] \
+            && ok "$what: leaves the file unchanged" \
+            || bad "$what" "the refused run modified the file"
+    done
+done
 
 # --- retag_swift_classes ----------------------------------------------------
 cp "$T/oobsection.macho" "$T/rt.macho"

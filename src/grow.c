@@ -53,6 +53,15 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
         fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", label);
         return -1;
     }
+    /* `first` bounds every write into the pad, and it comes straight from
+     * the file (mi_wrap does not check section file ranges) or is
+     * mg_first_sect_off's 4096 for an image with no section data at all.
+     * Past the buffer's end it is no bound: answering "fits" against it
+     * would let a caller write past the end of the buffer. */
+    if (first > *pfsize) {
+        fprintf(stderr, "ERROR: %s: no section data within the image; refusing\n", label);
+        return -1;
+    }
     if (need_end <= first) return 0;
 
     const struct mach_header_64 *hdr = (const struct mach_header_64 *)*pbuf;

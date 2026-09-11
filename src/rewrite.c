@@ -699,6 +699,16 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
         fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", label);
         return MR_ERROR;
     }
+    /* first_sect_off bounds the commit's memset below, and it is read from
+     * the file (mi_wrap does not check section file ranges) or is
+     * mg_first_sect_off's 4096 for an image with no section data at all. Past
+     * the buffer's end it bounds nothing: a 104-byte image with one sectionless
+     * LC_SEGMENT_64 had the memset clear up to byte 4096 of a 104-byte buffer
+     * (SIGSEGV under libgmalloc; see tests/leaf-tool-crashes.sh). */
+    if (first_sect_off > fsize) {
+        fprintf(stderr, "ERROR: %s: no section data within the image; refusing\n", label);
+        return MR_ERROR;
+    }
     uint32_t cur_lc_end = sizeof(struct mach_header_64) + hdr->sizeofcmds;
     uint32_t pad_avail = first_sect_off > cur_lc_end ? first_sect_off - cur_lc_end : 0;
     printf("%s: header pad %u bytes available (LC end=%u, first sect=%u)\n",
@@ -795,15 +805,16 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
             free(new_lcs);
             return MR_ERROR;
         }
-        /* growth (mg_ensure_pad -> mg_grow_header) reallocs the raw buffer, not through image.h, so the
-         * `im` wrapped at the top of this function is stale here (it still
-         * points at whatever `buf` was before the realloc). Re-wrap it over
-         * the relocated buffer -- mi_wrap never allocates or frees (im.owned
-         * stays 0), so overwriting `im` in place is safe, and this re-wrap
-         * cannot fail in practice: mg_first_sect_off just above ran the same
-         * mi_wrap validation against this exact buf/fsize and already
-         * returned success. Handled defensively anyway, same as every other
-         * "provably unreachable, checked anyway" spot in this codebase. */
+        /* growth (mg_ensure_pad -> mg_grow_header) reallocs the raw buffer,
+         * not through image.h, so the `im` wrapped at the top of this
+         * function is stale here (it still points at whatever `buf` was
+         * before the realloc). Re-wrap it over the relocated buffer --
+         * mi_wrap never allocates or frees (im.owned stays 0), so
+         * overwriting `im` in place is safe, and this re-wrap cannot fail in
+         * practice: mg_first_sect_off just above ran the same mi_wrap
+         * validation against this exact buf/fsize and already returned
+         * success. Handled defensively anyway, same as every other "provably
+         * unreachable, checked anyway" spot in this codebase. */
         if (mi_wrap(buf, fsize, &im) != 0) {
             fprintf(stderr, "ERROR: %s: grown header fails validation; refusing\n", label);
             free(new_lcs);
