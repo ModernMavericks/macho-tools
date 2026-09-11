@@ -106,27 +106,31 @@ artifacts ("Task N", briefs, rounds) — all predate item 2.
 
 ## Carried out of item 10
 
-**A confirmed silent-corruption bug, pre-existing, to fix before item 6.**
-`mg_first_sect_off` answers 4096 for an image with no section data, and
-`src/grow.h` calls that "a real, if unusual, answer". It is not: on a
-sectionless image of 4096 bytes or more, `mr_process_thin` takes it as the
-header-pad boundary, and its commit zeroes everything up to it. Reproduced on
-an 8192-byte image: `MACHO_NO_VERIFY=1 macho9 dylib F -append /x` exits 0
-having zeroed bytes 200..4095. (Without the variable `mg_plausible` happened to
-refuse that fixture, for an unrelated reason, so it is no guard.)
-`src/declassify.c:514-527` has its own copy of the same 4096 fallback, checked
+**A confirmed silent-corruption bug, pre-existing: fixed in `66ca5ce`.**
+`mg_first_sect_off` answered 4096 for an image with no section data, and
+`src/grow.h` called that "a real, if unusual, answer". It was not: on a
+sectionless image of 4096 bytes or more, `mr_process_thin` took it as the
+header-pad boundary, and its commit zeroed everything up to it. Reproduced on
+an 8192-byte image: `macho9 dylib F -append /x` exited 0 having zeroed bytes
+200..4095, with or without `MACHO_NO_VERIFY`, because `mg_plausible` accepts
+that image. (An earlier version of this note said `mg_plausible` happened to
+refuse the fixture without the variable; it does not, so it was never a
+guard.) `src/declassify.c` had its own copy of the same 4096 fallback, checked
 against `buf + 4096` and never against the file size. The smaller case -- a
 sectionless image shorter than 4096 bytes, which wrote past the buffer -- was
-fixed in item 10 (`34a3187`); this is the rest of it. The fix is to stop
-treating "no sections" as "4096": refuse, as version-min already does.
+fixed in item 10 (`34a3187`). `66ca5ce` stops treating "no sections" as
+"4096": `mg_first_sect_off` answers `MG_NO_SECTION_DATA`, every caller that
+writes into the pad refuses it (declassify also refuses a first section past
+the end of the image), and `macho9 info` reports the pad as unknown.
 
-**Four wording overclaims for item 6's documentation pass:** `src/grow.h:99-101`
-(an image with no section data is refused only when shorter than 4096 bytes);
+**Four wording overclaims for item 6's documentation pass**, two of them
+resolved by `66ca5ce`, which rewrote both passages: `src/grow.h:99-101` (an
+image with no section data was refused only when shorter than 4096 bytes) and
 `tests/leaf-tool-crashes.sh:19-23` (past tense about a clearing that still
-happens on large images); `README.md:300` and `src/edit.h:153` ("Nor does the
-conversion need it" needs the same "on a modern chained binary" qualifier as
-the sentence after it); `src/edit.h:108-114` (omits the grow line printed before
-a refusal on a non-PIE image).
+happened on large images). Still open: `README.md:300` and `src/edit.h:153`
+("Nor does the conversion need it" needs the same "on a modern chained binary"
+qualifier as the sentence after it); `src/edit.h:108-114` (omits the grow line
+printed before a refusal on a non-PIE image).
 
 ## Outstanding owner actions
 
