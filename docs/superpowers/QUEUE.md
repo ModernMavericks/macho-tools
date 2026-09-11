@@ -5,10 +5,10 @@ The agreed order. Each item names its spec and, once written, its plan.
 | # | item | spec | plan | state |
 |---|---|---|---|---|
 | 1 | Report what macho9 did | — | `plans/2026-09-10-report-what-macho9-did.md` | **done**, pushed, CI green at `77f076a` |
-| 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | executing |
-| 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; shelved until item 2 merges |
+| 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | **done**, pushed, CI green at `36703e0` |
+| 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; unblocked |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | plan written; shelved until item 3 merges |
-| 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written; shelved until item 2 merges |
+| 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written before item 2 shipped; re-check against it before starting (see below) |
 | 6 | **Human code review + excellent documentation** | — | — | not started |
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
@@ -53,6 +53,45 @@ where it belongs.
 
 **7 after everything but 8** because rewriting history invalidates every commit
 SHA this repo's docs, ledgers and plans cite.
+
+## Carried out of item 2
+
+Item 2 shipped `cbcacd3..36703e0`. What it deliberately left for later, so the
+record does not live only in a git-ignored ledger:
+
+**For item 5.** Its plan predates what item 2 built, and should be re-read
+against `src/edit.c`, the buffer-level seams item 2 exposed (`mr_apply_image`,
+`mv_add_version_min_image`, `mswift_retag_image`, `md_declassify_buf`),
+`lc_kind_by_name`, and the `mr_ops` result pointers (`segment_renamed`,
+`renumbering`). Open items that belong to it:
+
+- During an `edit` run the operations still print their own stdout progress
+  lines, so a run later refused can show "updated" on stdout. Those lines are
+  the compat wrappers' byte-identical contract; silencing them per front-end is
+  the output restructuring verb lowering exists to do. The README says stderr's
+  refusal line and the exit code are authoritative meanwhile.
+- The segment-name validity check lives in the front-ends (`cmd_segment`,
+  `src/edit.c`), not in the operation.
+- An allocation failure inside `mg_grow_header` or `mg_plausible` is reported
+  as refused (1), not error (2): splitting their per-slice status widens into
+  `src/grow.c`'s contracts. Disclosed in `src/rewrite.c`.
+- The core's no-room message says "pass -grow to enlarge it", naming neither
+  `edit`'s `allow-grow` directive nor the CLI's `--allow-grow`.
+
+**Limits of `edit` as shipped**, each refused rather than wrong:
+- thin 64-bit input only; a fat file is refused;
+- `allow-grow` reaches `dylib` and `rpath` only; `version-min set` refuses
+  "no room" even under it;
+- statement order is execution order, so two `dylib insert` lines give the
+  reverse of `-insert A -insert B`. A generator that emits scripts from verb
+  lines (`compat/translate.sh`, per the spec's "Consumers") must reverse them.
+
+**For item 6** (pre-existing, found along the way): `src/rewrite.c`'s three
+unchecked `calloc`s (two in `mr_process_thin`, one in `mr_process_fat`) crash
+rather than refuse on allocation failure; `src/swift_retag.h`'s "only
+MSWIFT_ERROR is a failure of the tool itself" is false since `MSWIFT_RACED`
+also exits 2; about 87 older comments across the tree still name plan
+artifacts ("Task N", briefs, rounds) — all predate item 2.
 
 ## Outstanding owner actions
 
