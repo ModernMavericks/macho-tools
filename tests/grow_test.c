@@ -232,6 +232,10 @@ static void test_init_offsets_rebase(void) {
                                * test_grow_refuses_note. */
 #define MG_T_ATOM_INFO 1024  /* LC_ATOM_INFO: same story as MG_T_NOTE -- refused,
                                * previously untested. See test_grow_refuses_atom_info. */
+#define MG_T_CHAINED 2048    /* LC_DYLD_CHAINED_FIXUPS: refused by mg_classify,
+                               * because chained pointers encode offsets from the
+                               * image base, which growing moves. See
+                               * test_ensure_pad_refuses_what_cannot_grow. */
 
 /* note_command isn't in the 10.9 SDK's <mach-o/loader.h> (see
  * src/mach_compat.h's own comment on LC_NOTE); this is dyld/ld64's publicly
@@ -429,6 +433,13 @@ static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts)
         ac->cmdsize = sizeof *ac;
         ac->dataoff = 6656; ac->datasize = 8;
         h->ncmds++; h->sizeofcmds += ac->cmdsize; lcend += ac->cmdsize;
+    }
+    if (opts & MG_T_CHAINED) {
+        struct linkedit_data_command *cf = (struct linkedit_data_command *)lcend;
+        cf->cmd = LC_DYLD_CHAINED_FIXUPS;
+        cf->cmdsize = sizeof *cf;
+        cf->dataoff = 6656; cf->datasize = 8;
+        h->ncmds++; h->sizeofcmds += cf->cmdsize; lcend += cf->cmdsize;
     }
     if (opts & MG_T_ODDSECT) sc->flags = 0x7e;   /* unknown SECTION_TYPE */
 
@@ -1226,6 +1237,103 @@ static void test_grow_refuses_32bit_mach_header(void) {
     free(buf);
 }
 
+/* ---- mg_ensure_pad: the one place that decides whether there is room ---- */
+
+static uint32_t g_ensure_need;
+static int      g_ensure_allow;
+static int ensure_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
+    (void)unused;
+    return mg_ensure_pad(pbuf, pfsize, g_ensure_need, g_ensure_allow, "t");
+}
+
+static void test_ensure_pad_fits_is_a_noop(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_growable_image(&fsize, &sect_off);
+    uint8_t *orig = buf;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+
+    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
+    uint32_t lc_end = (uint32_t)sizeof *h + h->sizeofcmds;
+    int r = mg_ensure_pad(&buf, &fsize, lc_end, 0, "t");
+    CHECK(r == 0, "ensure_pad: the current load commands fit (got %d)", r);
+    r = mg_ensure_pad(&buf, &fsize, sect_off, 0, "t");
+    CHECK(r == 0, "ensure_pad: reaching exactly the first section still fits (got %d)", r);
+    CHECK(buf == orig && fsize == fsize0, "ensure_pad: a fit neither reallocates nor resizes");
+    CHECK(memcmp(before, buf, fsize0) == 0, "ensure_pad: a fit leaves every byte alone");
+    free(before);
+    free(buf);
+}
+
+static void test_ensure_pad_short_and_not_permitted_refuses(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_growable_image(&fsize, &sect_off);
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+
+    g_ensure_need = sect_off + 1; g_ensure_allow = 0;
+    int r;
+    int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
+                                      "growing the header needs allow-grow", &r);
+    CHECK(r == -1, "ensure_pad: short and not permitted is refused (got %d)", r);
+    CHECK(said, "ensure_pad: the refusal names allow-grow as the remedy");
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "ensure_pad: a refusal leaves the image byte-identical");
+    free(before);
+    free(buf);
+}
+
+static void test_ensure_pad_grows_when_permitted(void) {
+    size_t fsize; uint32_t sect_off;
+    /* MG_T_FUNCSTARTS so the plausibility check below has function starts
+     * and initializers to check against each other after the base moved. */
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_FUNCSTARTS);
+    size_t fsize0 = fsize;
+    int r = mg_ensure_pad(&buf, &fsize, sect_off + 1, 1, "t");
+    CHECK(r == 0, "ensure_pad: short and permitted grows (got %d)", r);
+    CHECK(fsize >= fsize0 + MG_PAGE, "ensure_pad: the image grew by at least a page "
+          "(got %zu, was %zu)", fsize, fsize0);
+    CHECK(mg_first_sect_off(buf, fsize) == sect_off + MG_PAGE,
+          "ensure_pad: the first section moved out by one page (got %u, was %u)",
+          mg_first_sect_off(buf, fsize), sect_off);
+    CHECK(mg_plausible(buf, fsize) == 0, "ensure_pad: the grown image is plausible");
+    free(buf);
+}
+
+static void check_ensure_refuses_unchanged(const char *what, int opts,
+                                           uint32_t filetype, uint32_t flags,
+                                           const char *needle) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, opts);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->filetype = filetype;
+    h->flags = flags;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+
+    g_ensure_need = sect_off + 1; g_ensure_allow = 1;
+    int r;
+    int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0, needle, &r);
+    CHECK(r == -1, "ensure_pad on %s: refused even when permitted (got %d)", what, r);
+    CHECK(said, "ensure_pad on %s: the refusal says '%s'", what, needle);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "ensure_pad on %s: the image is byte-identical", what);
+    free(before);
+    free(buf);
+}
+
+static void test_ensure_pad_refuses_what_cannot_grow(void) {
+    check_ensure_refuses_unchanged("a dylib", 0, MH_DYLIB, MH_PIE,
+                                   "cannot grow a dylib or bundle");
+    check_ensure_refuses_unchanged("a non-PIE executable", 0, MH_EXECUTE, 0,
+                                   "not PIE");
+    check_ensure_refuses_unchanged("an image with chained fixups", MG_T_CHAINED,
+                                   MH_EXECUTE, MH_PIE, "fixups set classic");
+}
+
 /* ---- plausibility: verification without a "before" ----
  * The invariant check is strictly stronger, but it needs a snapshot taken before
  * the transform -- which the wrapper cannot have, because it verifies the end
@@ -1390,6 +1498,10 @@ int main(void) {
     test_grow_refuses_overflowing_section_offset();
     test_grow_refuses_overflowing_reloff();
     test_grow_refuses_overflowing_entryoff();
+    test_ensure_pad_fits_is_a_noop();
+    test_ensure_pad_short_and_not_permitted_refuses();
+    test_ensure_pad_grows_when_permitted();
+    test_ensure_pad_refuses_what_cannot_grow();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

@@ -46,6 +46,43 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     return first == UINT32_MAX ? 4096 : first;
 }
 
+int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
+                  int allow_grow, const char *label) {
+    uint32_t first = mg_first_sect_off(*pbuf, *pfsize);
+    if (first == UINT32_MAX) {
+        fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", label);
+        return -1;
+    }
+    if (need_end <= first) return 0;
+
+    const struct mach_header_64 *hdr = (const struct mach_header_64 *)*pbuf;
+    uint32_t cur_lc_end = (uint32_t)sizeof *hdr + hdr->sizeofcmds;
+    uint32_t pad_avail  = first > cur_lc_end ? first - cur_lc_end : 0;
+    uint32_t new_lcs    = need_end - (uint32_t)sizeof *hdr;
+    if (!allow_grow) {
+        fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail); "
+                        "growing the header needs allow-grow\n", label, new_lcs, pad_avail);
+        return -1;
+    }
+
+    uint32_t grow_req = need_end - first;
+    printf("%s: load commands need %u more bytes than the %u-byte pad; growing header...\n",
+           label, grow_req, pad_avail);
+    if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
+        fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit and header could not be grown\n",
+                label, new_lcs);
+        return -1;
+    }
+    first = mg_first_sect_off(*pbuf, *pfsize);
+    if (first == UINT32_MAX) {
+        fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
+        return -1;
+    }
+    printf("%s: grew header pad: first sect now at %u (%u bytes available)\n",
+           label, first, first - cur_lc_end);
+    return 0;
+}
+
 int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow) {
     if (size == 0) return -1;
     uint64_t d0; int n0 = mu_decode(blob, blob + size, &d0);
@@ -580,8 +617,9 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
                   "not re-based";
             break;
         case LC_DYLD_CHAINED_FIXUPS:
-            why = "LC_DYLD_CHAINED_FIXUPS is not supported here; run patch_macho first to "
-                  "convert it to LC_DYLD_INFO_ONLY";
+            why = "LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the "
+                  "image base, which growing moves; convert them first (`fixups set "
+                  "classic` in an edit script, or `macho9 declassify`)";
             break;
         /* LC_NOTE (note_command: a uint64_t offset/size pair, per publicly
          * documented ld64/dyld source) and LC_ATOM_INFO (reported elsewhere
@@ -609,8 +647,8 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
             return -1;
         }
         if (why) {
-            fprintf(stderr, "macho_grow: %s. Refusing to grow. Reclaim header bytes instead "
-                            "(change_dylib -strip-lc uuid -strip-lc codesig).\n", why);
+            fprintf(stderr, "macho_grow: %s. Refusing to grow. Reclaim header bytes "
+                            "instead by deleting load commands (uuid, codesig).\n", why);
             return -1;
         }
 
@@ -916,16 +954,15 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
     if (hdr->filetype != MH_EXECUTE) {
-        fprintf(stderr, "macho_grow: only MH_EXECUTE is supported (filetype=%u); the "
-                        "image-base trick needs a __PAGEZERO. Use the heavyweight "
-                        "shift-up approach for dylibs/bundles (see HEADER_PAD_GROWTH.md)\n",
-                hdr->filetype);
+        fprintf(stderr, "macho_grow: only MH_EXECUTE can be grown (filetype=%u): growing "
+                        "lowers the image base into __PAGEZERO, and a dylib or bundle has "
+                        "none. This tool cannot grow a dylib or bundle.\n", hdr->filetype);
         return -1;
     }
     if (!(hdr->flags & MH_PIE)) {
         fprintf(stderr, "macho_grow: executable is not PIE (flags=0x%x); lowering the "
                         "image base would require fixing absolute relocations, which "
-                        "this tool does not do (see HEADER_PAD_GROWTH.md)\n", hdr->flags);
+                        "this tool does not do\n", hdr->flags);
         return -1;
     }
 

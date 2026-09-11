@@ -81,6 +81,27 @@
 uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
 
 
+/* Ensure the load commands can extend to `need_end` bytes from the start of
+ * the image -- sizeof(struct mach_header_64) plus the sizeofcmds the caller is
+ * about to write -- without crossing the first section's data. This is the
+ * one place that decides whether there is room and whether to grow.
+ *
+ * Returns 0 with the image untouched (not reallocated) if it already fits.
+ * Otherwise, when `allow_grow` is set, grows the header pad through
+ * mg_grow_header and returns 0 with *pbuf / *pfsize updated: every pointer the
+ * caller held into the buffer is stale. Prints, on stdout, the two lines the
+ * grow path has always printed ("load commands need ...; growing header...",
+ * "grew header pad: ...").
+ *
+ * Returns -1, with the reason on stderr prefixed by `label`, when it does not
+ * fit and growth was not permitted, or when growth failed. If growth was
+ * refused on a precondition (not a PIE executable, chained fixups, a load
+ * command whose payload grow cannot re-base) the image is untouched; a
+ * failure partway through growing can leave it modified. Either way the
+ * caller must not write it, and *pbuf stays valid to free. */
+int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
+                  int allow_grow, const char *label);
+
 
 /* Re-encode the leading (base-relative) LC_FUNCTION_STARTS delta after lowering
  * the image base by `grow`: delta[0] += grow, keeping the leading delta's byte
