@@ -7,7 +7,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 1 | Report what macho9 did | — | `plans/2026-09-10-report-what-macho9-did.md` | **done**, pushed, CI green at `77f076a` |
 | 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | plan written; execution paused for owner review |
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; shelved until item 2 merges |
-| 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | — | spec written, awaiting review |
+| 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | plan written; shelved until item 3 merges |
 | 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written; shelved until item 2 merges |
 | 6 | **Human code review + excellent documentation** | — | — | not started |
 | 7 | History rewrite | — | — | explicitly last |
@@ -20,6 +20,13 @@ The agreed order. Each item names its spec and, once written, its plan.
 **3 before 4.** `release.yml`'s artifact list names `macho9`, `macho9-compat.sh`
 and `macho9-translate.sh`; the rename changes all three. Landing release
 conformance first would edit the same lines twice.
+
+**One piece is split out of 4 and not yet queued:** the `.pkg` and the Sparkle
+updater. Its own spec section calls it "the largest single piece and the one most
+reasonably split into its own increment", and everything else in item 4 can land
+first and produce a GitHub Release of the binaries. It needs a spec and a plan
+before it has a queue position; the constraint to carry into them is that the
+updater must not link the product it updates.
 
 **6 before 7, and 6 after everything else.** A human review wants the code in its
 final shape — renamed, versioned, with the language in place — so it is not
