@@ -13,12 +13,19 @@
 # that floor); `macho9 minos` refuses any other, which is why the translation
 # can name it literally rather than passing something through.
 #
-# EXIT CODES. Forwarded unchanged. Both front-ends return
-# mv_add_version_min's own 0/2 (0 ok, 2 an operational failure -- that
-# function has no notion of a considered refusal, so it never returns 1; see
-# cli/macho9.c's top-of-file comment for the scheme); `macho9 minos`' one exit
-# code of its own (EX_REFUSED=1, for a version other than 10.9) is
-# unreachable from here, since this wrapper only ever emits 10.9.
+# EXIT CODES. Forwarded unchanged, no mapping added. The old C tool returned
+# mv_add_version_min's own 0/1 (0 ok, 1 the flat "something went wrong" that
+# function had no finer answer than); this wrapper forwards the SAME
+# function's return today too, but its vocabulary is no longer that flat 0/1
+# (src/rewrite.h): 0 ok, MR_REFUSED (1) for a considered refusal -- "not a
+# readable 64-bit Mach-O", the race guard, "no room for
+# LC_VERSION_MIN_MACOSX" -- or MR_FAIL (2) for a genuine open/fstat/write
+# failure. A considered refusal still exits 1 here, matching the C tool by
+# coincidence, not construction; an operational failure now exits 2, where
+# the C tool always exited a flat 1 -- see compat/README.md's "drop-in"
+# section for this as a named exception. `macho9 minos`' one exit code of
+# its own (EX_REFUSED=1, for a version other than 10.9) is unreachable from
+# here, since this wrapper only ever emits 10.9.
 #
 # STDOUT. Byte-identical, and not by construction alone -- every one of the
 # five add_version_min rows in tests/compat-matrix.tsv compared equal on

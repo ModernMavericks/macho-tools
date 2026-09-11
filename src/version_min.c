@@ -14,6 +14,9 @@
 
 #include "version_min.h"
 #include "image.h"
+#include "rewrite.h"    /* MR_REFUSED/MR_FAIL: this function's own exit-code
+                         * vocabulary, shared with mr_apply_file -- see its
+                         * comment there for the dividing line this follows. */
 
 struct mv_scan {
     uint32_t first_sect_off;   /* upper bound of header pad; UINT32_MAX if no
@@ -37,25 +40,25 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
 
 /* cli/macho9.c's cmd_minos forwards this function's return value verbatim
  * (`return mv_add_version_min(path);`), the same arrangement mr_apply_file
- * has with dylib/rpath/lc -- so every return below is bound by the same
- * exit-code rule: 0 on success, 2 for everything else. Never 1: this
- * function has no notion of a considered refusal (MR_REFUSED's contract, in
- * rewrite.h, is EX_REFUSED-only), so nothing here can honestly claim 1 --
- * see cli/macho9.c's own top-of-file comment for why. */
+ * has with dylib/rpath/lc -- so every return below is MR_REFUSED or MR_FAIL,
+ * the same two codes and the same dividing line mr_apply_file's own comment
+ * (rewrite.h) draws: MR_FAIL only for open/fstat/write itself failing;
+ * MR_REFUSED for every site that examined the file (or the race-guard stat
+ * against it) and declined, including "no room for LC_VERSION_MIN_MACOSX". */
 int mv_add_version_min(const char *path) {
     /* Open O_RDWR early so an unwritable file fails immediately, before any
      * analysis; mi_open (O_RDONLY) does the actual read and validation, same
      * split as change_dylib and patch_macho use. */
     int fd = open(path, O_RDWR);
-    if (fd < 0) { perror("open"); return 2; }
+    if (fd < 0) { perror("open"); return MR_FAIL; }
     struct stat st0;
-    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return 2; }
+    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return MR_FAIL; }
 
     mi_image im;
     if (mi_open(path, &im) != 0) {
         fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
         close(fd);
-        return 2;
+        return MR_REFUSED;
     }
 
     /* mi_open reads `path` through its OWN, separate O_RDONLY descriptor --
@@ -76,7 +79,7 @@ int mv_add_version_min(const char *path) {
         fprintf(stderr, "%s: changed underneath us between open and validation; refusing\n", path);
         mi_close(&im);
         close(fd);
-        return 2;
+        return MR_REFUSED;
     }
 
     size_t fsize = im.size;
@@ -115,7 +118,7 @@ int mv_add_version_min(const char *path) {
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
         free(buf);
         close(fd);
-        return 2;
+        return MR_REFUSED;
     }
 
     struct version_min_command *vm = (struct version_min_command *)(buf + lc_end);
@@ -128,7 +131,7 @@ int mv_add_version_min(const char *path) {
     hdr->sizeofcmds += sizeof(*vm);
 
     lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return 2; }
+    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return MR_FAIL; }
     close(fd);
     printf("Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=%u, sizeofcmds=%u)\n",
            hdr->ncmds, hdr->sizeofcmds);

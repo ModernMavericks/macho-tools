@@ -82,9 +82,16 @@
 #   The class ignores the EXACT exit code, only whether it was zero. Two
 #   rows differ there and say so in their columns rather than their class:
 #   patch_macho on a non-Mach-O and on an absent file exit 1, where macho9
-#   declassify exits 1 (EX_REFUSED). That is deliberate -- cli/macho9.c's
-#   cmd_declassify names it as one of FOUR DELIBERATE DIVERGENCES FROM
-#   patch_macho -- but it is invisible to anyone grepping by class.
+#   declassify exits 2 (EX_REFUSED, AS NUMBERED WHEN THIS WAS MEASURED --
+#   see "AGAINST WHAT" above; a later commit renumbered EX_REFUSED to 1 and
+#   introduced EX_FAIL=2, so new_rc=2 in those two rows means the SAME
+#   refusal a live run of today's macho9 would report as 1, not 2. This is
+#   exactly the kind of thing "CANNOT be regenerated" means: the numbers
+#   below are frozen at what the numbering was on 2026-09-10, not updated
+#   when the numbering later changed). That divergence itself was deliberate
+#   even then -- cli/macho9.c's cmd_declassify names it as one of FOUR
+#   DELIBERATE DIVERGENCES FROM patch_macho -- but it is invisible to anyone
+#   grepping by class.
 #
 #   improvement is a MECHANICAL label meaning only "old refused, the new
 #   side did not". It is not a judgement. rename_segment's exit 2 for

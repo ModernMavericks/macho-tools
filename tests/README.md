@@ -88,13 +88,22 @@ regardless of which of `1`/`2` means which.
 `dylib`/`rpath`/`lc` (past its own KIND check) and `minos` (past its own
 version check) hand back the exit code of the shared rewrite drivers,
 `mr_apply_file` and `mv_add_version_min` (`src/rewrite.h`,
-`src/version_min.h`), which return 0 or `EX_FAIL` (2) and do not make this
-refused/failed distinction themselves. So those verbs' exit codes are NOT
-covered by the table above — only `macho9`'s own directly-decided exits are.
+`src/version_min.h`). Those two now use the very same `MR_REFUSED` (1) /
+`MR_FAIL` (2) split this table documents -- `mr_apply_file`'s own comment in
+`src/rewrite.h` has the full classification, including several sites reached
+through a helper's own nonzero return rather than a check written out in
+that function -- but they are still not literally covered by the table
+above, which is `macho9`'s own directly-decided verbs, not these two shared
+drivers one layer down.
+
 (They used to be forwarded from a `change_dylib`/`add_version_min`
-SUBPROCESS; the code is linked in now, but the exit codes it produces are the
-same ones, deliberately: changing them would have changed every caller's
-observable behaviour in the same commit that moved the code.)
+SUBPROCESS, which returned a flat 0/1 with no refused/failed distinction at
+all; the code is linked in now, and its exit codes DO make that distinction
+today, which is a real, deliberate behaviour change for the two `compat/`
+wrappers of the same names -- they forward this code verbatim, so a genuine
+operational failure through either one now exits 2 where the old C tool
+always exited a flat 1. See `compat/README.md`'s "drop-in" section, which
+names this as one of its four known exceptions.)
 
 ## EXPECTED, and what it is for
 

@@ -198,15 +198,17 @@ typedef struct {
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 
-/* Returned by mr_apply_file, instead of its usual 2, when ops->fatal_unmatched
- * turned "an operation matched nothing" into a refusal (see that field's own
- * comment above). Deliberately equal to cli/macho9.c's own EX_REFUSED: that
- * is the ONLY caller today, `dylib`/`rpath`/`lc` all forward mr_apply_file's
- * return value verbatim (`return mr_apply_file(path, &ops);`), and this way
- * that forwarding keeps meaning what --capabilities documents without the
- * caller having to translate a rewrite-library code into its own exit-code
- * vocabulary. cli/macho9.c enforces this equality as a build failure, not
- * just this comment -- see the typedef next to EX_REFUSED's definition.
+/* Returned by mr_apply_file in place of 0 when ops->fatal_unmatched turned
+ * "an operation matched nothing" into a refusal (see that field's own
+ * comment above) -- one of several considered refusals this function can
+ * return; see its own comment below for the rest. Deliberately equal to
+ * cli/macho9.c's own EX_REFUSED: that is the ONLY caller today, `dylib`/
+ * `rpath`/`lc` all forward mr_apply_file's return value verbatim (`return
+ * mr_apply_file(path, &ops);`), and this way that forwarding keeps meaning
+ * what --capabilities documents without the caller having to translate a
+ * rewrite-library code into its own exit-code vocabulary. cli/macho9.c
+ * enforces this equality as a build failure, not just this comment -- see
+ * the typedef next to EX_REFUSED's definition.
  *
  * Deliberately 1, not 2: `diff`/`grep`/`cmp` all reserve their HIGHEST code
  * for "the tool could not do its job" and use a lower one for "a normal,
@@ -215,9 +217,21 @@ typedef struct {
  * never distinguishes a considered refusal from a genuine failure), so this
  * is not matching an existing convention so much as choosing the one that
  * generalizes past this repo's own history. Nothing outside this repo has
- * ever run the compat wrappers this couples to, so Task 0 is the last chance
- * to fix the numbering before `edit` ships and callers start relying on it. */
+ * ever run the compat wrappers this couples to, and `edit` (a later feature)
+ * is what starts to make that numbering a real, depended-upon contract --
+ * so this is the last point at which it can change for free. */
 #define MR_REFUSED 1
+
+/* Returned by mr_apply_file (and by mv_add_version_min, src/version_min.c,
+ * the same arrangement one level down) for a genuine operational failure: a
+ * syscall (open, fstat, read, write) or malloc/realloc/calloc that failed.
+ * NEVER for a considered refusal -- a site that examined the bytes and
+ * declined, however it phrases that on stderr, is MR_REFUSED, not this. See
+ * mr_apply_file's own comment below for the dividing line and examples of
+ * each. Named the same way as MR_REFUSED, and cli/macho9.c's EX_FAIL is
+ * required to equal it for the same reason EX_REFUSED is required to equal
+ * MR_REFUSED -- see the typedef next to EX_FAIL's own definition. */
+#define MR_FAIL 2
 
 /*
  * Apply `ops` to the Mach-O at `path`, in place, and write it back atomically
@@ -228,12 +242,27 @@ typedef struct {
  * through byte-for-byte.
  *
  * Returns 0 on success -- including the "nothing matched, file untouched"
- * case -- or 2 with a message already printed on stderr, for an operational
- * failure (a syscall or malloc that failed, a slice that IS a 64-bit Mach-O
- * whose edit failed): a genuine "something went wrong running this", not a
- * considered refusal. On any failure the file on disk is left exactly as it
- * was found: every refusal happens before the single atomic replace at the
- * end.
+ * case. On any failure the file on disk is left exactly as it was found:
+ * every refusal happens before the single atomic replace at the end. Failure
+ * is one of two codes, matching cli/macho9.c's own EX_REFUSED/EX_FAIL split
+ * (this function's caller forwards whichever one it gets verbatim, so the
+ * split has to be made correctly here, not patched up one level out):
+ *
+ *   MR_REFUSED (1) -- a CONSIDERED refusal: this function (or a primitive it
+ *     calls -- mg_first_sect_off, mo_map_build, mr_build_lcs, mg_grow_header,
+ *     mo_map_validate, mo_map_apply, mg_plausible) examined the bytes and
+ *     declined on purpose. "Examined" covers more than "read the input
+ *     Mach-O": a result that fails validation, new load commands that don't
+ *     fit and can't be grown, a rewrite whose own cross-check disagrees with
+ *     what it just built, reassembled fat slices that would overlap, an
+ *     unsupported 64-bit fat container, "not a 64-bit Mach-O" in any of its
+ *     forms, and a final mg_plausible verify that fails are all considered
+ *     refusals, not operational failures -- even though several of these are
+ *     reached through a helper's own nonzero return rather than a check
+ *     written out here.
+ *   MR_FAIL (2) -- a genuine operational failure: open, fstat, read, write or
+ *     malloc/calloc/realloc failed. Nothing about the INPUT was in question;
+ *     the environment (a permission, a full disk, an exhausted heap) was.
  *
  * The one exception to "every refusal happens before the write": when
  * ops->fatal_unmatched is set and at least one operation matched nothing,

@@ -112,22 +112,17 @@
  * arguments) -- EX_FAIL is that catch-all, named the same way as EX_REFUSED
  * so a future change to either touches one place. That includes the shared
  * rewrite drivers (mr_apply_file, mv_add_version_min) that dylib/rpath/lc/
- * minos hand back: they return 0 or 2, never 1, having no notion of a
- * considered refusal outside mr_apply_file's one MR_REFUSED exception below
- * -- so forwarding them verbatim keeps this from claiming a precision they
- * do not have, while still never mislabeling one of their operational
- * failures as EX_REFUSED's "examined and declined on purpose". A caller that
- * only checks "== 0" or "!= 0" still needs no changes; --capabilities
+ * minos hand back: they now draw the SAME line themselves (rewrite.h's own
+ * comment on mr_apply_file has the full classification), returning
+ * MR_REFUSED (== EX_REFUSED, enforced below) for a considered refusal --
+ * "not a 64-bit Mach-O" in any of its forms, no room to grow, a rewrite's
+ * own cross-check failing, and more -- and MR_FAIL (== EX_FAIL, enforced
+ * below) only for open/fstat/read/write/malloc itself failing. Forwarding
+ * either verbatim is exact, not an approximation: this binary and those two
+ * drivers now share one vocabulary, not two that happen to overlap. A caller
+ * that only checks "== 0" or "!= 0" still needs no changes; --capabilities
  * documents all three codes (see print_capabilities below) and tests/
- * README.md repeats it for humans.
- *
- * The one exception, since --fatal-warnings: mr_apply_file returns MR_REFUSED
- * (rewrite.h), not just 0 or 2, when ops.fatal_unmatched turned "an operation
- * matched nothing" into a refusal. dylib/rpath/lc still forward mr_apply_file's
- * return value verbatim (see their own `return mr_apply_file(...)` call
- * sites) -- no new mapping was added at those call sites -- so this only
- * keeps meaning EX_REFUSED because MR_REFUSED is DEFINED to equal it; see
- * the typedef just below. */
+ * README.md repeats it for humans. */
 #define EX_REFUSED 1
 #define EX_FAIL    2
 
@@ -138,6 +133,13 @@
  * a build failure, not a hope -- the same device commit 247d09d used for
  * mg_classify/ml_bump_lc's coupling. */
 typedef char mr_refused_is_ex_refused[(MR_REFUSED == EX_REFUSED) ? 1 : -1];
+
+/* Same coupling, same reason, for the other half of mr_apply_file's (and
+ * mv_add_version_min's) exit-code vocabulary: every operational failure they
+ * report is MR_FAIL (rewrite.h), forwarded verbatim by the same call sites,
+ * so it has to equal EX_FAIL or --capabilities' documented failed=2 would be
+ * a lie for exactly those failures. */
+typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
 
 /* The KIND vocabulary `lc -delete` accepts is LC_STRIP_KINDS (src/lc_kinds.h),
  * shared with change_dylib's -strip-lc -- so lc's translation to it is a
@@ -209,24 +211,27 @@ static void print_ops_csv(int is_rpath) {
  *   line 1: "format <N>"       -- bump N only if a later build changes this
  *                                  TEXT's shape in a way old parsing breaks.
  *   line 2: "exitcodes ok=0 refused=<N> failed=<M>" -- what this binary's own
- *       exit codes mean: ok=0 always; refused=EX_REFUSED is used only where
- *       macho9 itself examined FILE and declined on purpose (bad magic,
- *       implausible, an unsupported KIND/version, a grow mg_grow_header
- *       itself refused); failed=EX_FAIL is everything else (syscall/malloc
+ *       exit codes mean: ok=0 always; refused=EX_REFUSED is used wherever
+ *       macho9 (or a shared rewrite driver it calls into) examined FILE and
+ *       declined on purpose -- bad magic, implausible, an unsupported KIND/
+ *       version, a grow mg_grow_header itself refused, new load commands
+ *       that don't fit and can't be grown, an unmatched --fatal-warnings
+ *       operation, and more (rewrite.h's own comment on mr_apply_file has
+ *       the full list); failed=EX_FAIL is everything else (syscall/malloc
  *       failure, usage error). The two numbers are 1 and 2, not the reverse
  *       -- see EX_REFUSED's own comment above for why this repo deliberately
  *       does not match what it originally shipped. A caller checking only
  *       nonzero needs no changes regardless of which way the numbers run.
  *       dylib/rpath/lc/minos return the shared rewrite drivers' own code
- *       (mr_apply_file, mv_add_version_min: 0 or EX_FAIL), which does not
- *       make this distinction, so their exit codes are still not covered by
- *       this line -- except for the checks macho9 makes BEFORE calling them
- *       (an unknown lc KIND, a version other than 10.9), which are refusals
- *       and say so, AND except for a dylib/rpath/lc run given
- *       --fatal-warnings, where mr_apply_file itself returns EX_REFUSED (as
- *       MR_REFUSED, rewrite.h) when an operation matched nothing -- see that
- *       flag's own entry below. See EX_REFUSED's own comment for the full
- *       reasoning.
+ *       (mr_apply_file, mv_add_version_min) verbatim, and those drivers now
+ *       use this SAME EX_REFUSED/EX_FAIL split themselves (as MR_REFUSED/
+ *       MR_FAIL, rewrite.h, enforced equal to these two by the typedefs
+ *       below) -- so their exit codes ARE covered by this line, including
+ *       the checks macho9 makes BEFORE calling them (an unknown lc KIND, a
+ *       version other than 10.9) and a dylib/rpath/lc run given
+ *       --fatal-warnings, where mr_apply_file returns MR_REFUSED for an
+ *       operation that matched nothing -- see that flag's own entry below.
+ *       See EX_REFUSED's own comment for the full reasoning.
  *   line 3+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out.

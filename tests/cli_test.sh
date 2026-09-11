@@ -254,7 +254,11 @@ esac
 # "macho9 examined FILE and declined" apart from "macho9 itself failed"
 # without scraping stderr text. Assert the line exists, names refused=1,
 # and that a real refusal (verify on a non-Mach-O file) actually exits with
-# that code -- not just some nonzero value.
+# that code -- not just some nonzero value. The corrected scheme is 0 ok, 1
+# refused, 2 error -- backwards from what shipped, and deliberately so:
+# diff/grep/cmp all reserve 2 for "something went wrong" and 1 for "a
+# normal, expected, non-success answer". Nothing outside this repo had ever
+# run the compat wrappers, so this was the last chance to fix it.
 echo "$caps" | grep -q "^exitcodes ok=0 refused=1 failed=2$" \
     && ok "capabilities: exitcodes line documents refused=1" \
     || bad "capabilities: exitcodes line" "missing or wrong: $(echo "$caps" | grep '^exitcodes')"
@@ -264,15 +268,6 @@ rc=0
 [ "$rc" -eq 1 ] \
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 1" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 1"
-
-# The corrected scheme: 0 ok, 1 refused, 2 error. Backwards from what shipped,
-# and deliberately so -- diff/grep/cmp all reserve 2 for "something went
-# wrong" and 1 for "a normal, expected, non-success answer". Nothing outside
-# this repo has run the compat wrappers, so this is the last chance to fix it.
-"$MACHO9" --capabilities >"$T/caps.out" 2>&1
-grep -q "exitcodes ok=0 refused=1 failed=2" "$T/caps.out" \
-    && ok "capabilities: the corrected exit-code scheme" \
-    || bad "capabilities exitcodes" "expected 'ok=0 refused=1 failed=2', got: $(grep exitcodes "$T/caps.out")"
 
 for v in verify info grow minos lc dylib rpath segment retag-swift declassify; do
     if echo "$caps" | grep -q "^verb $v"; then
@@ -838,12 +833,15 @@ if [ -x "$BIN/patch_macho" ]; then
     else
         bad "declassify: byte-identity" "macho9 and patch_macho produced different bytes"
     fi
-    # And the divergence that IS deliberate: the same refusal, two exit codes.
-    # patch_macho returns a flat 1 for everything; this verb distinguishes
-    # "examined it and declined" (EX_REFUSED=1) from an operational failure.
-    # A Task 2 wrapper has to map one onto the other, so it is pinned here.
+    # patch_macho returns a flat 1 for everything that goes wrong; this verb
+    # distinguishes "examined it and declined" (EX_REFUSED=1) from an
+    # operational failure (EX_FAIL=2). For THIS refusal the two numbers
+    # happen to agree (both 1) -- that is a coincidence of the corrected
+    # numbering, not a design goal -- but a Task 2 wrapper still has real
+    # mapping work to do for the EX_FAIL=2 case, where the numbers diverge;
+    # compat/patch_macho.sh's own header covers both.
     "$BIN/patch_macho" "$T/not-a-macho-in-cli-test" "$T/nope_pm" >/dev/null 2>&1 && pm_rc=0 || pm_rc=$?
-    [ "$pm_rc" -eq 1 ] && ok "declassify: patch_macho still exits its historical flat 1 where this verb refuses with EX_REFUSED" \
+    [ "$pm_rc" -eq 1 ] && ok "declassify: patch_macho's flat 1 and this verb's EX_REFUSED agree on this refusal" \
         || bad "declassify: patch_macho exit" "expected the historical flat 1, got $pm_rc"
 else
     skip "declassify: byte-identity with patch_macho" "no patch_macho in $BIN"

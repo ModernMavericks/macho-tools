@@ -69,9 +69,9 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with three known exceptions, each measured at its own site: one
+check them, with four known exceptions, each measured at its own site: one
 reproduced on a real file (one out of 300 in the differential corpus, below),
-the other two argued unreachable in practice rather than observed:
+the other three argued unreachable in practice rather than observed:
 
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its
@@ -90,8 +90,18 @@ the other two argued unreachable in practice rather than observed:
     does not see ACLs. It agrees on the two cases that actually reach a
     caller (absent, and mode-denied); `compat/rename_segment.sh`'s header has
     the detail.
+  * `change_dylib` and `add_version_min` are the two wrappers that forward
+    the shared rewrite drivers' (`mr_apply_file`, `mv_add_version_min`) own
+    exit code verbatim, with no mapping at all -- unlike `fix_macho`,
+    `patch_macho` and `rename_segment`, which translate to their own
+    historical codes and are unaffected by this. A CONSIDERED refusal (the
+    input examined and declined) still exits 1, matching the C tool by
+    coincidence, not by construction; but a genuine operational failure
+    (open/fstat/read/write/malloc) now exits 2, where the C tool always
+    exited a flat 1. `compat/change_dylib.sh` and `compat/add_version_min.sh`'s
+    own headers have the detail.
 
-There is a fourth gap this list used to omit entirely: no argument
+There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 `mg_grow_header` (`grep -c "grew header pad" tests/compat-matrix.tsv` is 0)
 -- `tests/fixture.macho`'s header pad is large enough, and the sweep's

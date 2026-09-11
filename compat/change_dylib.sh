@@ -44,14 +44,23 @@
 # "33 -change flags smashed the stack", docs/PROPOSAL.md -- fixed rather than
 # reintroduced in shell.)
 #
-# EXIT CODES. Forwarded unchanged, and no mapping is needed: change_dylib
-# returned mr_apply_file's own 0/2 (0 ok, 2 an operational failure -- see
-# cli/macho9.c's top-of-file comment for the scheme), and `dylib`, `rpath`
-# and `lc` still do too PAST THEIR OWN ARGUMENT CHECKS -- for this wrapper
-# specifically. That stopped being true of `dylib`/`rpath`/`lc` in general the
-# moment macho9 grew `--fatal-warnings` (mr_apply_file can now also return
-# MR_REFUSED, which cli/macho9.c forwards as EX_REFUSED=1): it stays true HERE
-# only because this translation never emits that flag -- change_dylib's own
+# EXIT CODES. Forwarded unchanged, and no mapping is added here: the C tool
+# returned mr_apply_file's own 0/1 (0 ok, 1 the flat "something went wrong"
+# that rewriter had no finer answer than), and `dylib`, `rpath` and `lc`
+# still forward that SAME value, unmapped, PAST THEIR OWN ARGUMENT CHECKS --
+# for this wrapper specifically. mr_apply_file's own vocabulary is no longer
+# that flat 0/1, though (rewrite.h): 0 ok, MR_REFUSED (1) for a considered
+# refusal -- examined the input and declined, rewrite.h's own comment on
+# mr_apply_file lists the cases -- or MR_FAIL (2) for a genuine open/fstat/
+# read/write/malloc failure. A considered refusal still exits 1 here,
+# matching the C tool by coincidence, not construction; an operational
+# failure now exits 2, where the C tool always exited a flat 1 -- see
+# compat/README.md's "drop-in" section for this as a named exception. That
+# THIS WRAPPER forwards verbatim at all stopped being true of `dylib`/
+# `rpath`/`lc` in general the moment macho9 grew `--fatal-warnings`
+# (mr_apply_file can now also return MR_REFUSED for an unmatched operation,
+# which cli/macho9.c forwards as EX_REFUSED=1): it stays true HERE only
+# because this translation never emits that flag -- change_dylib's own
 # grammar has no spelling for it, and never will, since `-change` matching
 # nothing has always exited 0 and that is compat surface. If translate.sh
 # ever grows a --fatal-warnings-shaped flag, this comment is the one to

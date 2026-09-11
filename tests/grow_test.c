@@ -1303,7 +1303,8 @@ static struct section_64 *find_section_struct(uint8_t *buf, size_t fsize, const 
  * hermetic file), is that the OUTER caller never writes a refused buffer to
  * disk -- confirmed by hand against `macho9 grow` on poked copies of
  * tests/fixture.macho for all three guards (section offset, reloff,
- * entryoff): exit 2, file left byte-for-byte unmodified on disk. So these
+ * entryoff): exit 1 (EX_REFUSED), file left byte-for-byte unmodified on
+ * disk. So these
  * three checks pin only what this translation unit can honestly promise:
  * the refusal itself (r == -1). */
 static void test_grow_refuses_overflowing_section_offset(void) {
