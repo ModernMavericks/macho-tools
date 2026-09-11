@@ -285,11 +285,11 @@ static void print_ops_csv(int is_rpath) {
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`. `edit`'s own flags=
  *                         entry is unrelated to the fatal-warnings paragraph
- *                         above -- `output` and `verbose` are plain CLI
- *                         switches (--output OUT, --verbose), not a
- *                         match-reporting mode -- listed so a wrapper can
- *                         tell whether this build accepts them before
- *                         passing either.
+ *                         above -- `output`, `verbose` and `dry-run` are
+ *                         plain CLI switches (--output OUT, --verbose,
+ *                         --dry-run), not a match-reporting mode -- listed
+ *                         so a wrapper can tell whether this build accepts
+ *                         them before passing any.
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the edit-script
  *       statement vocabulary the `edit` verb's parser (ms_parse) accepts.
@@ -338,10 +338,8 @@ static int print_capabilities(void) {
     printf("verb rpath ops=");
     print_ops_csv(1);
     printf(" flags=allow-grow,fatal-warnings\n");
-    /* flags=output,verbose: the two CLI flags `edit` accepts today. No
-     * --dry-run yet: the flag must not be advertised until it exists, per
-     * this function's own "never advertise one that errors out" contract. */
-    printf("verb edit flags=output,verbose\n");
+    /* flags=output,verbose,dry-run: the three CLI flags `edit` accepts. */
+    printf("verb edit flags=output,verbose,dry-run\n");
     {
         int i;
         const char *kind, *op;
@@ -374,9 +372,11 @@ static void usage(const char *prog) {
         "       %s minos FILE 10.9\n"
         "       %s info FILE\n"
         "       %s verify FILE\n"
-        "       %s edit FILE SCRIPT [--output OUT] [--verbose]\n"
+        "       %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n"
         "                                                    apply an edit script to FILE (see README);\n"
-        "                                                    SCRIPT may be '-' for stdin\n",
+        "                                                    SCRIPT may be '-' for stdin;\n"
+        "                                                    --dry-run applies and verifies but skips\n"
+        "                                                    the write, reporting what would happen\n",
         prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
@@ -1141,7 +1141,7 @@ static int me_read_all(FILE *f, uint8_t **out, size_t *outlen) {
 }
 
 static int cmd_edit_usage(const char *prog) {
-    fprintf(stderr, "usage: %s edit FILE SCRIPT [--output OUT] [--verbose]\n", prog);
+    fprintf(stderr, "usage: %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n", prog);
     return EX_FAIL;
 }
 
@@ -1149,6 +1149,7 @@ static int cmd_edit(int argc, char **argv) {
     const char *prog = argv[0];
     const char *file = NULL, *script_path = NULL, *out = NULL;
     int verbose = 0;
+    int dry_run = 0;
     int npos = 0;
 
     for (int i = 2; i < argc; i++) {
@@ -1158,6 +1159,8 @@ static int cmd_edit(int argc, char **argv) {
             out = argv[++i];
         } else if (strcmp(tok, "--verbose") == 0) {
             verbose = 1;
+        } else if (strcmp(tok, "--dry-run") == 0) {
+            dry_run = 1;
         } else if (tok[0] == '-' && strcmp(tok, "-") != 0) {
             fprintf(stderr, "macho9 edit: unknown flag '%s'\n", tok);
             return EX_FAIL;
@@ -1212,7 +1215,7 @@ static int cmd_edit(int argc, char **argv) {
     me_opts o;
     memset(&o, 0, sizeof o);
     o.verbose = verbose;
-    o.dry_run = 0;   /* no --dry-run yet: the flag doesn't exist */
+    o.dry_run = dry_run;
     o.log = stderr;
 
     int rc = me_run(file, out, &s, &o);

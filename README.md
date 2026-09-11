@@ -144,12 +144,13 @@ writes once:
 macho9 edit FILE SCRIPT                 # rewrite FILE in place
 macho9 edit FILE SCRIPT --output OUT    # write elsewhere; FILE untouched
 macho9 edit FILE -                      # read the script from stdin
+macho9 edit FILE SCRIPT --dry-run       # do everything but the write
 ```
 
-`--output` and `--verbose` may appear anywhere among the arguments, not only
-after `SCRIPT`. There is no `--` to end flag parsing, so a `FILE` or `SCRIPT`
-whose real name starts with `-` is refused as an unknown flag; reference it
-through a path that doesn't, e.g. `./-name`.
+`--output`, `--verbose` and `--dry-run` may appear anywhere among the
+arguments, not only after `SCRIPT`. There is no `--` to end flag parsing, so a
+`FILE` or `SCRIPT` whose real name starts with `-` is refused as an unknown
+flag; reference it through a path that doesn't, e.g. `./-name`.
 
 **Edit writes nothing unless every statement succeeded.** The whole script is
 parsed before `FILE` is ever opened for writing, so a typo in the last line of
@@ -158,6 +159,14 @@ memory, in the order written; if any statement is refused, `FILE` (or
 `--output`'s target) is left exactly as it was found. The finished image is
 verified — mandatorily, after the last statement and before the write, with no
 opt-out — and only then written, once.
+
+**`--dry-run` is the same run with only the write skipped.** Every statement
+is still parsed, applied and verified; only the final write does not happen.
+It exits with the same code the real run would — 0 on success, or the refusal
+or failure code a real run would have produced at the same statement — so a
+dry run tells you whether the real run will work, not just predicts it. It
+prints a line saying so, `FILE: NOT written (--dry-run) -- would be N bytes`,
+even without `--verbose`.
 
 ### File format
 

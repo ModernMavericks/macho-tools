@@ -307,8 +307,7 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
-# edit's own flags= line: only the CLI flags that exist (no --dry-run yet;
-# it must not be advertised until it does).
+# edit's own flags= line: every CLI flag `edit` accepts.
 if echo "$caps" | grep "^verb edit" | grep -q "flags=.*output" \
     && echo "$caps" | grep "^verb edit" | grep -q "flags=.*verbose"; then
     ok "capabilities: edit advertises output and verbose flags"
@@ -316,8 +315,8 @@ else
     bad "capabilities: edit flags" "expected output,verbose: $(echo "$caps" | grep '^verb edit')"
 fi
 echo "$caps" | grep "^verb edit" | grep -q "dry-run" \
-    && bad "capabilities: edit flags" "advertises dry-run, which does not exist yet" \
-    || ok "capabilities: edit does not yet advertise dry-run"
+    && ok "capabilities: edit advertises dry-run" \
+    || bad "capabilities: edit flags" "expected dry-run: $(echo "$caps" | grep '^verb edit')"
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The spec's statement vocabulary
@@ -2574,6 +2573,45 @@ otool -l "$T/edit_fixture" 2>/dev/null | grep -q LC_UUID \
 otool -L "$T/edit_fixture" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
     && ok "edit: applied the dylib replace" \
     || bad "edit" "the dylib replace did not land: $(otool -L "$T/edit_fixture")"
+
+# --dry-run applies and verifies everything and writes nothing. It is the
+# same code path as a real run, so what it reports is what would happen --
+# not a static prediction, which could never show the data-dependent
+# follow-up work (ordinal renumbering and the like).
+build_main "$T/edit_dry"
+dry_before=$(sha "$T/edit_dry")
+"$MACHO9" edit --dry-run "$T/edit_dry" "$T/prod.edits" \
+    >"$T/dry.out" 2>"$T/dry.err" && dry_rc=0 || dry_rc=$?
+[ "$dry_rc" -eq 0 ] && ok "edit --dry-run: succeeds" \
+    || bad "edit --dry-run" "expected 0, got $dry_rc: $(cat "$T/dry.err")"
+[ "$(sha "$T/edit_dry")" = "$dry_before" ] \
+    && ok "edit --dry-run: wrote nothing" \
+    || bad "edit --dry-run" "the file was modified by a dry run"
+grep -q "NOT written" "$T/dry.err" && ok "edit --dry-run: says it did not write" \
+    || bad "edit --dry-run" "no 'NOT written' in the report: $(cat "$T/dry.err")"
+
+# And a dry run of a script that WOULD be refused still reports the refusal,
+# with the same exit code as the real run -- otherwise a dry run could not
+# be used to find out whether the real run will work, which is its purpose.
+build_main "$T/edit_dryref"
+dryref_before=$(sha "$T/edit_dryref")
+printf 'fatal-warnings\ndylib delete /definitely/not/linked.dylib\n' >"$T/dryref.edits"
+"$MACHO9" edit --dry-run "$T/edit_dryref" "$T/dryref.edits" \
+    >/dev/null 2>"$T/dryref_dry.err" && dryref_dry_rc=0 || dryref_dry_rc=$?
+[ "$(sha "$T/edit_dryref")" = "$dryref_before" ] \
+    && ok "edit --dry-run: a refused script's dry run wrote nothing" \
+    || bad "edit --dry-run refusal" "the file was modified by the dry run"
+"$MACHO9" edit "$T/edit_dryref" "$T/dryref.edits" \
+    >/dev/null 2>"$T/dryref_real.err" && dryref_real_rc=0 || dryref_real_rc=$?
+[ "$(sha "$T/edit_dryref")" = "$dryref_before" ] \
+    && ok "edit: the real run of the same refused script also wrote nothing" \
+    || bad "edit refusal" "the file was modified by the real run"
+[ "$dryref_dry_rc" -eq 1 ] \
+    && ok "edit --dry-run: an unmatched operation under fatal-warnings is refused (1)" \
+    || bad "edit --dry-run refusal" "expected 1, got $dryref_dry_rc: $(cat "$T/dryref_dry.err")"
+[ "$dryref_real_rc" -eq "$dryref_dry_rc" ] \
+    && ok "edit --dry-run: reports the same exit code the real run would" \
+    || bad "edit --dry-run refusal" "dry-run rc=$dryref_dry_rc real rc=$dryref_real_rc"
 
 # edit --output leaves the input alone.
 build_main "$T/edit_src"
