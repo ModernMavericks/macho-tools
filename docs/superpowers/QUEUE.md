@@ -13,7 +13,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
 | 9 | `macho9` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | plan written; runs after 10 and 11 |
-| 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | plan written |
+| 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | **done**, pushed, `b76ddf1..9ae6835` |
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | plan written |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
@@ -103,6 +103,30 @@ rather than refuse on allocation failure; `src/swift_retag.h`'s "only
 MSWIFT_ERROR is a failure of the tool itself" is false since `MSWIFT_RACED`
 also exits 2; about 87 older comments across the tree still name plan
 artifacts ("Task N", briefs, rounds) — all predate item 2.
+
+## Carried out of item 10
+
+**A confirmed silent-corruption bug, pre-existing, to fix before item 6.**
+`mg_first_sect_off` answers 4096 for an image with no section data, and
+`src/grow.h` calls that "a real, if unusual, answer". It is not: on a
+sectionless image of 4096 bytes or more, `mr_process_thin` takes it as the
+header-pad boundary, and its commit zeroes everything up to it. Reproduced on
+an 8192-byte image: `MACHO_NO_VERIFY=1 macho9 dylib F -append /x` exits 0
+having zeroed bytes 200..4095. (Without the variable `mg_plausible` happened to
+refuse that fixture, for an unrelated reason, so it is no guard.)
+`src/declassify.c:514-527` has its own copy of the same 4096 fallback, checked
+against `buf + 4096` and never against the file size. The smaller case -- a
+sectionless image shorter than 4096 bytes, which wrote past the buffer -- was
+fixed in item 10 (`34a3187`); this is the rest of it. The fix is to stop
+treating "no sections" as "4096": refuse, as version-min already does.
+
+**Four wording overclaims for item 6's documentation pass:** `src/grow.h:99-101`
+(an image with no section data is refused only when shorter than 4096 bytes);
+`tests/leaf-tool-crashes.sh:19-23` (past tense about a clearing that still
+happens on large images); `README.md:300` and `src/edit.h:153` ("Nor does the
+conversion need it" needs the same "on a modern chained binary" qualifier as
+the sentence after it); `src/edit.h:108-114` (omits the grow line printed before
+a refusal on a non-PIE image).
 
 ## Outstanding owner actions
 
