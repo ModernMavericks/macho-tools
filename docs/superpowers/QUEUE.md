@@ -8,7 +8,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | plan written; execution paused for owner review |
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | — | spec written, awaiting review |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | — | spec written, awaiting review |
-| 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | — | spec written, awaiting review |
+| 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written; shelved until item 2 merges |
 | 6 | **Human code review + excellent documentation** | — | — | not started |
 | 7 | History rewrite | — | — | explicitly last |
 
