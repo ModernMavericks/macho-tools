@@ -191,7 +191,9 @@ file was written.** The operations still print their own progress to stdout
 as each statement runs — `FILE: updated (sizeofcmds=...)` and the like — but
 during an edit run such a line describes the image in memory, not the file. A
 run refused at a later statement, or at verification, writes nothing, even
-after printing it.
+after printing it. On a fat file the refusal line names the slice too — or,
+for a statement's own miss (see `fatal-warnings`, below), says it matched
+nothing in any selected slice.
 
 **The write replaces `FILE` by rename**, as `objcopy` does: the new image goes
 to a temporary file beside `FILE`, which is then renamed over it, keeping

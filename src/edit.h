@@ -63,6 +63,9 @@ typedef struct {
  * again, "slice NAME: moved from offset 0x… to 0x…" for any slice an earlier
  * slice's growth moved. A 64-bit fat container (fat_arch_64) is refused.
  *
+ * The exact wording of a refusal on a fat run -- a statement's, or the
+ * per-slice final verify's -- is under REPORT, below.
+ *
  * VERIFY. mg_plausible (src/grow.h) runs over the finished image after the
  * last statement, every time, and a failure is a refusal. There is no
  * parameter and no environment variable that skips it -- MACHO_NO_VERIFY,
@@ -90,22 +93,39 @@ typedef struct {
  * REPORT, to o->log. Always printed: a statement's refusal,
  *   "macho9 edit: refused at statement K of N (line L); PATH left unmodified"
  * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L
- * is the statement's line in the script), a refusal at the final verify,
+ * is the statement's line in the script). On a fat run that line names the
+ * slice at fault instead, before the trailing "; PATH left unmodified":
+ *   "... (line L) in slice NAME; PATH left unmodified"
+ * or, when it was the statement's own miss (see fatal-warnings) that refused
+ * it rather than any one slice,
+ *   "... (line L): it matched nothing in any selected slice; PATH left
+ *   unmodified"
+ * -- no slice name there, since no single slice is at fault. Then a refusal
+ * at the final verify,
  *   "macho9 edit: refused at verification, after statement N of N; ..."
- * ("(the script has no statements)" in place of the count when N is 0), a
- * failed write,
+ * ("(the script has no statements)" in place of the count when N is 0); on a
+ * fat run this is instead per slice, right after that slice's own last
+ * statement, and names the slice in place of the statement count:
+ *   "macho9 edit: refused at verification of slice NAME; ..."
+ * Then a failed write,
  *   "macho9 edit: PATH left unmodified (write failed)",
  * and a dry run's
  *   "DEST: NOT written (--dry-run) -- would be N bytes".
  * With `out`, a refusal line ends "OUT not written; PATH left unmodified"
  * instead, and a failed write reads "writing OUT failed; PATH left
- * unmodified": OUT may never have existed. Under o->verbose, each statement
- * is also logged as "  <kind> <op> <operands>" before it runs, and a run
- * that gets that far logs "PATH: verified" and "DEST: written (N bytes)".
- * DEST is `out` when given, else `path`. me_run flushes stdout before each
- * line it writes and before each "matched nothing" report, so those land
- * after any stdout line printed before them; an operation's own stderr
- * message, written while it runs, is not ordered this way.
+ * unmodified": OUT may never have existed. The write and dry-run lines are
+ * the same whether `path` names a thin file or a fat one: the write happens
+ * once, to the whole container, after every slice's own verify has passed.
+ * Under o->verbose, each statement is also logged as "  <kind> <op>
+ * <operands>" before it runs, and a run that gets that far logs
+ * "PATH: verified" and "DEST: written (N bytes)" -- on a fat run "PATH:
+ * verified" is the reassembled container's own verdict, once, after every
+ * selected slice's "slice NAME: verified" (see FAT FILES, above, for the
+ * rest of the per-slice verbose lines). DEST is `out` when given, else
+ * `path`. me_run flushes stdout before each line it writes and before each
+ * "matched nothing" report, so those land after any stdout line printed
+ * before them; an operation's own stderr message, written while it runs, is
+ * not ordered this way.
  *
  * WHAT THE OPERATIONS PRINT THEMSELVES. me_run calls each operation's
  * in-memory core, not its CLI verb, so an edit run shows the lines those
