@@ -147,7 +147,9 @@ macho9 edit FILE -                      # read the script from stdin
 ```
 
 `--output` and `--verbose` may appear anywhere among the arguments, not only
-after `SCRIPT`.
+after `SCRIPT`. There is no `--` to end flag parsing, so a `FILE` or `SCRIPT`
+whose real name starts with `-` is refused as an unknown flag; reference it
+through a path that doesn't, e.g. `./-name`.
 
 **Edit writes nothing unless every statement succeeded.** The whole script is
 parsed before `FILE` is ever opened for writing, so a typo in the last line of
@@ -161,7 +163,11 @@ opt-out — and only then written, once.
 
 One statement per line. Fields are whitespace-separated, with single- and
 double-quote grouping and backslash escapes — shell word rules. `#` begins a
-comment except inside quotes, and blank lines are ignored.
+comment only at the start of an unquoted field, matching shell: `a#b` is the
+literal field `a#b`, not `a` followed by a comment. Blank lines are ignored.
+A CR (or any other control byte except tab) anywhere in a line is a parse
+error, not a silently-accepted character — so a script saved with CRLF line
+endings will not parse; use LF.
 
 ### Statements
 
@@ -183,19 +189,26 @@ rpath         append    PATH
 rpath         insert    PATH
 ```
 
-Every rewriting operation `macho9` has, spelled as the existing verb with the
-`FILE` argument dropped — `macho9 dylib FILE -replace A B` is the same edit as
-the line `dylib replace A B`.
+The statements mirror `macho9`'s other rewriting verbs, most spelled as that
+verb with `FILE` dropped — `macho9 dylib FILE -replace A B` is the same edit
+as the line `dylib replace A B`. Four are renamed: `lc` is `load-command`,
+`minos` is `version-min`, `retag-swift` is `swift-abi`, and `declassify` is
+`fixups`. One rewriting verb has no statement at all: `grow FILE N` (enlarge
+the header pad by an exact byte count) is not expressible as a line here —
+`allow-grow`, below, is the directive that lets a `dylib`/`rpath` statement
+grow the pad on its own as a side effect, which is a different thing from
+naming a byte count directly.
 
 ### Directives
 
 Two, and each must precede every operation in the script — a directive after
-the first statement it would have governed is a parse error:
+*any* operation, not only the one it would have governed, is a parse error:
 
 ```
 allow-grow          permission to enlarge the header pad by lowering the image
                     base if new load commands do not fit; opt-in, and refused
-                    by default
+                    by default. MH_EXECUTE + MH_PIE only -- the image-base
+                    trick needs a __PAGEZERO and no absolute relocations to fix
 fatal-warnings      an operation that matched nothing is an error, not just a
                     report
 ```

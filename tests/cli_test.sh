@@ -307,8 +307,8 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
-# edit's own flags= line: only the CLI flags this task actually adds
-# (--dry-run is a later task and must not appear yet).
+# edit's own flags= line: only the CLI flags that exist (no --dry-run yet;
+# it must not be advertised until it does).
 if echo "$caps" | grep "^verb edit" | grep -q "flags=.*output" \
     && echo "$caps" | grep "^verb edit" | grep -q "flags=.*verbose"; then
     ok "capabilities: edit advertises output and verbose flags"
@@ -316,7 +316,7 @@ else
     bad "capabilities: edit flags" "expected output,verbose: $(echo "$caps" | grep '^verb edit')"
 fi
 echo "$caps" | grep "^verb edit" | grep -q "dry-run" \
-    && bad "capabilities: edit flags" "advertises dry-run, which this task does not add" \
+    && bad "capabilities: edit flags" "advertises dry-run, which does not exist yet" \
     || ok "capabilities: edit does not yet advertise dry-run"
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
@@ -2600,9 +2600,23 @@ build_main "$T/edit_anywhere"
 "$MACHO9" edit --verbose "$T/edit_anywhere" "$T/prod.edits" \
     >"$T/edit_anywhere.out" 2>"$T/edit_anywhere.err" \
     || bad "edit: flags before FILE" "$(cat "$T/edit_anywhere.err")"
-[ -s "$T/edit_anywhere.out" ] \
-    && ok "edit: --verbose before FILE is accepted and logs something" \
-    || bad "edit: flags before FILE" "no verbose output: $(cat "$T/edit_anywhere.out")"
+# me_run's verbose log goes to o.log (stderr), not stdout -- the rewrite's
+# own progress lines print to stdout whether or not --verbose is given, so
+# asserting on stdout alone would pass even if --verbose did nothing. Check
+# stderr for the statement echo that only --verbose produces.
+grep -q "  load-command delete uuid" "$T/edit_anywhere.err" \
+    && ok "edit: --verbose before FILE logs the statement to stderr" \
+    || bad "edit: flags before FILE" "no statement echo on stderr: $(cat "$T/edit_anywhere.err")"
+
+# --output may also appear BEFORE FILE -- the "anywhere" rule is otherwise
+# untested in that position (every other case here puts it after SCRIPT).
+build_main "$T/edit_output_before"
+"$MACHO9" edit --output "$T/edit_output_before.dst" "$T/edit_output_before" "$T/prod.edits" \
+    >/dev/null 2>"$T/edit_output_before.err" \
+    || bad "edit: --output before FILE" "$(cat "$T/edit_output_before.err")"
+[ -f "$T/edit_output_before.dst" ] \
+    && ok "edit: --output before FILE is accepted and writes the output" \
+    || bad "edit: --output before FILE" "no output file"
 
 # A parse error is reported BEFORE the file is opened for writing, and names
 # the line. This is what makes a typo in statement 9 of 9 cost nothing.

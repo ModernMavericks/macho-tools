@@ -338,10 +338,9 @@ static int print_capabilities(void) {
     printf("verb rpath ops=");
     print_ops_csv(1);
     printf(" flags=allow-grow,fatal-warnings\n");
-    /* flags=output,verbose: the two CLI flags `edit` accepts today.
-     * --dry-run is a later task's addition and stays off this list until it
-     * lands, per this function's own "never advertise one that errors out"
-     * contract. */
+    /* flags=output,verbose: the two CLI flags `edit` accepts today. No
+     * --dry-run yet: the flag must not be advertised until it exists, per
+     * this function's own "never advertise one that errors out" contract. */
     printf("verb edit flags=output,verbose\n");
     {
         int i;
@@ -1089,22 +1088,28 @@ static int cmd_declassify(const char *in, const char *out) {
 /* ---- edit: parse an edit script and run it through me_run --------------
  *
  * The one verb whose positionals aren't at fixed argv indices: --output and
- * --verbose may appear anywhere among the arguments (a controller ruling
- * settled this after the design doc's own examples put --output after
- * SCRIPT and a later task's own examples put flags before FILE), so this
- * scans every token once instead of assuming a position. The two tokens
- * that are not "--output", its OUT, or "--verbose" -- in the order seen --
- * are FILE and SCRIPT; SCRIPT alone is allowed to start with '-' without
- * being mistaken for an unrecognized flag, because it names stdin.
+ * --verbose may appear anywhere among the arguments, before or after FILE
+ * and SCRIPT or between them, so this scans every token once instead of
+ * assuming a position. The two tokens that are not "--output", its OUT, or
+ * "--verbose" -- in the order seen -- are FILE and SCRIPT. Only the exact
+ * token "-" is exempt from the unrecognized-flag check below; it is not
+ * "SCRIPT may start with '-'" in general, and "-" is not always stdin: it is
+ * stdin only where it lands as SCRIPT (checked below), and a literal
+ * filename "-" where it lands as FILE (`edit - s.edits` opens a file named
+ * "-"). A SCRIPT or FILE whose real name starts with '-' has no escape here
+ * (no "--"); reference it through a path that doesn't, e.g. "./-name"
+ * (README's edit section says so too).
  *
- * ms_parse runs, and can fail, before FILE is ever opened for writing (see
- * me_run's own comment on step 1 of its execution model) -- a parse error is
- * reported here, prefixed the same way every other verb's own diagnostics
- * are, and returns EX_FAIL: an unparseable script is an operational failure
- * (a typo in the script), not a considered refusal about what FILE
- * contains. me_run's own return (0 / MR_REFUSED / MR_FAIL, forwarded
- * verbatim exactly as dylib/rpath/lc/minos already forward mr_apply_file's)
- * is everything past that point.
+ * ms_parse runs, and can fail, before FILE is ever opened for writing -- see
+ * edit.h's own header comment, which states that as the property this
+ * module exists for: nothing is written unless every statement succeeds and
+ * the final verify passes. A parse error is reported here, prefixed the
+ * same way every other verb's own diagnostics are, and returns EX_FAIL: an
+ * unparseable script is an operational failure (a typo in the script), not
+ * a considered refusal about what FILE contains. me_run's own return
+ * (0 / MR_REFUSED / MR_FAIL) is forwarded verbatim past that point, the same
+ * way dylib/rpath/lc forward mr_apply_file's and minos forwards
+ * mv_add_version_min's (cmd_minos, above).
  */
 enum { ME_READ_OK = 0, ME_READ_IO = -1, ME_READ_MEM = -2 };
 
@@ -1182,13 +1187,16 @@ static int cmd_edit(int argc, char **argv) {
     uint8_t *buf = NULL;
     size_t len = 0;
     int rrc = me_read_all(f, &buf, &len);
+    /* Captured before fclose(), which can itself touch errno and clobber
+     * whatever fread()/ferror() just set for a genuine read failure. */
+    int read_errno = errno;
     if (f != stdin) fclose(f);
     if (rrc == ME_READ_MEM) {
         fprintf(stderr, "macho9 edit: %s: out of memory\n", script_path);
         return EX_FAIL;
     }
     if (rrc == ME_READ_IO) {
-        fprintf(stderr, "macho9 edit: %s: %s\n", script_path, strerror(errno));
+        fprintf(stderr, "macho9 edit: %s: %s\n", script_path, strerror(read_errno));
         return EX_FAIL;
     }
 
@@ -1204,7 +1212,7 @@ static int cmd_edit(int argc, char **argv) {
     me_opts o;
     memset(&o, 0, sizeof o);
     o.verbose = verbose;
-    o.dry_run = 0;   /* --dry-run is a later task's addition */
+    o.dry_run = 0;   /* no --dry-run yet: the flag doesn't exist */
     o.log = stderr;
 
     int rc = me_run(file, out, &s, &o);
