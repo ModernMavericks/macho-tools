@@ -972,6 +972,51 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     return 0;
 }
 
+/* The verb path's slice callback: the thin rewrite, under the label and with
+ * the stdout lines `macho9 dylib`/`change_dylib` have always printed for a
+ * fat file. */
+typedef struct {
+    const mr_ops *ops;
+    int *hit_dylib, *hit_rpath, *hit_strip;
+} mr_fat_ctx;
+
+static int mr_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
+                        uint32_t index, int *changed, void *ctx_) {
+    mr_fat_ctx *c = (mr_fat_ctx *)ctx_;
+    char label[64];
+    snprintf(label, sizeof label, "arch %u (cputype 0x%x)", index, a->cputype);
+    int mod = 0;
+    int rc = mr_process_thin(pbuf, psize, label, c->ops, &mod,
+                             c->hit_dylib, c->hit_rpath, c->hit_strip);
+    if (rc == MR_SKIP) {
+        printf("%s: not a 64-bit Mach-O; leaving this slice unchanged\n", label);
+        return 0;
+    }
+    if (rc == MR_ERROR) {
+        fprintf(stderr, "ERROR: %s: refusing the whole fat file -- a partial "
+                        "rewrite would leave its slices inconsistent\n", label);
+        /* MR_REFUSED even when the slice's MR_ERROR came from an allocation
+         * failure inside mg_grow_header or mg_plausible: the same deliberate
+         * fold as the thin path's, whose comment at its own
+         * MR_ERROR->MR_REFUSED translation (mr_apply_image) says why. */
+        /* MR_REFUSED, never MR_ERROR itself: MR_SKIP (-2) and MR_ERROR (-1)
+         * are numerically MFAT_MALFORMED and MFAT_IO_ERROR, both in scope in
+         * this file now; fat.h requires a POSITIVE code from a slice callback
+         * for exactly that reason -- one forwarding MR_ERROR raw would be
+         * read as mfat_rewrite's own allocation failure. */
+        return MR_REFUSED;
+    }
+    *changed = mod;
+    return 0;
+}
+
+static void mr_fat_placed(const mfat_arch *a, uint32_t index,
+                          uint64_t off, uint64_t size, void *ctx) {
+    (void)a; (void)ctx;
+    printf("arch %u: placed at %llu (%llu bytes)\n", index,
+           (unsigned long long)off, (unsigned long long)size);
+}
+
 /*
  * Apply every requested change to every slice of a fat (universal) binary in
  * *pbuf, *pfsize, reassembling the fat container afterward. This is what
@@ -1001,51 +1046,11 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
  * shape untouched while still supporting the resize -grow needs.
  *
  * hit_dylib/hit_rpath/hit_strip: the SAME three caller-owned arrays are
- * passed to every slice's mr_process_thin call below, so hits accumulate
- * ACROSS slices rather than being reported per slice -- an operation that
- * matched in one fat slice and not another has matched, and a per-slice
- * report would wrongly call that a miss on every slice but one.
+ * passed to every slice's mr_process_thin call, so hits accumulate ACROSS
+ * slices rather than being reported per slice -- an operation that matched
+ * in one fat slice and not another has matched, and a per-slice report would
+ * wrongly call that a miss on every slice but one.
  */
-/* The verb path's slice callback: the thin rewrite, under the label and with
- * the stdout lines `macho9 dylib`/`change_dylib` have always printed for a
- * fat file. */
-typedef struct {
-    const mr_ops *ops;
-    int *hit_dylib, *hit_rpath, *hit_strip;
-} mr_fat_ctx;
-
-static int mr_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
-                        uint32_t index, int *changed, void *ctx_) {
-    mr_fat_ctx *c = (mr_fat_ctx *)ctx_;
-    char label[64];
-    snprintf(label, sizeof label, "arch %u (cputype 0x%x)", index, a->cputype);
-    int mod = 0;
-    int rc = mr_process_thin(pbuf, psize, label, c->ops, &mod,
-                             c->hit_dylib, c->hit_rpath, c->hit_strip);
-    if (rc == MR_SKIP) {
-        printf("%s: not a 64-bit Mach-O; leaving this slice unchanged\n", label);
-        return 0;
-    }
-    if (rc == MR_ERROR) {
-        fprintf(stderr, "ERROR: %s: refusing the whole fat file -- a partial "
-                        "rewrite would leave its slices inconsistent\n", label);
-        /* MR_REFUSED even when the slice's MR_ERROR came from an allocation
-         * failure inside mg_grow_header or mg_plausible: the same deliberate
-         * fold as the thin path's, whose comment at its own
-         * MR_ERROR->MR_REFUSED translation (mr_apply_image) says why. */
-        return MR_REFUSED;
-    }
-    *changed = mod;
-    return 0;
-}
-
-static void mr_fat_placed(const mfat_arch *a, uint32_t index,
-                          uint64_t off, uint64_t size, void *ctx) {
-    (void)a; (void)ctx;
-    printf("arch %u: placed at %llu (%llu bytes)\n", index,
-           (unsigned long long)off, (unsigned long long)size);
-}
-
 static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
                           const mr_ops *ops, int *out_modified,
                           int *hit_dylib, int *hit_rpath, int *hit_strip) {

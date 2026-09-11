@@ -5,15 +5,16 @@
  * disagreed about validation -- fix_macho trusted an arch's offset/size
  * outright (an out-of-bounds READ on a malformed fat file), change_dylib
  * checked them. That is exactly the class of bug this toolkit's shared src/
- * layer exists to rule out (see image.h's file header, and Task 3's two
- * independently-diverging deletion predicates). This is the one place both
- * now go through.
+ * layer exists to rule out (see image.h's file header, and src/rewrite.c's
+ * mr_is_deleted -- the one predicate the load-command emitter and the
+ * ordinal map now both ask, after each had decided for itself which dylibs
+ * a -delete removed). This is the one place both now go through.
  *
  * Scope: reading and validating the arch table, and -- mfat_rewrite --
  * splitting a fat file into its slices, handing each to a caller's function,
  * and laying the results out again. That reassembly used to live inside
- * src/rewrite.c's mr_process_fat; it moved here when src/edit.c became a
- * second caller, so the layout rule has one implementation. */
+ * src/rewrite.c's mr_process_fat; it moved here so the layout rule has one
+ * implementation. */
 
 #ifndef MACHO9_FAT_H
 #define MACHO9_FAT_H
@@ -90,7 +91,9 @@ typedef void (*mfat_placed_fn)(const mfat_arch *a, uint32_t index,
  * MFAT_IO_ERROR if an allocation failed; or MFAT_MALFORMED if the new layout
  * would overlap two slices (possible when the arch table is not in ascending
  * offset order). On every non-zero return *pbuf and *psize are untouched,
- * every split buffer is freed, and the reason is on stderr. */
+ * every split buffer is freed, and the reason is on stderr -- but *modified
+ * may already be set, from an earlier slice that changed before a later one
+ * failed, so read it only when the return is 0. */
 int mfat_rewrite(uint8_t **pbuf, size_t *psize, uint32_t narch, int swapped,
                  mfat_slice_fn fn, mfat_placed_fn placed, void *ctx, int *modified);
 
