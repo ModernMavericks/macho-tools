@@ -1,5 +1,5 @@
-#ifndef MACHO9_DECLASSIFY_H
-#define MACHO9_DECLASSIFY_H
+#ifndef MACHOTOOL_DECLASSIFY_H
+#define MACHOTOOL_DECLASSIFY_H
 /*
  * md_ -- lowering a modern Mach-O's CHAINED FIXUPS to the LC_DYLD_INFO_ONLY
  * rebase/bind opcode streams dyld has understood since 10.6, so a binary a
@@ -193,4 +193,4 @@ typedef struct {
 int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
                       md_report *rep);
 
-#endif /* MACHO9_DECLASSIFY_H */
+#endif /* MACHOTOOL_DECLASSIFY_H */

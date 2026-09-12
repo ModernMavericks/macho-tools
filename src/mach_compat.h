@@ -35,8 +35,8 @@
  * real declaration and every one of these is a no-op.
  */
 
-#ifndef MACHO9_MACH_COMPAT_H
-#define MACHO9_MACH_COMPAT_H
+#ifndef MACHOTOOL_MACH_COMPAT_H
+#define MACHOTOOL_MACH_COMPAT_H
 
 #include <mach-o/loader.h>
 #include <mach/machine.h>
@@ -135,4 +135,4 @@
 #define CPU_SUBTYPE_MASK 0xff000000u
 #endif
 
-#endif /* MACHO9_MACH_COMPAT_H */
+#endif /* MACHOTOOL_MACH_COMPAT_H */

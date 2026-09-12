@@ -33,8 +33,8 @@
  * it does and does not catch.
  */
 
-#ifndef MACHO9_ORDINALS_H
-#define MACHO9_ORDINALS_H
+#ifndef MACHOTOOL_ORDINALS_H
+#define MACHOTOOL_ORDINALS_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -174,4 +174,4 @@ typedef struct {
 int mo_map_apply(uint8_t *buf, size_t size, const mo_map *map, int verbose,
                  mo_counts *counts);
 
-#endif /* MACHO9_ORDINALS_H */
+#endif /* MACHOTOOL_ORDINALS_H */

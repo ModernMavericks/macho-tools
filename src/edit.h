@@ -1,5 +1,5 @@
-#ifndef MACHO9_EDIT_H
-#define MACHO9_EDIT_H
+#ifndef MACHOTOOL_EDIT_H
+#define MACHOTOOL_EDIT_H
 /*
  * me_ -- applying an edit script (src/script.h) to one Mach-O: read the image
  * once, apply each statement in order to the in-memory buffer, verify the
@@ -231,4 +231,4 @@ typedef struct {
 int me_run(const char *path, const char *out, const ms_script *s,
            const me_opts *o);
 
-#endif /* MACHO9_EDIT_H */
+#endif /* MACHOTOOL_EDIT_H */

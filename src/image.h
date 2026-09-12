@@ -10,8 +10,8 @@
  * are other modules -- this one answers "what is in here?" and nothing else.
  * 32-bit and fat are known gaps, filed as Task 5 in the toolkit plan. */
 
-#ifndef MACHO9_IMAGE_H
-#define MACHO9_IMAGE_H
+#ifndef MACHOTOOL_IMAGE_H
+#define MACHOTOOL_IMAGE_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -172,4 +172,4 @@ uint64_t mi_text_base(const mi_image *im);
  * header. */
 int mi_image_base(const mi_image *im, uint64_t *out);
 
-#endif /* MACHO9_IMAGE_H */
+#endif /* MACHOTOOL_IMAGE_H */

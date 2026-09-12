@@ -1,5 +1,5 @@
-#ifndef MACHO9_SCRIPT_H
-#define MACHO9_SCRIPT_H
+#ifndef MACHOTOOL_SCRIPT_H
+#define MACHOTOOL_SCRIPT_H
 
 #include <stddef.h>
 

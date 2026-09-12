@@ -12,8 +12,8 @@
  * has one (ob_uleb), but it appends to a growable buffer while rebuilding a
  * stream from scratch, which is a different job from editing one in place. */
 
-#ifndef MACHO9_ULEB_H
-#define MACHO9_ULEB_H
+#ifndef MACHOTOOL_ULEB_H
+#define MACHOTOOL_ULEB_H
 
 #include <stdint.h>
 
@@ -29,4 +29,4 @@ int mu_minlen(uint64_t v);
  * 0 if v does not fit in `width` bytes. */
 int mu_encode_fixed(uint8_t *p, uint64_t v, int width);
 
-#endif /* MACHO9_ULEB_H */
+#endif /* MACHOTOOL_ULEB_H */

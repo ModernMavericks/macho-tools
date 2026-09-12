@@ -37,8 +37,8 @@
  * entry point, not about __LINKEDIT's own resident structures, and the
  * task that created this module scoped it to the latter only.
  */
-#ifndef MACHO9_LINKEDIT_H
-#define MACHO9_LINKEDIT_H
+#ifndef MACHOTOOL_LINKEDIT_H
+#define MACHOTOOL_LINKEDIT_H
 
 #include <stdint.h>
 
@@ -160,4 +160,4 @@ int ml_bump(uint32_t *off, uint32_t insert, uint32_t grow);
  * "discard this buffer, do not write it out", never partial success. */
 int ml_bump_all(mi_image *im, uint32_t insert, uint32_t grow);
 
-#endif /* MACHO9_LINKEDIT_H */
+#endif /* MACHOTOOL_LINKEDIT_H */

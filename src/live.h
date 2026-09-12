@@ -114,8 +114,8 @@
  * to the library function of the same name.
  */
 
-#ifndef MACHO9_LIVE_H
-#define MACHO9_LIVE_H
+#ifndef MACHOTOOL_LIVE_H
+#define MACHOTOOL_LIVE_H
 
 #include <stddef.h>   /* NULL, size_t -- macros/typedefs only, no symbols */
 #include <stdint.h>
@@ -262,4 +262,4 @@ static inline uintptr_t mlive_addr(uint64_t vmaddr, intptr_t slide) {
     return (uintptr_t)vmaddr + (uintptr_t)slide;
 }
 
-#endif /* MACHO9_LIVE_H */
+#endif /* MACHOTOOL_LIVE_H */

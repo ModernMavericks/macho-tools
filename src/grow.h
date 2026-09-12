@@ -31,8 +31,8 @@
  * Dylibs without a __PAGEZERO can't lower the base; mg_grow_header reports that
  * and leaves the buffer untouched so the caller can fall back / error cleanly.
  */
-#ifndef MACHO9_GROW_H
-#define MACHO9_GROW_H
+#ifndef MACHOTOOL_GROW_H
+#define MACHOTOOL_GROW_H
 
 
 #include <stdio.h>
@@ -318,4 +318,4 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);
 
-#endif /* MACHO9_GROW_H */
+#endif /* MACHOTOOL_GROW_H */

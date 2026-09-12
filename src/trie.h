@@ -19,8 +19,8 @@
  * labels/payloads, and reuses this repo's own src/uleb.h instead of a second
  * ULEB implementation. See docs/prior-art.md for the fuller licensing note.
  */
-#ifndef MACHO9_TRIE_H
-#define MACHO9_TRIE_H
+#ifndef MACHOTOOL_TRIE_H
+#define MACHOTOOL_TRIE_H
 
 #include <stdint.h>
 
@@ -58,4 +58,4 @@
 int mt_trie_rebuild(const uint8_t *trie, uint32_t size, uint64_t shift,
                      uint8_t **out, uint32_t *out_size);
 
-#endif /* MACHO9_TRIE_H */
+#endif /* MACHOTOOL_TRIE_H */

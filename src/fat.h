@@ -16,8 +16,8 @@
  * src/rewrite.c's mr_process_fat; it moved here so the layout rule has one
  * implementation. */
 
-#ifndef MACHO9_FAT_H
-#define MACHO9_FAT_H
+#ifndef MACHOTOOL_FAT_H
+#define MACHOTOOL_FAT_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -97,4 +97,4 @@ typedef void (*mfat_placed_fn)(const mfat_arch *a, uint32_t index,
 int mfat_rewrite(uint8_t **pbuf, size_t *psize, uint32_t narch, int swapped,
                  mfat_slice_fn fn, mfat_placed_fn placed, void *ctx, int *modified);
 
-#endif /* MACHO9_FAT_H */
+#endif /* MACHOTOOL_FAT_H */

@@ -1,5 +1,5 @@
-#ifndef MACHO9_ARCH_NAMES_H
-#define MACHO9_ARCH_NAMES_H
+#ifndef MACHOTOOL_ARCH_NAMES_H
+#define MACHOTOOL_ARCH_NAMES_H
 /*
  * ma_ -- lipo's architecture names, and the cputype/cpusubtype each means.
  *
@@ -30,4 +30,4 @@ void ma_describe(uint32_t cputype, uint32_t cpusubtype, char out[32]);
 /* Every name, comma-separated, for messages that list what was accepted. */
 void ma_list(char *out, size_t outsz);
 
-#endif /* MACHO9_ARCH_NAMES_H */
+#endif /* MACHOTOOL_ARCH_NAMES_H */

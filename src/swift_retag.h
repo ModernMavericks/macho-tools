@@ -1,5 +1,5 @@
-#ifndef MACHO9_SWIFT_RETAG_H
-#define MACHO9_SWIFT_RETAG_H
+#ifndef MACHOTOOL_SWIFT_RETAG_H
+#define MACHOTOOL_SWIFT_RETAG_H
 /*
  * mswift_ -- moving an Objective-C class record's is-Swift tag from the
  * stable-ABI bit to the legacy one, so a Swift runtime built for a
@@ -95,4 +95,4 @@ int mswift_retag_file(const char *path, const char *out, size_t *out_size);
  */
 int mswift_retag_image(mi_image *im);
 
-#endif /* MACHO9_SWIFT_RETAG_H */
+#endif /* MACHOTOOL_SWIFT_RETAG_H */

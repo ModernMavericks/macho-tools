@@ -1,5 +1,5 @@
-#ifndef MACHO9_VERSION_MIN_H
-#define MACHO9_VERSION_MIN_H
+#ifndef MACHOTOOL_VERSION_MIN_H
+#define MACHOTOOL_VERSION_MIN_H
 /*
  * mv_ -- declaring a 10.9 deployment floor on an image that has none.
  *
@@ -58,4 +58,4 @@ int mv_add_version_min(const char *path, const char *out, int allow_grow);
 int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
                              const char *label, int *out_added);
 
-#endif /* MACHO9_VERSION_MIN_H */
+#endif /* MACHOTOOL_VERSION_MIN_H */

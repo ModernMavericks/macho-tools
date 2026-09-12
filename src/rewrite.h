@@ -1,5 +1,5 @@
-#ifndef MACHO9_REWRITE_H
-#define MACHO9_REWRITE_H
+#ifndef MACHOTOOL_REWRITE_H
+#define MACHOTOOL_REWRITE_H
 /*
  * mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs.
  *
@@ -422,4 +422,4 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
  * each statement, against an image it writes only at the end. */
 int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits);
 
-#endif /* MACHO9_REWRITE_H */
+#endif /* MACHOTOOL_REWRITE_H */

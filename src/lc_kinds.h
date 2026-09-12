@@ -1,5 +1,5 @@
-#ifndef MACHO9_LC_KINDS_H
-#define MACHO9_LC_KINDS_H
+#ifndef MACHOTOOL_LC_KINDS_H
+#define MACHOTOOL_LC_KINDS_H
 
 #include <stdint.h>
 #include <stddef.h>

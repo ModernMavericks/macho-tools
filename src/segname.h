@@ -1,5 +1,5 @@
-#ifndef MACHO9_SEGNAME_H
-#define MACHO9_SEGNAME_H
+#ifndef MACHOTOOL_SEGNAME_H
+#define MACHOTOOL_SEGNAME_H
 /*
  * mseg_ -- renaming a Mach-O segment, and the segname each of its sections
  * repeats.
@@ -66,4 +66,4 @@ int mseg_name_fits(const char *name);
  * `lc` is non-const on purpose: this writes through it. */
 int mseg_rename_lc(struct load_command *lc, const char *oldname, const char *newname);
 
-#endif /* MACHO9_SEGNAME_H */
+#endif /* MACHOTOOL_SEGNAME_H */

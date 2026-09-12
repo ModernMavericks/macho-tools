@@ -10,8 +10,8 @@
  * is just another name for OUT, unaffected by replacing OUT via rename.
  */
 
-#ifndef MACHO9_ATOMIC_WRITE_H
-#define MACHO9_ATOMIC_WRITE_H
+#ifndef MACHOTOOL_ATOMIC_WRITE_H
+#define MACHOTOOL_ATOMIC_WRITE_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -38,4 +38,4 @@ int wa_is_input(const char *in, const char *out);
  * was and no temp file remains. */
 int wa_write_new(const char *in, const char *out, const uint8_t *buf, size_t size);
 
-#endif /* MACHO9_ATOMIC_WRITE_H */
+#endif /* MACHOTOOL_ATOMIC_WRITE_H */
