@@ -67,10 +67,21 @@ Shipyard's `check-artifact-conformance.sh:70` hard-requires `*-mavericks.[0-9]*`
 ```markdown
 ## Conformance deviations
 
-- scheme:*: this repo is its own upstream (no external thing to repackage), so it
+- scheme: this repo is its own upstream (no external thing to repackage), so it
   versions itself directly as X.Y.Z per the self-upstream rule, and there is no
   -mavericks.N axis to carry
 ```
+
+**Unscoped, not `scheme:*`.** This step originally prescribed the glob-scoped
+form, and that form is inert: `check-artifact-conformance.sh` calls `fail
+scheme "..."` with no filename, so `fail()`'s scoped-glob branch — which
+requires a non-empty file — can never run for this check. Verified by feeding a
+real fact stream through the installed script: the scoped form fails
+(`conformance: scheme: version '1.2.3' is not <upstream>-mavericks.N`, exit 1),
+the unscoped form passes (`conformance: ok — 1.2.3`). `mavericks-shipyard`'s
+own `INGREDIENTS.md` declares its identical self-upstream deviation unscoped.
+A declared deviation that silently protects nothing is worse than none, so do
+not copy the scoped shape into any other repo.
 
 - [ ] **Step 5: Verify the conventions gate still passes**
 
