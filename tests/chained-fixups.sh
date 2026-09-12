@@ -166,17 +166,17 @@ echo "chained-fixups: converted to LC_DYLD_INFO_ONLY"
 if [ -x "$BIN/machotool" ]; then
     "$BIN/machotool" declassify "$T/in" "$T/out.m9" >/dev/null
     if cmp -s "$T/out" "$T/out.m9"; then
-        echo "chained-fixups: macho9 declassify is byte-identical to patch_macho"
+        echo "chained-fixups: machotool declassify is byte-identical to patch_macho"
     else
-        echo "chained-fixups: FAIL — macho9 declassify and patch_macho disagree" >&2
+        echo "chained-fixups: FAIL — machotool declassify and patch_macho disagree" >&2
         exit 1
     fi
     if "$T/has_lc" "$T/out.m9" "$LC_DYLD_CHAINED_FIXUPS"; then
-        echo "chained-fixups: FAIL — macho9 declassify left LC_DYLD_CHAINED_FIXUPS" >&2
+        echo "chained-fixups: FAIL — machotool declassify left LC_DYLD_CHAINED_FIXUPS" >&2
         exit 1
     fi
     if ! "$T/has_lc" "$T/out.m9" "$LC_DYLD_INFO_ONLY"; then
-        echo "chained-fixups: FAIL — macho9 declassify produced no LC_DYLD_INFO_ONLY" >&2
+        echo "chained-fixups: FAIL — machotool declassify produced no LC_DYLD_INFO_ONLY" >&2
         exit 1
     fi
     # Idempotency, which install.sh's wrapper leans on: a second pass over an

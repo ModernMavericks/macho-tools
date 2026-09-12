@@ -125,7 +125,7 @@
 #
 #          old:  Changed: /tmp/aaa/libfoo.dylib -> /tmp/bbb/libfoo.dylib
 #                File updated: a.dylib          rc=0   otool -D -> /tmp/bbb/libfoo.dylib
-#          new:  macho9: /tmp/aaa/libfoo.dylib matched nothing
+#          new:  machotool: /tmp/aaa/libfoo.dylib matched nothing
 #                b.dylib: nothing to change.    rc=0   otool -D -> /tmp/aaa/libfoo.dylib
 #          cmp a.dylib b.dylib -> differ
 #
@@ -152,8 +152,8 @@
 # carried information a caller could act on -- the unmatched report this
 # plan's Task 1 added:
 #
-#     macho9: /usr/lib/libFoo.dylib matched nothing        (a -change)
-#     macho9: no load command of kind build-version to delete
+#     machotool: /usr/lib/libFoo.dylib matched nothing        (a -change)
+#     machotool: no load command of kind build-version to delete
 #
 # on STDERR, per operation, naming the operation that matched nothing. That is
 # strictly more than "No changes needed: F" said, which could not distinguish
@@ -162,12 +162,13 @@
 # an operation matched nothing, that is compat surface, and
 # tests/known-callers.sh and tests/wrapper_test.sh are the gates.
 #
-# Those two lines are quoted verbatim, `macho9:` and all, because that is what
-# a caller really sees: the machotool rename renamed the BINARY and left every
-# byte it emits alone, for a later change to move together with everything
-# that reads them. Neither tests/EXPECTED nor tests/known-callers.sh's sha256s
-# have an opinion -- both hash converted file bytes with the tools' output
-# sent to /dev/null. What reads these two lines is tests/wrapper_test.sh.
+# Those two lines are quoted verbatim, `machotool:` prefix and all, because
+# that is what a caller really sees -- the report names the operation in
+# machotool's grammar, which is the grammar this wrapper teaches (src/rewrite.c's
+# mr_report_unmatched says why the prefix is the tool's name and not argv[0]).
+# Neither tests/EXPECTED nor tests/known-callers.sh's sha256s have an opinion
+# -- both hash converted file bytes with the tools' output sent to /dev/null.
+# What reads these two lines is tests/wrapper_test.sh.
 #
 # ---- two more differences, which are NOT on the adopted list -------------
 #

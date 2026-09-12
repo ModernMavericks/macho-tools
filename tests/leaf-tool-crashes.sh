@@ -253,7 +253,7 @@ else
     skip "add_version_min: nosect fixture (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
-# --- macho9 dylib ------------------------------------------------------------
+# --- machotool dylib ------------------------------------------------------------
 # The same fixture reached the load-command rewriter's commit, whose memset
 # cleared the pad up to the first section's offset -- taken to be 4096 when
 # there is no section data at all, in a 104-byte buffer. With no section data
@@ -264,7 +264,7 @@ grow_refusal="no section data bounds the header pad; refusing to grow it"
 sha_of() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
 for grow in "" --allow-grow; do
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="macho9 dylib -append${grow:+ $grow}: nosect fixture${gm:+ (libgmalloc)}"
+        what="machotool dylib -append${grow:+ $grow}: nosect fixture${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
@@ -325,7 +325,7 @@ sectionless_case() {
     sl_desc="$*"
     set -- "$T/sl.macho" "$T/sl.out.macho" "$@"
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="macho9 $verb $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
+        what="machotool $verb $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
@@ -366,12 +366,12 @@ sectionless_case "$rewrite_refusal" edit "$T/sl.edits"
 info_rc=0
 "$BIN/machotool" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?
 if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (no section data bounds it)$" "$T/sl_info.out"; then
-    ok "macho9 info: sectionless image: the header pad is reported unknown, not a number"
+    ok "machotool info: sectionless image: the header pad is reported unknown, not a number"
 else
-    bad "macho9 info: sectionless image" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/sl_info.out")"
+    bad "machotool info: sectionless image" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/sl_info.out")"
 fi
 
-# --- macho9 grow: a first section past the end of the image ------------------
+# --- machotool grow: a first section past the end of the image ------------------
 # mg_grow_header inserts its new page at the first section's file offset and
 # moves everything from there to the end of the file up by a page. With that
 # offset past the end, the length of that move (fsize - insert, a size_t)
@@ -379,7 +379,7 @@ fi
 # with or without libgmalloc. It must refuse (1), saying why, and leave every
 # byte as it was.
 for gm in "" /usr/lib/libgmalloc.dylib; do
-    what="macho9 grow 4096: oobgrow fixture${gm:+ (libgmalloc)}"
+    what="machotool grow 4096: oobgrow fixture${gm:+ (libgmalloc)}"
     if [ -n "$gm" ] && [ ! -f "$gm" ]; then
         skip "$what" "no $gm on this host"
         continue
@@ -411,7 +411,7 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
         || bad "$what" "a refused run left an output behind"
 done
 
-# --- macho9 dylib and info: a first section past the end of the image --------
+# --- machotool dylib and info: a first section past the end of the image --------
 # mr_process_thin's commit memset clears the load-command area up to the first
 # section's file offset. On oobsection.macho that offset is 0x7000 and the file
 # is 184 bytes, so trusting it clears roughly 28 KB past the buffer (SIGSEGV
@@ -420,7 +420,7 @@ done
 # not report a pad measured against that offset either.
 for grow in "" --allow-grow; do
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="macho9 dylib -append${grow:+ $grow}: oobsection fixture${gm:+ (libgmalloc)}"
+        what="machotool dylib -append${grow:+ $grow}: oobsection fixture${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
@@ -456,9 +456,9 @@ done
 info_rc=0
 "$BIN/machotool" info "$T/oobsection.macho" >"$T/oi.out" 2>&1 || info_rc=$?
 if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (the first section lies past the end of the image)$" "$T/oi.out"; then
-    ok "macho9 info: oobsection fixture: the header pad is reported unknown, not a number"
+    ok "machotool info: oobsection fixture: the header pad is reported unknown, not a number"
 else
-    bad "macho9 info: oobsection fixture" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/oi.out")"
+    bad "machotool info: oobsection fixture" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/oi.out")"
 fi
 
 # --- retag_swift_classes ----------------------------------------------------

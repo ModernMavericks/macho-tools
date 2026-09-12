@@ -994,7 +994,7 @@ run rename_segment f __DATA __DATA
 # got both wrong -- it exited 2 and left the file alone where the C tool
 # renamed and exited 0. Both were measured against the pre-wrapper binary
 # before this wrapper was changed to take the count from
-# `macho9 segment: renamed=<N>`.
+# `machotool segment: renamed=<N>`.
 #
 # The odd segnames are made with `machotool segment` itself, which is how they are
 # reachable in the first place; both are legal in a char[16] field. That verb
@@ -1329,20 +1329,20 @@ run fix_macho f -strip_build_version
 [ "$rc" -eq 0 ] && [ "$(sha "$T/f")" = "$before" ] \
     && ok "fix_macho: -strip_build_version with nothing to strip exits 0, having written nothing" \
     || bad "fix_macho -strip_build_version" "exit $rc (want 0), file changed=$([ "$(sha "$T/f")" = "$before" ] && echo no || echo YES)"
-# `macho9:`, not `machotool:`, and deliberately so: the rename renamed the
-# BINARY and the taught text and left every byte the binary EMITS alone, to be
-# moved by a later change together with the assertions that read it. Hence the
-# taught line below says `machotool` and the diagnostic above it says `macho9`.
+# `machotool:`, the tool's own name: the unmatched report names operations in
+# machotool's grammar (src/rewrite.c's mr_report_unmatched says why), so the
+# prefix moved with the binary. The diagnostic and the taught line below it
+# now agree.
 #
 # NOTHING DIGESTS THIS. tests/EXPECTED and tests/known-callers.sh's sha256s
 # hash converted FILE BYTES, with every tool's stdout and stderr sent to
-# /dev/null, so renaming every emitted string would move neither. What pins
-# these strings is four greps, and they are the whole list: this assertion,
-# the `matched nothing` one below it, tests/cli_test.sh's `^macho9 edit: `
+# /dev/null, so renaming every emitted string moved neither. What pins these
+# strings is four greps, and they are the whole list: this assertion, the
+# `matched nothing` one below it, tests/cli_test.sh's `^machotool edit: `
 # prefix check, and -- the one that is not a test -- compat/rename_segment.sh's
-# `^macho9 segment: renamed=N` parser, which is production code a caller
-# depends on.
-has_line "$T/err" 'macho9: no load command of kind build-version to delete' \
+# `^machotool segment: renamed=N` parser, which is production code a caller
+# depends on. All four move with the strings they read.
+has_line "$T/err" 'machotool: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
 has_line "$T/err" '    machotool lc f f.new -delete build-version' \
@@ -1377,7 +1377,7 @@ EOF
 run fix_macho libfmid.dylib -change "$fm_id" '@loader_path/OTHER.dylib' \
     -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
 if [ "$rc" -eq 0 ] \
-    && has_line "$T/err" "macho9: $fm_id matched nothing" \
+    && has_line "$T/err" "machotool: $fm_id matched nothing" \
     && LC_ALL=C grep -q -- "$fm_id" "$T/libfmid.dylib" \
     && ! LC_ALL=C grep -q -- '@loader_path/OTHER.dylib' "$T/libfmid.dylib" \
     && LC_ALL=C grep -q -- '@loader_path/../S.dylib' "$T/libfmid.dylib"; then

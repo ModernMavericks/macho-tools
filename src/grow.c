@@ -642,7 +642,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
         case LC_DYLD_CHAINED_FIXUPS:
             why = "LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the "
                   "image base, which growing moves; convert them first (`fixups set "
-                  "classic` in an edit script, or `macho9 declassify`)";
+                  "classic` in an edit script, or `machotool declassify`)";
             break;
         /* LC_NOTE (note_command: a uint64_t offset/size pair, per publicly
          * documented ld64/dyld source) and LC_ATOM_INFO (reported elsewhere

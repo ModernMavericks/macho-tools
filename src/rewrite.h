@@ -201,7 +201,7 @@ typedef struct {
  * way:
  *
  *   cli/macho9.c's own dylib/rpath parser checks the count inline and prints
- *     "macho9 <verb>: too many <flag> operations (max N)", naming ITS OWN
+ *     "machotool <verb>: too many <flag> operations (max N)", naming ITS OWN
  *     flag spelling (`-append`, not change_dylib's `-add`) -- see the
  *     comment at that call site for why the wording is deliberately not
  *     shared with the other two. This is the ONLY call site that actually
@@ -413,7 +413,7 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
 
 /* After a successful rewrite, report on stderr every dylib_changes/
  * rpath_changes/strip_cmds entry that matched nothing according to `hits`
- * (the "macho9: ... matched nothing" lines), and decide what that means:
+ * (the "machotool: ... matched nothing" lines), and decide what that means:
  * MR_REFUSED if at least one matched nothing and ops->fatal_unmatched is set,
  * otherwise 0. Only after a SUCCESSFUL rewrite: a refused one may have
  * stopped before a single comparison ran, and its hit counts mean nothing.

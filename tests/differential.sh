@@ -160,7 +160,7 @@ mtout() {
         cmp -s "$T/A/o" "$T/B/o" || bad="$bad bytes"
         cmp -s "$SRC" "$T/A/o" || modified=$((modified + 1))
     fi
-    record "macho9 $verb $SRC o $*" "$bad"
+    record "machotool $verb $SRC o $*" "$bad"
     return 0
 }
 
@@ -227,7 +227,7 @@ conv() {
     else
         [ "$b9rc" -ne 0 ] || bad="$bad declassify-took-a-refused-input"
     fi
-    record "patch_macho $SRC (and macho9 declassify)" "$bad"
+    record "patch_macho $SRC (and machotool declassify)" "$bad"
 }
 
 # 3000 characters is comfortably past any plausible linker's default header
@@ -251,8 +251,8 @@ while IFS= read -r SRC; do
     mtout dylib -delete "$first"
     mtout dylib -reexport "$first"
     mtout dylib --allow-grow -replace "$first" "$longpath"
-    mtout rpath -append /tmp/macho9diff
-    mtout rpath -replace /usr/lib /tmp/macho9diff2
+    mtout rpath -append /tmp/machotooldiff
+    mtout rpath -replace /usr/lib /tmp/machotooldiff2
     mtout lc -delete uuid
     mtout lc -delete codesig -delete uuid
     mtout minos 10.9

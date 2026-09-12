@@ -33,16 +33,22 @@
 #      rename_segment got it from mseg_rename_image's return value; this
 #      wrapper gets it from `machotool segment`, which prints
 #
-#          macho9 segment: renamed=<N>
+#          machotool segment: renamed=<N>
 #
-#      -- still spelled `macho9`, because the machotool rename renamed the
-#      BINARY and left every byte it emits alone, for a later change to move
-#      together with everything that reads them. So the tool answers to one
-#      name and prints another, and the sed below matches what is PRINTED,
-#      not what the file is called. No digest protects this: tests/EXPECTED
-#      and tests/known-callers.sh's sha256s hash converted file bytes with
-#      the tools' output sent to /dev/null. This parser is what breaks, and
-#      it is the only one of the four readers that is not a test.
+#      -- the tool's own name, since the line is part of machotool's own
+#      grammar and moved with the rename. No digest protects this text:
+#      tests/EXPECTED and tests/known-callers.sh's sha256s hash converted
+#      file bytes with the tools' output sent to /dev/null. What pins it is
+#      four greps in three files, and they are the whole list:
+#
+#        * the sed below, the ONLY ONE THAT IS NOT A TEST -- production code
+#          a caller depends on for the count;
+#        * tests/wrapper_test.sh's two unmatched-report assertions, which
+#          match whole lines beginning `machotool: `; and
+#        * tests/cli_test.sh's `^machotool edit: ` prefix check.
+#
+#      Each of the four carries this same list, so the set is findable from
+#      any one of them, and all four have to move with the strings they read.
 #
 #      on success -- one line, key=value, in the shape --capabilities already
 #      established, and advertised as `verb segment reports=renamed` so this
@@ -196,10 +202,10 @@ mw_retranslate rename_segment "$@" || exit 1
 mw_run >"$MW_T/segout" 2>&1 || { cat "$MW_T/segout" >&2; exit 1; }
 
 # The match count, from the verb that did the matching. Anchored on the whole
-# line, so nothing else machotool prints can be mistaken for it. `macho9`, not
-# `machotool`: this matches the line the binary PRINTS, which the rename left
-# untouched on purpose (see divergence 1 in the header).
-mw_n=$(sed -n 's/^macho9 segment: renamed=\([0-9][0-9]*\)$/\1/p' "$MW_T/segout")
+# line, so nothing else machotool prints can be mistaken for it. This matches
+# the line the binary PRINTS; divergence 1 in the header says what else reads
+# machotool's emitted text and must move with it.
+mw_n=$(sed -n 's/^machotool segment: renamed=\([0-9][0-9]*\)$/\1/p' "$MW_T/segout")
 if [ -z "$mw_n" ]; then
     # The rename succeeded but this build's `machotool segment` did not report the
     # count, so there is no honest way to tell "renamed 0" (exit 2) from

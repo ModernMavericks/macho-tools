@@ -517,7 +517,7 @@ fi
 #
 # The "No changes needed" oracle had to change with it: that line was
 # fix_macho's own stdout and no longer exists anywhere. Its replacement is
-# this plan's Task 1 unmatched report, `macho9: <path> matched nothing`, on
+# the unmatched report, `machotool: <path> matched nothing`, on
 # STDERR, which says the same thing per operation instead of per run. Note
 # `$out` merges both streams, so the check reads either way.
 if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then

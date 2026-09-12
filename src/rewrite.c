@@ -1138,36 +1138,41 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * (ops->fatal_unmatched) without re-scanning the hit arrays itself. */
 static int mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
                                 const int *hit_rpath, const int *hit_strip) {
-    /* The "macho9: " prefix on the three lines below is DELIBERATE and is
+    /* The "machotool: " prefix on the three lines below is DELIBERATE and is
      * the one program-specific string in this file -- every other diagnostic
      * here is program-neutral ("ERROR: ..."), because this library does not
-     * otherwise know which front end is running it. It says macho9 because
-     * the report names operations in MACHO9'S grammar ("-replace X matched
-     * nothing" is about a `macho9 dylib` operation, not about whatever the
-     * caller typed), and every compat/ wrapper's job is to teach that
-     * grammar: each prints the equivalent macho9 command line before running
-     * it, so a caller who sees "macho9: ..." on stderr has just been shown
-     * the macho9 command it is talking about. Coupled to: the wrappers'
-     * teaching output, and the exact text asserted in tests/cli_test.sh,
-     * tests/wrapper_test.sh and tests/change_dylib_test.sh. Changing it to
-     * argv[0] would make the wrapper case name the old tool and so name a
-     * grammar these operations are not written in. */
+     * otherwise know which front end is running it. It names machotool
+     * because the report names operations in MACHOTOOL'S grammar ("-replace
+     * X matched nothing" is about a `machotool dylib` operation, not about
+     * whatever argv the caller typed), and every compat/ wrapper's job is to
+     * teach that grammar: each prints the equivalent machotool command line
+     * before running it, so a caller who sees "machotool: ..." on stderr has
+     * just been shown the machotool command it is talking about. That is
+     * also why the prefix had to move when the binary was renamed: it is
+     * the grammar's name, and the grammar is machotool's now. Changing it to
+     * argv[0] instead would make the wrapper case name the old C tool and so
+     * name a grammar these operations are not written in.
+     *
+     * Coupled to: the wrappers' teaching output, and the text asserted in
+     * tests/wrapper_test.sh, tests/cli_test.sh and
+     * tests/change_dylib_test.sh. Only wrapper_test.sh's two assertions
+     * anchor on the prefix itself; the other two match the part after it. */
     int n = 0;
     for (int i = 0; i < ops->n_dylib_changes; i++)
         if (hit_dylib[i] == 0) {
-            fprintf(stderr, "macho9: %s matched nothing\n",
+            fprintf(stderr, "machotool: %s matched nothing\n",
                     ops->dylib_changes[i].old_path);
             n++;
         }
     for (int i = 0; i < ops->n_rpath_changes; i++)
         if (hit_rpath[i] == 0) {
-            fprintf(stderr, "macho9: rpath %s matched nothing\n",
+            fprintf(stderr, "machotool: rpath %s matched nothing\n",
                     ops->rpath_changes[i].old_path);
             n++;
         }
     for (int i = 0; i < ops->n_strip_cmds; i++)
         if (hit_strip[i] == 0) {
-            fprintf(stderr, "macho9: no load command of kind %s to delete\n",
+            fprintf(stderr, "machotool: no load command of kind %s to delete\n",
                     lc_kind_name(ops->strip_cmds[i]));
             n++;
         }

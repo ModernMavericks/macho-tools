@@ -200,13 +200,13 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * Returns 1 when it printed a refusal (the caller returns EX_FAIL), else 0. */
 static int bad_out(const char *verb, const char *path, const char *out) {
     if (out[0] == '-') {
-        fprintf(stderr, "macho9 %s: OUT is '%s', which begins with '-'; OUT is the "
+        fprintf(stderr, "machotool %s: OUT is '%s', which begins with '-'; OUT is the "
                         "positional right after FILE, not a flag. Write './%s' if a "
                         "file of that name is really meant.\n", verb, out, out);
         return 1;
     }
     if (wa_is_input(path, out)) {
-        fprintf(stderr, "macho9 %s: %s is %s; macho9 never writes its input\n", verb, out, path);
+        fprintf(stderr, "machotool %s: %s is %s; machotool never writes its input\n", verb, out, path);
         return 1;
     }
     return 0;
@@ -388,7 +388,7 @@ static int print_capabilities(void) {
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
-    /* reports=renamed: this verb prints "macho9 segment: renamed=<N>" on
+    /* reports=renamed: this verb prints "machotool segment: renamed=<N>" on
      * success, the match count nothing outside the rewriter can derive. See
      * cmd_segment for why, and compat/rename_segment.sh for who needs it. */
     printf("verb segment reports=renamed\n");
@@ -456,11 +456,11 @@ static int cmd_verify(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        fprintf(stderr, "macho9 verify: %s: cannot open or read\n", path);
+        fprintf(stderr, "machotool verify: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     if (mo_rc != 0) {
-        fprintf(stderr, "macho9 verify: %s: not a readable 64-bit Mach-O\n", path);
+        fprintf(stderr, "machotool verify: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
     int rc = mg_plausible(im.buf, im.size);
@@ -527,11 +527,11 @@ static int cmd_info(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        fprintf(stderr, "macho9 info: %s: cannot open or read\n", path);
+        fprintf(stderr, "machotool info: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     if (mo_rc != 0) {
-        fprintf(stderr, "macho9 info: %s: not a readable 64-bit Mach-O\n", path);
+        fprintf(stderr, "machotool info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
     printf("%s: %zu bytes, %u load commands, filetype=%u\n",
@@ -583,7 +583,7 @@ static int cmd_grow(const char *path, const char *out, const char *n_str) {
     char *end;
     unsigned long n = strtoul(n_str, &end, 10);
     if (*end != '\0' || n == 0 || n > UINT32_MAX) {
-        fprintf(stderr, "macho9 grow: N must be a positive byte count (got '%s')\n", n_str);
+        fprintf(stderr, "machotool grow: N must be a positive byte count (got '%s')\n", n_str);
         return EX_FAIL;
     }
 
@@ -592,7 +592,7 @@ static int cmd_grow(const char *path, const char *out, const char *n_str) {
      * below reports in less detail. Not held for anything: wa_write_new does
      * its own opening, of OUT's directory. */
     int fd = open(path, O_RDONLY);
-    if (fd < 0) { perror("macho9 grow: open"); return EX_FAIL; }
+    if (fd < 0) { perror("machotool grow: open"); return EX_FAIL; }
     close(fd);
 
     mi_image im;
@@ -602,11 +602,11 @@ static int cmd_grow(const char *path, const char *out, const char *n_str) {
          * independent open, read of the whole file, or the malloc it reads into
          * will succeed too -- any of those, or an actual TOCTOU race, land
          * here. Not a considered refusal either way. */
-        fprintf(stderr, "macho9 grow: %s: cannot open or read\n", path);
+        fprintf(stderr, "machotool grow: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     if (mo_rc != 0) {
-        fprintf(stderr, "macho9 grow: %s: not a readable 64-bit Mach-O\n", path);
+        fprintf(stderr, "machotool grow: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
     size_t fsize = im.size;
@@ -628,7 +628,7 @@ static int cmd_grow(const char *path, const char *out, const char *n_str) {
          * step mr_apply_file goes through) for why. So a
          * failed mg_grow_header always exits here, EX_REFUSED, never
          * EX_FAIL. (A failed write, below, is EX_FAIL.) */
-        fprintf(stderr, "macho9 grow: %s left unmodified\n", path);
+        fprintf(stderr, "machotool grow: %s left unmodified\n", path);
         free(buf);
         return EX_REFUSED;
     }
@@ -638,7 +638,7 @@ static int cmd_grow(const char *path, const char *out, const char *n_str) {
          * unreachable: bad_out answered it above, and it would have said so
          * too). An operational failure, not a refusal: nothing about the input
          * was wrong. */
-        fprintf(stderr, "macho9 grow: %s not written\n", out);
+        fprintf(stderr, "machotool grow: %s not written\n", out);
         free(buf);
         return EX_FAIL;
     }
@@ -658,7 +658,7 @@ static int cmd_minos(const char *path, const char *out, const char *version, int
     /* Before the version check, and before any read -- see bad_out. */
     if (bad_out("minos", path, out)) return EX_FAIL;
     if (strcmp(version, "10.9") != 0) {
-        fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
+        fprintf(stderr, "machotool minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
     }
     return mv_add_version_min(path, out, allow_grow);
@@ -694,7 +694,7 @@ static int cmd_lc(int argc, char **argv) {
             uint32_t cmd;
             if (lc_kind_by_name(kind, &cmd) != 0) {
                 size_t kk;
-                fprintf(stderr, "macho9 lc: unknown KIND '%s' (expected one of:", kind);
+                fprintf(stderr, "machotool lc: unknown KIND '%s' (expected one of:", kind);
                 for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++) fprintf(stderr, " %s", LC_STRIP_KINDS[kk].name);
                 fprintf(stderr, ")\n");
                 return EX_REFUSED;
@@ -711,18 +711,18 @@ static int cmd_lc(int argc, char **argv) {
              * prints "too many -strip-lc (max 16)". tests/wrapper_test.sh pins
              * that text. */
             if (nstrip == MR_MAX_STRIP) {
-                fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
+                fprintf(stderr, "machotool lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
                 return EX_FAIL;
             }
             strip[nstrip++] = cmd;
             i += 2;
         } else {
-            fprintf(stderr, "macho9 lc: unknown operation '%s' (only -delete KIND and --fatal-warnings are supported)\n", argv[i]);
+            fprintf(stderr, "machotool lc: unknown operation '%s' (only -delete KIND and --fatal-warnings are supported)\n", argv[i]);
             return EX_FAIL;
         }
     }
     if (nstrip == 0) {
-        fprintf(stderr, "macho9 lc: need at least one -delete KIND\n");
+        fprintf(stderr, "machotool lc: need at least one -delete KIND\n");
         return EX_FAIL;
     }
     mr_ops ops;
@@ -806,7 +806,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         for (oi = 0; oi < N_DYLIB_OPS; oi++)
             if (strcmp(tok, DYLIB_OPS[oi].flag) == 0) break;
         if (oi == N_DYLIB_OPS || i + DYLIB_OPS[oi].nargs >= argc) {
-            fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
+            fprintf(stderr, "machotool %s: unknown or incomplete operation '%s'\n",
                     is_rpath ? "rpath" : "dylib", tok);
             return EX_FAIL;
         }
@@ -819,7 +819,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
              * not accept that", and --capabilities' ops= list -- built from
              * this same table -- is where the answer to "then what does it
              * accept?" lives. */
-            fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
+            fprintf(stderr, "machotool %s: unknown or incomplete operation '%s'\n",
                     is_rpath ? "rpath" : "dylib", tok);
             return EX_FAIL;
         }
@@ -859,7 +859,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
          * in compat/translate.sh's mt_room, and prints "too many <old flag>
          * (max 32)". tests/wrapper_test.sh pins that text. */
         if (full) {
-            fprintf(stderr, "macho9 %s: too many %s operations (max %d)\n",
+            fprintf(stderr, "machotool %s: too many %s operations (max %d)\n",
                     is_rpath ? "rpath" : "dylib", op->flag, MR_MAX_OPS);
             return EX_FAIL;
         }
@@ -867,7 +867,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         i += 1 + op->nargs;
     }
     if (nops == 0) {
-        fprintf(stderr, "macho9 %s: need at least one operation\n", is_rpath ? "rpath" : "dylib");
+        fprintf(stderr, "machotool %s: need at least one operation\n", is_rpath ? "rpath" : "dylib");
         return EX_FAIL;
     }
 
@@ -961,7 +961,7 @@ static int cmd_segment(const char *path, const char *out,
      * a mistake about the tool rather than about what was asked of it. */
     if (bad_out("segment", path, out)) return EX_FAIL;
     if (!mseg_name_fits(newname)) {
-        fprintf(stderr, "macho9 segment: new segment name '%s' is longer than the %d bytes "
+        fprintf(stderr, "machotool segment: new segment name '%s' is longer than the %d bytes "
                         "a segname field holds\n", newname, MSEG_NAME_MAX);
         return EX_REFUSED;
     }
@@ -994,7 +994,7 @@ static int cmd_segment(const char *path, const char *out,
      * says "nothing to change." and writes OUT as a copy of FILE, which is
      * exactly the case the old grammar reported as exit 2 -- so a wrapper that
      * wants the old answer reads this count and discards that copy). */
-    if (rc == 0) printf("macho9 segment: renamed=%d\n", renamed);
+    if (rc == 0) printf("machotool segment: renamed=%d\n", renamed);
     return rc;
 }
 
@@ -1027,7 +1027,7 @@ static int cmd_retag_swift(const char *path, const char *out) {
     size_t out_size = 0;
     int n = mswift_retag_file(path, out, &out_size);
     if (n == MSWIFT_NOT_MACHO) {
-        fprintf(stderr, "macho9 retag-swift: %s: not a readable 64-bit Mach-O. "
+        fprintf(stderr, "machotool retag-swift: %s: not a readable 64-bit Mach-O. "
                         "This verb is thin-only, like retag_swift_classes, so that "
                         "covers a fat container as well as anything that is not a "
                         "Mach-O at all.\n", path);
@@ -1040,7 +1040,7 @@ static int cmd_retag_swift(const char *path, const char *out) {
          * 0 -- an unrecognized negative is precisely the case the by-name rule
          * above exists for, and guessing which side of refusal it belongs on
          * is not this verb's call to make. */
-        fprintf(stderr, "macho9 retag-swift: %s: mswift_retag_file returned an "
+        fprintf(stderr, "machotool retag-swift: %s: mswift_retag_file returned an "
                         "unrecognized code %d; refusing rather than reporting a "
                         "count this verb cannot vouch for\n", path, n);
         return EX_FAIL;
@@ -1126,7 +1126,7 @@ static int cmd_declassify(const char *in, const char *out) {
     int rc = md_declassify(in, &buf, &len);
 
     if (rc == MDCL_NOT_MACHO) {
-        fprintf(stderr, "macho9 declassify: %s: not a readable 64-bit Mach-O. "
+        fprintf(stderr, "machotool declassify: %s: not a readable 64-bit Mach-O. "
                         "This verb is thin-only, like patch_macho, so that covers "
                         "a fat container as well as anything that is not a Mach-O "
                         "at all.\n", in);
@@ -1145,7 +1145,7 @@ static int cmd_declassify(const char *in, const char *out) {
          * promised to fill -- an unrecognized code is precisely the case the
          * by-name rule above exists for, and guessing which side of refusal it
          * belongs on is not this verb's call to make. */
-        fprintf(stderr, "macho9 declassify: %s: md_declassify returned an "
+        fprintf(stderr, "machotool declassify: %s: md_declassify returned an "
                         "unrecognized code %d; refusing rather than writing an "
                         "output this verb cannot vouch for\n", in, rc);
         return EX_FAIL;
@@ -1252,7 +1252,7 @@ static int cmd_edit(int argc, char **argv) {
              * stdin marker for SCRIPT. `--output` and `--dry-run` land here
              * now, which is the answer a caller passing either deserves: OUT is
              * a positional, and --capabilities no longer advertises them. */
-            fprintf(stderr, "macho9 edit: unknown flag '%s'\n", tok);
+            fprintf(stderr, "machotool edit: unknown flag '%s'\n", tok);
             return EX_FAIL;
         } else if (npos == 0) {
             file = tok;
@@ -1278,7 +1278,7 @@ static int cmd_edit(int argc, char **argv) {
     } else {
         f = fopen(script_path, "rb");
         if (!f) {
-            fprintf(stderr, "macho9 edit: %s: %s\n", script_path, strerror(errno));
+            fprintf(stderr, "machotool edit: %s: %s\n", script_path, strerror(errno));
             return EX_FAIL;
         }
     }
@@ -1291,18 +1291,18 @@ static int cmd_edit(int argc, char **argv) {
     int read_errno = errno;
     if (f != stdin) fclose(f);
     if (rrc == ME_READ_MEM) {
-        fprintf(stderr, "macho9 edit: %s: out of memory\n", script_path);
+        fprintf(stderr, "machotool edit: %s: out of memory\n", script_path);
         return EX_FAIL;
     }
     if (rrc == ME_READ_IO) {
-        fprintf(stderr, "macho9 edit: %s: %s\n", script_path, strerror(read_errno));
+        fprintf(stderr, "machotool edit: %s: %s\n", script_path, strerror(read_errno));
         return EX_FAIL;
     }
 
     ms_script s;
     char perr[256];
     if (ms_parse((const char *)buf, len, &s, perr, sizeof perr) != 0) {
-        fprintf(stderr, "macho9 edit: %s: %s\n", script_path, perr);
+        fprintf(stderr, "machotool edit: %s: %s\n", script_path, perr);
         free(buf);
         return EX_FAIL;
     }
@@ -1376,7 +1376,7 @@ int main(int argc, char **argv) {
         return cmd_edit(argc, argv);
     }
 
-    fprintf(stderr, "macho9: unknown verb '%s'\n", verb);
+    fprintf(stderr, "machotool: unknown verb '%s'\n", verb);
     usage(argv[0]);
     return EX_FAIL;
 }

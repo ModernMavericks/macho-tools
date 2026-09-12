@@ -106,8 +106,8 @@ typedef struct {
  * directive, a statement's own refusal, a verification failure, and an
  * allocation failure once PATH has resolved into an image.
  * Always printed: a statement's refusal,
- *   "macho9 edit: refused at statement K of N (line L); OUT not written; PATH
- *   left unmodified"
+ *   "machotool edit: refused at statement K of N (line L); OUT not
+ *   written; PATH left unmodified"
  * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L
  * is the statement's line in the script). On a fat run that line names the
  * slice at fault instead, before that trailing pair:
@@ -117,16 +117,16 @@ typedef struct {
  *   "... (line L): it matched nothing in any selected slice; ..."
  * -- no slice name there, since no single slice is at fault. Then a refusal
  * at the final verify,
- *   "macho9 edit: refused at verification, after statement N of N; ..."
+ *   "machotool edit: refused at verification, after statement N of N; ..."
  * ("(the script has no statements)" in place of the count when N is 0); on a
  * fat run this is instead per slice, right after that slice's own last
  * statement, and names the slice in place of the statement count:
- *   "macho9 edit: refused at verification of slice NAME; ..."
+ *   "machotool edit: refused at verification of slice NAME; ..."
  * Then a failed write,
- *   "macho9 edit: writing OUT failed; PATH left unmodified",
+ *   "machotool edit: writing OUT failed; PATH left unmodified",
  * and the two refusals that come before anything is read:
- *   "macho9 edit: no output file was named" and
- *   "macho9 edit: OUT is PATH; macho9 never writes its input".
+ *   "machotool edit: no output file was named" and
+ *   "machotool edit: OUT is PATH; machotool never writes its input".
  * The write line is the same whether `path` names a thin file or a fat one: the
  * write happens once, to the whole container, after every slice's own verify has
  * passed. Under o->verbose, each statement is also logged as "  <kind> <op>
@@ -222,8 +222,9 @@ typedef struct {
  * command of that kind), `dylib replace/delete/reexport` and `rpath
  * replace/delete` (no command naming that path), and `segment rename` (no
  * segment of that name). Each miss is reported on stderr as a
- * "macho9: ... matched nothing" line (for load-command delete, "macho9: no
- * load command of kind KIND to delete"); without fatal-warnings that is all
+ * "machotool: ... matched nothing" line (for load-command delete,
+ * "machotool: no load command of kind KIND to delete"); without
+ * fatal-warnings that is all
  * that happens and the run continues. `append` and `insert` always act, and
  * the three `set` statements (version-min, swift-abi, fixups) set a state,
  * so for them "already so" or "nothing to retag" is success, never a miss.
