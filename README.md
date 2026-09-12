@@ -1,5 +1,8 @@
 # Machotool for Mavericks
 
+**This README has not been read or edited by a human yet.** Until it has, this
+project cannot cut its first release.
+
 Mach-O surgery for hosts too old to have any. Builds with the stock 10.9 clang,
 no dependencies, and edits binaries produced by toolchains fifteen years newer.
 

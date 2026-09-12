@@ -74,6 +74,15 @@ about code the review is about to change.
 - Also: the Layout section explains `compat/` at a length that belongs in
   `compat/README.md`, which already exists and says it.
 
+**Deleting the README's unreviewed marker is part of item 6.** `README.md` now
+carries, under its heading, the family's generated-README marker — visible
+prose, so it renders on the repo's front page. Shipyard's `publish-release.yml`
+refuses a repo's *first* release while that line is present, so item 4 cannot
+ship until a human has read this README and removed it. That is the intended
+loop: item 6 is already the pass where a human rewrites the front door, and the
+two complaints recorded below — the length, and the opening sentence that does
+not parse — are exactly what the marker is asking someone to fix.
+
 **Comment density is the other named input to item 6**, raised by the repo
 owner 2026-09-12 after the rename: *"my eyes glaze over attempting to skim the
 compat wrappers, several screens of comments away from finding where they
