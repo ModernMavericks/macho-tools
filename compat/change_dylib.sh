@@ -33,7 +33,7 @@
 #
 # -- one verb, batching that family's flags, when the invocation touches one
 # family. An invocation touching MORE THAN ONE becomes a single
-# `macho9 edit FILE - --output OUT` with the operations as statements on stdin, ordered
+# `macho9 edit FILE OUT -` with the operations as statements on stdin, ordered
 # load-command, dylib, rpath, because deleting load commands hands header pad
 # back and the other two consume it. compat/translate.sh's emission comment
 # has the statement order within each family, and the one -change shape it
@@ -147,9 +147,8 @@
 # mw_retranslate re-emits the command with that temp as its output,
 # mw_run_to_tmp runs it, and mw_finish mv's the temp over the target -- or
 # discards it when the bytes did not change, since the C tool wrote nothing in
-# that case. `macho9 edit`, the multi-family path, is the one verb here that
-# has not converted yet, and it takes the same temp through its `--output`
-# flag, so both shapes install identically.
+# that case. `macho9 edit`, the multi-family path, takes that temp as its OUT
+# positional like every other verb here, so both shapes install identically.
 #
 # THE REFUSALS THIS BUYS, all of them mw_prepare's and all exit 1:
 #

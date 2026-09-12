@@ -20,7 +20,7 @@
 #
 # -- when the invocation is ONE command's worth. Anything more than that --
 # which includes two -rename_seg pairs, since `macho9 segment` takes one --
-# becomes a single `macho9 edit FILE - --output OUT` with the operations as statements on
+# becomes a single `macho9 edit FILE OUT -` with the operations as statements on
 # stdin, ordered load-command, dylib, segment, because deleting a load command
 # hands header pad back and the dylib rewrite consumes it. A rename changes no
 # sizes, so it can only go last. `argc < 3`, a trailing `-change`/`-rename_seg`
@@ -83,7 +83,7 @@
 #      WHY ADOPTING IT IS RIGHT: these tools exist to make binaries loadable;
 #      a half-written one is the failure they are supposed to prevent.
 #      NO CAVEAT ANY MORE. An invocation worth more than one command is one
-#      `macho9 edit FILE - --output OUT`, and me_run (src/edit.c) reads the
+#      `macho9 edit FILE OUT -`, and me_run (src/edit.c) reads the
 #      image once, applies every statement to it in memory, verifies, and
 #      writes once -- so a refusal at any statement leaves the temp unwritten
 #      and FILE exactly as it was, with no second write to be caught between.
@@ -208,8 +208,8 @@
 # <temp>" line no C tool ever printed, and mw_finish mv's the temp over the
 # target or discards it when the bytes did not change. macho9-compat.sh's "the
 # install path" section has the reasoning for each step. `macho9 edit`, which
-# every invocation worth more than one command becomes, has not converted yet
-# and takes the same temp through its `--output` flag, so both shapes install
+# every invocation worth more than one command becomes, takes that temp as its
+# OUT positional like every other verb here, so both shapes install
 # identically.
 #
 # THE WRITABILITY CHECK comes with it, inside mw_prepare. fix_macho opened the

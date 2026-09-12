@@ -172,7 +172,7 @@ mw_translate() {
     mw_trc=$?
     unset MT_PROG0
     [ "$mw_trc" -eq 0 ] || return "$mw_trc"
-    # COMMANDS, not lines. `macho9 edit FILE - --output OUT` carries its statements in a
+    # COMMANDS, not lines. `macho9 edit FILE OUT -` carries its statements in a
     # here-document, so one command can be six lines; a command is a line that
     # STARTS with the program word (compat/translate.sh's output contract says
     # so, and mt_pre_word is where that word comes from) -- or with `mv -f`,
@@ -224,7 +224,7 @@ mw_teach() {
 #
 # THIS NO LONGER LOOPS, and that is the whole point of the change that removed
 # the loop: an old invocation that would have been a sequence of macho9
-# commands is now ONE `macho9 edit FILE - --output OUT` with the operations as statements
+# commands is now ONE `macho9 edit FILE OUT -` with the operations as statements
 # on stdin, so a translation is at most one command and there is no sequence
 # left to step through. (compat/retag_swift_classes.sh is the one
 # translation that is still several commands -- one per binary -- and it has
@@ -276,13 +276,12 @@ mw_require_writable() {
 
 # ---- the install path ----------------------------------------------------
 #
-# macho9's rewriting verbs are being converted, one at a time, so that none of
-# them writes the file it is given: each becomes `macho9 VERB FILE OUT ...`.
-# `minos` went first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
-# `segment` together, then `grow`. `declassify` already had the shape and now
-# refuses an OUT that is its IN as well. `edit` alone still writes the file it
-# is given -- it takes its output as a `--output` flag, which is all this path
-# needs from it. The historical tools DID
+# NO macho9 VERB WRITES THE FILE IT IS GIVEN: each is `macho9 VERB FILE OUT
+# ...`, and each refuses an OUT that is FILE. They were converted one at a time
+# -- `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
+# `segment` together, then `grow`, and last `edit`, whose OUT was a `--output`
+# flag until then; `declassify` always had the shape and now refuses an OUT that
+# is its IN as well. The historical tools DID
 # edit FILE in place, and their callers still expect that, so a wrapper whose
 # verb has moved reproduces it in the only way that is safe: write a temp
 # beside the real target, then mv it over. The five functions below are that

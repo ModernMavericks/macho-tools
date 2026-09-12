@@ -14,7 +14,7 @@
  *   macho9 minos FILE OUT 10.9 [--allow-grow]
  *   macho9 info FILE
  *   macho9 verify FILE
- *   macho9 edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]
+ *   macho9 edit FILE OUT SCRIPT [--verbose]
  *
  * Not every line above is implemented by every build -- `macho9 --capabilities`
  * is the machine-readable truth about which ones are, so the wrapper and this
@@ -65,10 +65,11 @@
  * and `retag-swift` converted first, then `dylib`, `rpath`, `lc` and `segment`
  * together (all four are one mr_apply_file call), then `grow` -- which gained
  * an OUT -- alongside declassify's own refusal of an OUT that is IN, which it
- * used to allow. `edit` alone still writes the file it is given, through its
- * `--output` flag; the verbs' own comments below say which is which.
- * m9_bad_out holds the refusals every converted verb makes about OUT before it
- * reads anything.
+ * used to allow. `edit` converted last, and with it went the last way this
+ * binary had of writing the file it was given: its `--output` flag became the
+ * OUT positional, and `--dry-run` went with it, a scratch OUT being the same
+ * run. So NO verb here writes its input. m9_bad_out holds the refusals every
+ * one of them makes about OUT before it reads anything.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -143,11 +144,11 @@
  * (mg_grow_header) and cmd_verify (mg_plausible) both return EX_REFUSED for
  * any failure of theirs. So a failed allocation that is checked at all is
  * EX_FAIL when it is mi_open's or mi_open_slack's, mfat_parse's,
- * md_declassify's, wa_write_atomic's temp-name buffer, or one src/rewrite.c's
+ * md_declassify's, wa_write_new's temp-name buffer, or one src/rewrite.c's
  * own drivers make (rewrite.h's MR_FAIL comment names them); EX_REFUSED
  * when it is inside mg_grow_header or mg_plausible, by design (see
  * rewrite.c's comment on the fold for why); and no exit code at all when it
- * is wa_write_atomic's copy of an extended attribute, which only warns. A
+ * is wa_write_new's copy of an extended attribute, which only warns. A
  * caller that only checks "== 0" or "!= 0" still needs no changes;
  * --capabilities documents all three codes (see print_capabilities below)
  * and tests/README.md repeats it for humans. */
@@ -189,7 +190,7 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * whose name starts with a dash can spell it `./-name`, which the message says.
  * FILE gets no such check: it is only read, and mi_open's own failure names it.
  *
- * ONE function rather than the same lines in each verb, because the eight
+ * ONE function rather than the same lines in each verb, because the nine
  * callers must not drift: both wordings are asserted from the outside, per verb
  * (tests/cli_test.sh greps for "never writes its input" and for "which begins
  * with '-'"), and a verb that grew its own phrasing would be a verb whose
@@ -340,11 +341,10 @@ static void print_ops_csv(int is_rpath) {
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`. `edit`'s own flags=
  *                         entry is unrelated to the fatal-warnings paragraph
- *                         above -- `output`, `verbose` and `dry-run` are
- *                         plain CLI switches (--output OUT, --verbose,
- *                         --dry-run), not a match-reporting mode -- listed
+ *                         above -- `verbose` is a plain CLI switch
+ *                         (--verbose), not a match-reporting mode -- listed
  *                         so a wrapper can tell whether this build accepts
- *                         them before passing any.
+ *                         it before passing it.
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the edit-script
  *       statement vocabulary the `edit` verb's parser (ms_parse) accepts.
@@ -393,8 +393,11 @@ static int print_capabilities(void) {
     printf("verb rpath ops=");
     print_ops_csv(1);
     printf(" flags=allow-grow,fatal-warnings\n");
-    /* flags=output,verbose,dry-run: the three CLI flags `edit` accepts. */
-    printf("verb edit flags=output,verbose,dry-run\n");
+    /* flags=verbose: the one CLI flag `edit` accepts. `output` and `dry-run`
+     * were here while OUT was a flag and a run could skip its write; both are
+     * gone, and advertising either would tell a wrapper it may pass something
+     * this build refuses. */
+    printf("verb edit flags=verbose\n");
     {
         int i;
         const char *kind, *op;
@@ -428,11 +431,9 @@ static void usage(const char *prog) {
         "                                                    FILE is only read; OUT must not be FILE\n"
         "       %s info FILE\n"
         "       %s verify FILE\n"
-        "       %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n"
-        "                                                    apply an edit script to FILE (see README);\n"
-        "                                                    SCRIPT may be '-' for stdin;\n"
-        "                                                    --dry-run applies and verifies but skips\n"
-        "                                                    the write, reporting what would happen\n",
+        "       %s edit FILE OUT SCRIPT [--verbose]         apply an edit script to FILE, writing OUT;\n"
+        "                                                    FILE is only read; OUT must not be FILE;\n"
+        "                                                    SCRIPT may be '-' for stdin\n",
         prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
@@ -1155,31 +1156,34 @@ static int cmd_declassify(const char *in, const char *out) {
 
 /* ---- edit: parse an edit script and run it through me_run --------------
  *
- * The one verb whose positionals aren't at fixed argv indices: --output,
- * --verbose and --dry-run may appear anywhere among the arguments, before
- * or after FILE and SCRIPT or between them, so this scans every token once
- * instead of assuming a position. The two tokens that are not "--output",
- * its OUT, "--verbose" or "--dry-run" -- in the order seen -- are FILE and
- * SCRIPT. --output may be given once, and its OUT may not start with "--".
- * Only the exact
- * token "-" is exempt from the unrecognized-flag check below; it is not
- * "SCRIPT may start with '-'" in general, and "-" is not always stdin: it is
- * stdin only where it lands as SCRIPT (checked below), and a literal
- * filename "-" where it lands as FILE (`edit - s.edits` opens a file named
- * "-"). A SCRIPT or FILE whose real name starts with '-' has no escape here
- * (no "--"); reference it through a path that doesn't, e.g. "./-name"
- * (README's edit section says so too).
+ * The one verb whose positionals aren't at fixed argv indices: --verbose may
+ * appear anywhere among the arguments, before or after the positionals or
+ * between them, so this scans every token once instead of assuming a position.
+ * The three tokens that are not "--verbose" -- in the order seen -- are FILE,
+ * OUT and SCRIPT. OUT is the positional right after FILE, as it is for every
+ * other rewriting verb; it was a `--output` flag while this verb still wrote
+ * FILE, and `--dry-run` went with that flag, because a scratch OUT is the same
+ * run with the answer somewhere the caller chose.
  *
- * ms_parse runs, and can fail, before FILE is ever opened for writing -- see
- * edit.h's own header comment, which states that as the property this
- * module exists for: nothing is written unless every statement succeeds and
- * the final verify passes. A parse error is reported here, prefixed the
- * same way every other verb's own diagnostics are, and returns EX_FAIL: an
- * unparseable script is an operational failure (a typo in the script), not
- * a considered refusal about what FILE contains. me_run's own return
- * (0 / MR_REFUSED / MR_FAIL) is forwarded verbatim past that point, the same
- * way dylib/rpath/lc forward mr_apply_file's and minos forwards
- * mv_add_version_min's (cmd_minos, above).
+ * Only the exact token "-" is exempt from the unrecognized-flag check below;
+ * it is not "a positional may start with '-'" in general, and "-" is not
+ * always stdin: it is stdin only where it lands as SCRIPT (checked below), a
+ * literal filename "-" where it lands as FILE (`edit - o s.edits` opens a file
+ * named "-"), and an OUT that m9_bad_out refuses. A SCRIPT or FILE whose real
+ * name starts with '-' has no escape here (no "--"); reference it through a
+ * path that doesn't, e.g. "./-name" (README's edit section says so too).
+ *
+ * OUT IS CHECKED BEFORE THE SCRIPT IS READ -- m9_bad_out, the same refusals
+ * every other OUT-taking verb makes, before any input is opened. ms_parse then
+ * runs, and can fail, before anything is written -- see edit.h's own header
+ * comment, which states that as the property this module exists for: nothing is
+ * written unless every statement succeeds and the final verify passes. A parse
+ * error is reported here, prefixed the same way every other verb's own
+ * diagnostics are, and returns EX_FAIL: an unparseable script is an operational
+ * failure (a typo in the script), not a considered refusal about what FILE
+ * contains. me_run's own return (0 / MR_REFUSED / MR_FAIL) is forwarded
+ * verbatim past that point, the same way dylib/rpath/lc forward
+ * mr_apply_file's and minos forwards mv_add_version_min's (cmd_minos, above).
  */
 enum { ME_READ_OK = 0, ME_READ_IO = -1, ME_READ_MEM = -2 };
 
@@ -1211,66 +1215,51 @@ static int me_read_all(FILE *f, uint8_t **out, size_t *outlen) {
 }
 
 static int cmd_edit_usage(const char *prog) {
-    fprintf(stderr, "usage: %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n", prog);
+    fprintf(stderr, "usage: %s edit FILE OUT SCRIPT [--verbose]\n", prog);
     return EX_FAIL;
 }
 
 static int cmd_edit(int argc, char **argv) {
     const char *prog = argv[0];
-    const char *file = NULL, *script_path = NULL, *out = NULL;
+    const char *file = NULL, *out = NULL, *script_path = NULL;
     int verbose = 0;
-    int dry_run = 0;
     int npos = 0;
 
     for (int i = 2; i < argc; i++) {
         const char *tok = argv[i];
-        if (strcmp(tok, "--output") == 0) {
-            if (i + 1 >= argc) return cmd_edit_usage(prog);
-            /* `--output --verbose` means a forgotten OUT far more often than
-             * a file really named "--verbose", and taking it as OUT would
-             * write that file and swallow the flag. No flag this verb takes
-             * has a single dash, so an OUT such as "-x" is still taken as a
-             * file name. */
-            if (strncmp(argv[i + 1], "--", 2) == 0) {
-                fprintf(stderr, "macho9 edit: --output needs a file name, not '%s'\n",
-                        argv[i + 1]);
-                return EX_FAIL;
-            }
-            /* Two OUTs name two destinations for one write; taking the
-             * last would silently drop the first. */
-            if (out) {
-                fprintf(stderr, "macho9 edit: --output given more than once\n");
-                return EX_FAIL;
-            }
-            out = argv[++i];
-        } else if (strcmp(tok, "--verbose") == 0) {
+        if (strcmp(tok, "--verbose") == 0) {
             verbose = 1;
-        } else if (strcmp(tok, "--dry-run") == 0) {
-            dry_run = 1;
         } else if (strncmp(tok, "--", 2) == 0) {
-            /* Only a DOUBLE dash is a flag here. Every flag this verb takes
-             * has two, which the --output check above already relies on ("an
-             * OUT such as '-x' is still taken as a file name"), and every
-             * other verb takes its FILE positionally without examining it --
-             * the historical tools open()ed whatever argv handed them, so a
-             * file really named "-dashy" is a file name. Rejecting a single
-             * dash here made `macho9 edit -dashy -` fail where `macho9 dylib
-             * -dashy ...` succeeds, which tests/wrapper_test.sh's leading-dash
-             * case caught the moment the compat wrappers started emitting
-             * `edit`. "-" alone stays the stdin marker for SCRIPT. */
+            /* Only a DOUBLE dash is a flag here, and --verbose is the only one
+             * left: every other verb takes its FILE positionally without
+             * examining it -- the historical tools open()ed whatever argv
+             * handed them, so a file really named "-dashy" is a file name.
+             * Rejecting a single dash here made `macho9 edit -dashy o -` fail
+             * where `macho9 dylib -dashy ...` succeeds, which
+             * tests/wrapper_test.sh's leading-dash case caught the moment the
+             * compat wrappers started emitting `edit`. "-" alone stays the
+             * stdin marker for SCRIPT. `--output` and `--dry-run` land here
+             * now, which is the answer a caller passing either deserves: OUT is
+             * a positional, and --capabilities no longer advertises them. */
             fprintf(stderr, "macho9 edit: unknown flag '%s'\n", tok);
             return EX_FAIL;
         } else if (npos == 0) {
             file = tok;
             npos++;
         } else if (npos == 1) {
+            out = tok;
+            npos++;
+        } else if (npos == 2) {
             script_path = tok;
             npos++;
         } else {
             return cmd_edit_usage(prog);
         }
     }
-    if (npos != 2) return cmd_edit_usage(prog);
+    if (npos != 3) return cmd_edit_usage(prog);
+
+    /* Before the script is read, and before FILE is opened -- see m9_bad_out. */
+    if (m9_bad_out("edit", file, out)) return EX_FAIL;
 
     FILE *f;
     if (strcmp(script_path, "-") == 0) {
@@ -1311,7 +1300,6 @@ static int cmd_edit(int argc, char **argv) {
     me_opts o;
     memset(&o, 0, sizeof o);
     o.verbose = verbose;
-    o.dry_run = dry_run;
     o.log = stderr;
 
     int rc = me_run(file, out, &s, &o);

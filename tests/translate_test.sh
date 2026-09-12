@@ -2,7 +2,7 @@
 # tests/translate_test.sh -- one test per translation, asserting the EXACT
 # text compat/translate.sh emits: a verb command line, or -- when one old
 # invocation is worth more than one macho9 command -- the whole
-# `macho9 edit FILE - --output OUT` here-document, terminator included.
+# `macho9 edit FILE OUT -` here-document, terminator included.
 #
 #   sh tests/translate_test.sh <bindir>
 #
@@ -136,23 +136,24 @@ mv -f f.new f' -- change_dylib f -strip-lc uuid -strip-lc codesig
 # ---- change_dylib: mixing families becomes ONE edit script ---------------
 #
 # One family is one verb, whose flags macho9 batches. More than one family has
-# no single verb to be, so it is one `macho9 edit FILE - --output OUT` with the
+# no single verb to be, so it is one `macho9 edit FILE OUT -` with the
 # operations as statements on stdin -- one read, one pass per statement, one
 # write, which is the shape the C tool had and a sequence of verbs did not.
-# `edit` is the one verb here that has not yet moved OUT to a positional, so
-# the output is named with its flag; the teaching form's trailing `mv` is the
-# same install step every other converted verb's form ends with.
+# OUT is the positional right after FILE, as it is for every other verb here --
+# it was a `--output` flag while `edit` still wrote FILE -- and SCRIPT is `-`,
+# the here-document on stdin; the teaching form's trailing `mv` is the same
+# install step every other verb's form ends with.
 #
 # The order is load-command, then dylib, then rpath: deleting load commands
 # hands header pad back, and the other two consume it. Getting this backwards
 # is how a mixed invocation that used to fit stops fitting.
-ok cd-mixed-2 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok cd-mixed-2 "macho9 edit f f.new - <<'MACHO9_EDIT'
 load-command delete uuid
 dylib replace A B
 MACHO9_EDIT
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change A B
 
-ok cd-mixed-3 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok cd-mixed-3 "macho9 edit f f.new - <<'MACHO9_EDIT'
 load-command delete uuid
 dylib append D
 rpath append R
@@ -161,7 +162,7 @@ mv -f f.new f" -- change_dylib f -add-rpath R -add D -strip-lc uuid
 
 # The ORDER OF THE FLAGS does not change the order of the statements between
 # families -- only the order within each family's own block.
-ok cd-mixed-order "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok cd-mixed-order "macho9 edit f f.new - <<'MACHO9_EDIT'
 load-command delete codesig
 load-command delete uuid
 dylib replace A B
@@ -173,7 +174,7 @@ mv -f f.new f" -- change_dylib f -change A B -strip-lc codesig -strip-lc uuid
 # replaces, it reaches dylib and rpath and not the load-command deletes:
 # src/edit.c sets ops.allow_grow only for the statements that can outgrow the
 # pad, and deleting load commands can only shrink the table.
-ok cd-grow-mixed "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok cd-grow-mixed "macho9 edit f f.new - <<'MACHO9_EDIT'
 allow-grow
 load-command delete uuid
 dylib replace A B
@@ -186,7 +187,7 @@ mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
 # and B at 2, and a sequence reproduces that only by inserting B first. This
 # is the assertion that catches the emission getting it the natural way round.
 # tests/wrapper_test.sh asserts the resulting ordinals on a real binary.
-ok cd-insert-reverse "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok cd-insert-reverse "macho9 edit f f.new - <<'MACHO9_EDIT'
 load-command delete uuid
 dylib insert B
 dylib insert A
@@ -195,7 +196,7 @@ mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
 # install.sh's production line -- the single most important translation in
 # this task, quoted from the plan's Task 0 evidence.
-ok cd-production "macho9 edit /tmp/c - --output /tmp/c.new <<'MACHO9_EDIT'
+ok cd-production "macho9 edit /tmp/c /tmp/c.new - <<'MACHO9_EDIT'
 load-command delete uuid
 load-command delete codesig
 dylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
@@ -209,7 +210,7 @@ mv -f /tmp/c.new /tmp/c" \
         -change /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib
 
 # tests/characterize.sh's line, this repo's own CI equivalence gate.
-ok cd-characterize "macho9 edit out - --output out.new <<'MACHO9_EDIT'
+ok cd-characterize "macho9 edit out out.new - <<'MACHO9_EDIT'
 load-command delete uuid
 load-command delete codesig
 dylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
@@ -236,14 +237,14 @@ mv -f f.new f'            -- fix_macho f -rename_seg __DATA __D2
 # `macho9 segment` takes ONE pair, so two renames are two commands on their
 # own -- no second family needed -- and become one edit script by the same
 # rule as everything else. Each rename is still its own pass, in argv order.
-ok fm-rename-2 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-rename-2 "macho9 edit f f.new - <<'MACHO9_EDIT'
 segment rename __A __B
 segment rename __C __D
 MACHO9_EDIT
 mv -f f.new f" -- fix_macho f -rename_seg __A __B -rename_seg __C __D
 # All three families, in load-command / dylib / segment order. No allow-grow
 # anywhere: fix_macho has no -grow and never enlarges a header.
-ok fm-all "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-all "macho9 edit f f.new - <<'MACHO9_EDIT'
 load-command delete build-version
 dylib replace A B
 segment rename __A __B
@@ -264,14 +265,14 @@ mv -f f.new f' \
 # was asked" -- and the C tool is gone, so there is no longer a second answer
 # to preserve. These now pin the translation, in the same place they used to
 # pin the refusal; compat/translate.sh's -rename_seg arm records the reversal.
-ok fm-chain "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-chain "macho9 edit f f.new - <<'MACHO9_EDIT'
 segment rename __DATA __X
 segment rename __X __Y
 MACHO9_EDIT
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
 # A chain of three emits three passes, in argv order -- every link, not just
 # the first (which is where the refusal used to trip).
-ok fm-chain-3 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-chain-3 "macho9 edit f f.new - <<'MACHO9_EDIT'
 segment rename __DATA __P
 segment rename __P __Q
 segment rename __Q __R
@@ -285,7 +286,7 @@ mv -f f.new f" \
 # silently dropped), and it is still worth pinning now that the check is gone.
 # mt_quote's '' is also exactly what src/script.c's ms_split reads back as an
 # empty field, so the statement still has four words.
-ok fm-chain-empty "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-chain-empty "macho9 edit f f.new - <<'MACHO9_EDIT'
 segment rename __DATA ''
 segment rename '' __Y
 MACHO9_EDIT
@@ -299,17 +300,17 @@ mv -f f.new f" \
 # and not -rename_seg: a rename statement and a `macho9 segment` pass are the
 # same single operation, so sequencing them is the adopted behaviour rather
 # than a shape with no equivalent.
-ok fm-same-old "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-same-old "macho9 edit f f.new - <<'MACHO9_EDIT'
 segment rename __DATA __A
 segment rename __DATA __B
 MACHO9_EDIT
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
-ok fm-new-eq-earlier-old "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-new-eq-earlier-old "macho9 edit f f.new - <<'MACHO9_EDIT'
 segment rename __DATA __B
 segment rename __TEXT __DATA
 MACHO9_EDIT
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __B -rename_seg __TEXT __DATA
-ok fm-independent "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok fm-independent "macho9 edit f f.new - <<'MACHO9_EDIT'
 segment rename __DATA __A
 segment rename __TEXT __B
 MACHO9_EDIT
@@ -465,7 +466,7 @@ mv -f f.new f' \
 # And a -change whose NEW is its OWN old is not a chain: no OTHER statement
 # rewrites what it produced, so a statement and a batch agree. Asserted ON the
 # edit-script path, since that is the only place the check runs at all.
-ok cd-self-replace "macho9 edit f - --output f.new <<'MACHO9_EDIT'
+ok cd-self-replace "macho9 edit f f.new - <<'MACHO9_EDIT'
 load-command delete uuid
 dylib replace a a
 dylib replace c d
@@ -613,7 +614,7 @@ stmtcheck segment rename 2
 # somebody's machine.
 if [ -x /bin/ksh ]; then
     got=$( /bin/ksh "$TR" change_dylib f -strip-lc uuid -change A B -add-rpath R 2>&1 )
-    want="macho9 edit f - --output f.new <<'MACHO9_EDIT'
+    want="macho9 edit f f.new - <<'MACHO9_EDIT'
 load-command delete uuid
 dylib replace A B
 rpath append R

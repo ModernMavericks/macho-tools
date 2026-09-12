@@ -29,15 +29,13 @@
 #     Arguments are single-quoted only when they contain something
 #     outside [A-Za-z0-9_@%+=:,./-], so the common case stays readable and the
 #     hostile case stays correct.
-#   * A CONVERTED VERB NAMES AN OUTPUT of its own, because it no longer writes
-#     the file it is given. macho9's rewriting verbs are being converted one
-#     at a time: `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc`
-#     and `segment` together, then `grow`. So every translation here names an
-#     output, including `patch_macho`'s `declassify`, which has always taken IN
-#     and OUT and now refuses an OUT that is IN. The one exception is the `edit`
-#     script both multi-command tools fall back to -- that verb still writes the
-#     file it is given, so the output is named with its `--output` flag rather
-#     than as a positional, and OUT being FILE is not yet refused.
+#   * EVERY COMMAND HERE NAMES AN OUTPUT of its own, because no macho9 verb
+#     writes the file it is given any more. They were converted one at a time:
+#     `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
+#     `segment` together, then `grow`, and last the `edit` script both
+#     multi-command tools fall back to -- whose OUT was a `--output` flag until
+#     then. `patch_macho`'s `declassify` always took IN and OUT, and now refuses
+#     an OUT that is IN as the rest do.
 #     Which output depends on who is reading:
 #     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
 #     command writes exactly that and nothing follows it; without it -- the
@@ -52,7 +50,7 @@
 #     which is what macho9-compat.sh's mw_translate does.
 #   * Every tool here but retag_swift_classes emits AT MOST ONE MACHO9
 #     command: an invocation that would have needed more is one
-#     `macho9 edit FILE - --output OUT` instead. (The teaching form's
+#     `macho9 edit FILE OUT -` instead. (The teaching form's
 #     trailing `mv -f` is not one of
 #     them; a wrapper sets MT_OUT, which suppresses it, and installs the temp
 #     itself.) So there is no sequence to run and nothing to stop part way
@@ -116,7 +114,7 @@
 #
 # Each row gives the VERB form, which is what an invocation needing only that
 # row's family emits. An invocation needing more than one row's worth emits
-# one `macho9 edit FILE - --output OUT` instead, whose statements are in the
+# one `macho9 edit FILE OUT -` instead, whose statements are in the
 # third column.
 #
 #   change_dylib FILE ...       macho9 ... (F O = FILE OUT)    statement
@@ -151,7 +149,7 @@
 # change_dylib and fix_macho each apply EVERY operation in ONE pass over the
 # load-command table, and write ONCE. macho9 has a verb per family, so an
 # invocation touching more than one family has no single verb to become. It
-# becomes ONE `macho9 edit FILE - --output OUT` instead, with the operations as
+# becomes ONE `macho9 edit FILE OUT -` instead, with the operations as
 # statements
 # on stdin -- which is again one read, one pass per statement over an image
 # held in memory, and one write. The order emitted is:
@@ -508,7 +506,7 @@ $3
         return 0
     fi
 
-    # MORE THAN ONE FAMILY: one `macho9 edit FILE - --output OUT`, statements on stdin.
+    # MORE THAN ONE FAMILY: one `macho9 edit FILE OUT -`, statements on stdin.
     #
     # WHY THIS ORDER. A verb applies all of one family's operations as a batch
     # against the ORIGINAL image; an edit script applies statements in
@@ -531,8 +529,8 @@ $3
     # -change's OLD -- which mt_chain_check refuses here, and only here.
     mt_chain_check -change "$mt_pairs_dy" || return 1
     mt_chain_check -change-rpath "$mt_pairs_rp" || return 1
-    printf '%s edit%s --output%s <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" \
-        "$(mt_qargs "$mt_file" -)" "$(mt_qargs "$(mt_out_for "$mt_file")")"
+    printf '%s edit%s <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" \
+        "$(mt_qargs "$mt_file" "$(mt_out_for "$mt_file")" -)"
     [ -n "$mt_grow" ] && printf 'allow-grow\n'
     printf '%s%s%s%s%s%s%s%s' "$mt_st_lc" "$mt_st_dydel" "$mt_st_dyrepl" "$mt_st_dyapp" \
         "$mt_st_dyins" "$mt_st_rpdel" "$mt_st_rprepl" "$mt_st_rpapp"
@@ -685,8 +683,8 @@ $3
     # segment` pass are the same single operation, so a sequence of them is
     # already what the -rename_seg arm above says this tool now does.
     mt_chain_check -change "$mt_pairs_dy" || return 1
-    printf '%s edit%s --output%s <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" \
-        "$(mt_qargs "$mt_file" -)" "$(mt_qargs "$(mt_out_for "$mt_file")")"
+    printf '%s edit%s <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" \
+        "$(mt_qargs "$mt_file" "$(mt_out_for "$mt_file")" -)"
     printf '%s%s%s' "$mt_st_lc" "$mt_st_dyrepl" "$mt_st_seg"
     printf 'MACHO9_EDIT\n'
     mt_install_line "$mt_file"

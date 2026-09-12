@@ -141,32 +141,32 @@ naming every statement instead, applies them all to one in-memory copy, and
 writes once:
 
 ```sh
-macho9 edit FILE SCRIPT                 # rewrite FILE in place
-macho9 edit FILE SCRIPT --output OUT    # write elsewhere; FILE untouched
-macho9 edit FILE -                      # read the script from stdin
-macho9 edit FILE SCRIPT --dry-run       # do everything but the write
+macho9 edit FILE OUT SCRIPT             # apply SCRIPT to FILE, writing OUT
+macho9 edit FILE OUT -                  # read the script from stdin
 ```
 
-`--output`, `--verbose` and `--dry-run` may appear anywhere among the
-arguments, not only after `SCRIPT`. There is no `--` to end flag parsing, so a
-`FILE` or `SCRIPT` whose real name starts with `-` is refused as an unknown
-flag; reference it through a path that doesn't, e.g. `./-name`.
+`FILE` is only read, and `OUT` must not be it — the same file twice, or a
+symlink or hard link to it, is refused before the script is even read, as it is
+for every other verb that names an `OUT`. A successful run always leaves `OUT`
+there, even when no statement changed anything: `OUT` is the answer. To see what
+a script would do without disturbing anything, give it a scratch `OUT` — that is
+the same run, and the result is a file you can inspect rather than a prediction.
+
+`--verbose` may appear anywhere among the arguments, not only after `SCRIPT`.
+There is no `--` to end flag parsing, so a `FILE` or `SCRIPT` whose real name
+starts with `--` is refused as an unknown flag; reference it through a path that
+doesn't, e.g. `./--name`. One leading dash is a file name there, as it is for
+every other verb. Not for `OUT`, though: an `OUT` beginning with `-` is refused
+and says so, because `OUT` is a file this command creates, so a flag-looking one
+is a mistake rather than a name.
 
 **Edit writes nothing unless every statement succeeded.** The whole script is
-parsed before `FILE` is ever opened for writing, so a typo in the last line of
-a long script costs nothing. Each statement then runs against the image in
-memory, in the order written; if any statement is refused, `FILE` (or
-`--output`'s target) is left exactly as it was found. The finished image is
-verified — mandatorily, after the last statement and before the write, with no
-opt-out — and only then written, once.
-
-**`--dry-run` is the same run with only the write skipped.** Every statement
-is still parsed, applied and verified; only the final write does not happen.
-It exits with the same code the real run would — 0 on success, or the refusal
-or failure code a real run would have produced at the same statement — so a
-dry run tells you whether the real run will work, not just predicts it. It
-prints a line saying so, `FILE: NOT written (--dry-run) -- would be N bytes`,
-even without `--verbose`.
+parsed before `FILE` is opened at all, so a typo in the last line of a long
+script costs nothing. Each statement then runs against the image in memory, in
+the order written; if any statement is refused, `OUT` is not written and `FILE`
+is exactly as it was found. The finished image is verified — mandatorily, after
+the last statement and before the write, with no opt-out — and only then
+written, once.
 
 **`--verbose` logs, on stderr, what the run did.** Each statement as it
 starts; beneath it, indented, the follow-up work it did that its line does
@@ -177,7 +177,7 @@ binds emitted, commands stripped, how far `__LINKEDIT` grew) or that an
 already-classic image passed through, for `swift-abi set legacy` how many
 class records it retagged, and for `version-min set` the
 `LC_VERSION_MIN_MACOSX` it appended; then `FILE: verified` and
-`FILE: written (N bytes)` (`OUT: written` with `--output`).
+`OUT: written (N bytes)`.
 
 **On a fat file, each slice is accounted for too.** `slice NAME:` before an
 edited slice's statements and `slice NAME: verified` after; `slice NAME: not
@@ -303,7 +303,7 @@ dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
 and one invocation:
 
 ```sh
-macho9 edit "$REAL" claude.edits --output "$T"
+macho9 edit "$REAL" "$T" claude.edits
 ```
 
 ### Limits

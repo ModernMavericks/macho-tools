@@ -238,7 +238,7 @@ sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
     && ok "change_dylib: a single-family run is byte-identical to macho9's, stdout included" \
     || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from macho9 dylib's; wrapper said [$(cat "$T/cd.out")] want [$(cat "$T/m9.want")]"
 
-# MORE THAN ONE FAMILY is ONE `macho9 edit FILE - --output <temp>`, and what
+# MORE THAN ONE FAMILY is ONE `macho9 edit FILE <temp> -`, and what
 # these two assert is that NOTHING IS LEFT beside FILE afterwards and that every
 # line macho9 printed names FILE. Not that no temp is created -- one is, and
 # always was: it used to be a copy of FILE that a SEQUENCE of commands was run
@@ -906,6 +906,27 @@ xattr -w com.apple.quarantine "0081;00000000;test;" "$T/w_meta"
 "$BIN/add_version_min" "$T/w_meta" >/dev/null 2>&1
 [ "$(stat -f %Lp "$T/w_meta")" = 751 ] && xattr -p com.apple.quarantine "$T/w_meta" >/dev/null 2>&1 \
     && ok "wrapper: mode and quarantine survive" || bad "wrapper metadata" "mode $(stat -f %Lp "$T/w_meta")"
+
+# THE SAME METADATA, ON THE MULTI-FAMILY PATH, which is `macho9 edit` rather
+# than a single verb -- and which is where it was being LOST. Every converted
+# verb hands wa_write_new both FILE and the temp, so the temp is given FILE's
+# mode, owner and extended attributes before mw_finish installs it. `macho9
+# edit` wrote the temp through wa_write_atomic instead, which copies xattrs from
+# the file it is REPLACING -- a temp that does not exist yet, so there was
+# nothing to copy and the install handed FILE back without the quarantine (or
+# anything else) it arrived with. MODE came through either way, because that
+# write took the mode from FILE explicitly, so the mode assertion above could
+# not have shown it; the xattr is the one that can. Measured on the value, not
+# just its presence: an empty attribute would satisfy `xattr -p` exit status.
+cp "$FIXTURE" "$T/w_meta2"; chmod 0751 "$T/w_meta2"
+xattr -w com.apple.quarantine "0081;00000000;test;" "$T/w_meta2"
+( cd "$T" && "$BIN/change_dylib" w_meta2 -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>"$T/w_meta2.err"
+w_meta2_rc=$?
+[ "$w_meta2_rc" -eq 0 ] && [ "$(stat -f %Lp "$T/w_meta2")" = 751 ] \
+    && [ "$(xattr -p com.apple.quarantine "$T/w_meta2" 2>/dev/null)" = "0081;00000000;test;" ] \
+    && ok "change_dylib: mode and quarantine survive a MULTI-FAMILY run too" \
+    || bad "change_dylib multi-family metadata" "exit $w_meta2_rc, mode $(stat -f %Lp "$T/w_meta2"), quarantine [$(xattr -p com.apple.quarantine "$T/w_meta2" 2>/dev/null)], stderr: $(cat "$T/w_meta2.err")"
 
 # ---- rename_segment -----------------------------------------------------
 #

@@ -14,11 +14,11 @@ The six original entry points, kept for compatibility. All six are now
 | installed name | what it is now |
 |---|---|
 | `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT`, installed over `OUT` |
-| `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
+| `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE OUT -` when more than one of those |
 | `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
 | `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OUT OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE OUT`, once per file, installed over each `FILE` |
-| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE -` when more than one command's worth (two renames already are) |
+| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE OUT -` when more than one command's worth (two renames already are) |
 
 plus the two files every wrapper sources:
 
@@ -162,7 +162,7 @@ for why they would be rare:
     unless `MACHO_NO_VERIFY` is set. `src/rewrite.c`'s own comment on that
     fold has the reasoning. An invocation touching more than one family is
     no longer a sequence of `macho9` lines with shell steps between them:
-    it is one `macho9 edit FILE -`, whose exit code is `me_run`'s own, from
+    it is one `macho9 edit FILE OUT -`, whose exit code is `me_run`'s own, from
     the same `MR_REFUSED`/`MR_FAIL` vocabulary. `compat/change_dylib.sh`
     and `compat/add_version_min.sh`'s own headers have the rest of the
     detail.
@@ -222,8 +222,8 @@ each with its reason:
    into header pad instead of refused;
 2. a chained `-rename_seg A B -rename_seg B C` now produces `C` instead of
    stopping at `B`;
-3. the write-back is atomic (`wa_write_atomic`) instead of `lseek` + `write`
-   over the original;
+3. the write is atomic and lands on a fresh output (`wa_write_new`, then one
+   `mv`) instead of `lseek` + `write` over the original;
 4. a fat slice that **is** a 64-bit Mach-O and whose edit fails now refuses
    the whole file instead of being skipped with the rest rewritten. (A slice
    that is not a Mach-O at all is still skipped, exactly as before —

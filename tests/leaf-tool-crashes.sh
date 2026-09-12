@@ -312,21 +312,18 @@ done
 # a dylib append would still be refused, by mg_ensure_pad, if mr_process_thin
 # stopped checking. `grow` goes straight to mg_grow_header.
 "$T/mkfixture" sectionless "$T/sectionless.macho" 8192
-# sectionless_case NEEDLE VERB TAKES-OUT ARG...
-#   -- runs `macho9 VERB <copy> [OUT] ARG...`
+# sectionless_case NEEDLE VERB ARG...
+#   -- runs `macho9 VERB <copy> OUT ARG...`
 #
-# TAKES-OUT is `out` for a verb that reads FILE and writes an output (dylib,
-# rpath, lc, segment, grow) and `-` for one that still rewrites the file it is
-# given (edit). For the first kind the OUT is removed beforehand and must still
-# be absent afterwards: a refusal writes nothing, which is a second fact worth
-# having here -- the input being untouched is no longer the whole of it.
+# EVERY verb here reads FILE and writes an OUT (dylib, rpath, lc, segment, grow
+# and, since its own conversion, edit -- whose SCRIPT is the ARG after OUT). The
+# OUT is removed beforehand and must still be absent afterwards: a refusal
+# writes nothing, which is a second fact worth having here -- the input being
+# untouched is no longer the whole of it.
 sectionless_case() {
-    needle="$1"; verb="$2"; sl_takes_out="$3"; shift 3
+    needle="$1"; verb="$2"; shift 2
     sl_desc="$*"
-    case $sl_takes_out in
-        out) set -- "$T/sl.macho" "$T/sl.out.macho" "$@" ;;
-        *)   set -- "$T/sl.macho" "$@" ;;
-    esac
+    set -- "$T/sl.macho" "$T/sl.out.macho" "$@"
     for gm in "" /usr/lib/libgmalloc.dylib; do
         what="macho9 $verb $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
@@ -352,21 +349,19 @@ sectionless_case() {
         else
             bad "$what" "the file changed: $(cmp -l "$T/sectionless.macho" "$T/sl.macho" | wc -l | tr -d ' ') byte(s) differ"
         fi
-        if [ "$sl_takes_out" = out ]; then
-            [ ! -e "$T/sl.out.macho" ] \
-                && ok "$what: writes no output either" \
-                || bad "$what" "a refused run left an output behind"
-        fi
+        [ ! -e "$T/sl.out.macho" ] \
+            && ok "$what: writes no output either" \
+            || bad "$what" "a refused run left an output behind"
     done
 }
-sectionless_case "$rewrite_refusal" dylib out -append /x
-sectionless_case "$rewrite_refusal" dylib out --allow-grow -append /x
-sectionless_case "$rewrite_refusal" rpath out -append /x
-sectionless_case "$rewrite_refusal" lc out -delete uuid
-sectionless_case "$rewrite_refusal" segment out __TEXT __TEXX
-sectionless_case "$grow_refusal" grow out 4096
+sectionless_case "$rewrite_refusal" dylib -append /x
+sectionless_case "$rewrite_refusal" dylib --allow-grow -append /x
+sectionless_case "$rewrite_refusal" rpath -append /x
+sectionless_case "$rewrite_refusal" lc -delete uuid
+sectionless_case "$rewrite_refusal" segment __TEXT __TEXX
+sectionless_case "$grow_refusal" grow 4096
 printf 'dylib append /x\n' >"$T/sl.edits"
-sectionless_case "$rewrite_refusal" edit - "$T/sl.edits"
+sectionless_case "$rewrite_refusal" edit "$T/sl.edits"
 
 info_rc=0
 "$BIN/macho9" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?

@@ -6,9 +6,10 @@
  * result, and write it once.
  *
  * The property this exists for: if any statement is refused, or the image
- * fails verification, NOTHING is written -- the input is left exactly as it
- * was found, and an --output file is never created. That is what three tool
- * invocations, each writing the whole binary, could not promise.
+ * fails verification, NOTHING is written -- `out` is never created, and the
+ * input is left exactly as it was found. That is what three tool invocations,
+ * each writing the whole binary, could not promise. The input is never a
+ * destination in any case: this reads `path` and writes `out`.
  *
  * This module lowers and sequences; it performs no operation itself. Each
  * statement becomes a call to the one implementation of that operation --
@@ -24,17 +25,19 @@ typedef struct {
     int   verbose;        /* log each statement to `log` as it runs, and
                            * beneath it any follow-up work it did (see
                            * REPORT, below) */
-    int   dry_run;        /* apply and verify, but do not write */
     FILE *log;            /* where the report goes; stderr in the CLI, and
                            * stderr when NULL */
 } me_opts;
 
-/* Applies `s` to `path`, verifies, and writes once -- to `out` if non-NULL,
- * else back to `path`. Returns 0 on success, MR_REFUSED (1) when a statement
+/* Applies `s` to `path`, verifies, and writes the result once, as `out`.
+ * `path` is only read. Returns 0 on success, MR_REFUSED (1) when a statement
  * or the verify declined on purpose, or MR_FAIL (2) for an operational
  * failure (a syscall, a malloc). On any non-zero return NOTHING has been
- * written -- with the one caveat about hard-linked destinations under WRITE,
- * below.
+ * written: `path` is as it was and so is `out`, which usually does not exist.
+ *
+ * `out` is REQUIRED, and may not be `path` -- the same file named twice is
+ * MR_FAIL, before anything is read, and so is a NULL `out`. A symlink or hard
+ * link to `path` is caught too (wa_is_input, src/atomic_write.h).
  *
  * NOT MR_ERROR: that is (-1), private to src/rewrite.c, and it is
  * mr_fat_slice's per-slice status, not an exit code.
@@ -73,15 +76,12 @@ typedef struct {
  * So a script whose every statement succeeds can still be refused, including
  * one of nothing but segment renames, which that per-step check skips.
  *
- * WRITE. Through wa_write_atomic (src/atomic_write.h), with the input file's
- * mode: a temp file beside the destination, renamed over it. The destination
- * is written even when no statement changed anything, so `out` exists after
- * every successful run that is not a dry run. When the destination is a file
- * with more than one hard link, wa_write_atomic writes through the existing
- * inode instead, and a failure partway through THAT write can leave the file
- * truncated -- the one case in which a non-zero return does not guarantee
- * the destination is as it was; see atomic_write.h. Nothing is ever written
- * before verification has passed.
+ * WRITE. Through wa_write_new (src/atomic_write.h): a temp file in `out`'s
+ * directory, given the INPUT's mode, owner and extended attributes, renamed
+ * onto `out`. So `out` is either what it was or the whole new content, never a
+ * partial file, and `path` is never written. `out` is written even when no
+ * statement changed anything, so it exists after every successful run.
+ * Nothing is ever written before verification has passed.
  *
  * ORDER. Statements run one at a time, each against the image the one
  * before it left, so an `insert` goes first in the image as that statement
@@ -90,16 +90,20 @@ typedef struct {
  * B before A -- the reverse of `macho9 dylib FILE -insert A -insert B`, which
  * places its whole list at once, in the order given.
  *
- * REPORT, to o->log. Always printed: a statement's refusal,
- *   "macho9 edit: refused at statement K of N (line L); PATH left unmodified"
+ * REPORT, to o->log. EVERY refusal line ends by naming both files and what
+ * became of each -- "OUT not written; PATH left unmodified" -- because that is
+ * true of every one of them: nothing is written until after the last verify has
+ * passed, so OUT is as it was (usually absent) and PATH was never a
+ * destination. Always printed: a statement's refusal,
+ *   "macho9 edit: refused at statement K of N (line L); OUT not written; PATH
+ *   left unmodified"
  * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L
  * is the statement's line in the script). On a fat run that line names the
- * slice at fault instead, before the trailing "; PATH left unmodified":
- *   "... (line L) in slice NAME; PATH left unmodified"
+ * slice at fault instead, before that trailing pair:
+ *   "... (line L) in slice NAME; OUT not written; PATH left unmodified"
  * or, when it was the statement's own miss (see fatal-warnings) that refused
  * it rather than any one slice,
- *   "... (line L): it matched nothing in any selected slice; PATH left
- *   unmodified"
+ *   "... (line L): it matched nothing in any selected slice; ..."
  * -- no slice name there, since no single slice is at fault. Then a refusal
  * at the final verify,
  *   "macho9 edit: refused at verification, after statement N of N; ..."
@@ -108,24 +112,21 @@ typedef struct {
  * statement, and names the slice in place of the statement count:
  *   "macho9 edit: refused at verification of slice NAME; ..."
  * Then a failed write,
- *   "macho9 edit: PATH left unmodified (write failed)",
- * and a dry run's
- *   "DEST: NOT written (--dry-run) -- would be N bytes".
- * With `out`, a refusal line ends "OUT not written; PATH left unmodified"
- * instead, and a failed write reads "writing OUT failed; PATH left
- * unmodified": OUT may never have existed. The write and dry-run lines are
- * the same whether `path` names a thin file or a fat one: the write happens
- * once, to the whole container, after every slice's own verify has passed.
- * Under o->verbose, each statement is also logged as "  <kind> <op>
+ *   "macho9 edit: writing OUT failed; PATH left unmodified",
+ * and the two refusals that come before anything is read:
+ *   "macho9 edit: no output file was named" and
+ *   "macho9 edit: OUT is PATH; macho9 never writes its input".
+ * The write line is the same whether `path` names a thin file or a fat one: the
+ * write happens once, to the whole container, after every slice's own verify has
+ * passed. Under o->verbose, each statement is also logged as "  <kind> <op>
  * <operands>" before it runs, and a run that gets that far logs
- * "PATH: verified" and "DEST: written (N bytes)" -- on a fat run "PATH:
+ * "PATH: verified" and "OUT: written (N bytes)" -- on a fat run "PATH:
  * verified" is the reassembled container's own verdict, once, after every
  * selected slice's "slice NAME: verified" (see FAT FILES, above, for the
- * rest of the per-slice verbose lines). DEST is `out` when given, else
- * `path`. me_run flushes stdout before each line it writes and before each
- * "matched nothing" report, so those land after any stdout line printed
- * before them; an operation's own stderr message, written while it runs, is
- * not ordered this way.
+ * rest of the per-slice verbose lines). me_run flushes stdout before each line
+ * it writes and before each "matched nothing" report, so those land after any
+ * stdout line printed before them; an operation's own stderr message, written
+ * while it runs, is not ordered this way.
  *
  * WHAT THE OPERATIONS PRINT THEMSELVES. me_run calls each operation's
  * in-memory core, not its CLI verb, so an edit run shows the lines those

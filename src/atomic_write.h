@@ -11,10 +11,11 @@
  * successfully rewriting it in memory) and had no reason to do it two
  * different ways, let alone one safer than the other.
  *
- * THAT WHOLE QUESTION IS GOING AWAY: a verb that writes an OUT of its own
- * replaces nothing, so wa_write_new (below) is what every converted verb --
- * `macho9 grow` included, now -- calls instead. src/edit.c is the last caller
- * wa_write_atomic has left.
+ * THAT WHOLE QUESTION HAS GONE AWAY: a verb that writes an OUT of its own
+ * replaces nothing, so wa_write_new (below) is what every verb calls instead --
+ * src/edit.c, the last holdout, converted with the rest. So NOTHING in this
+ * toolkit calls wa_write_atomic any more -- it is still declared and still
+ * behaves as described below, and it is due to go.
  */
 
 #ifndef MACHO9_ATOMIC_WRITE_H

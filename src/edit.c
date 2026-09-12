@@ -55,13 +55,14 @@ static void me_say(FILE *f, const char *fmt, ...) {
     va_end(ap);
 }
 
-/* The tail of a refusal or failure line: what the run left behind. In place,
- * that is FILE as it was. With --output it is FILE as it was and OUT not
- * written -- OUT may never have existed, so "OUT left unmodified" would
- * describe a file that is not there. */
+/* The tail of a refusal or failure line: what the run left behind, which is
+ * always both halves -- FILE as it was, and OUT not written. "OUT not written"
+ * rather than "OUT left unmodified" because OUT may never have existed, and
+ * because a pre-existing OUT is equally untouched: every refusal, on the thin
+ * path and the fat one alike, happens before me_write_once is reached, and that
+ * is the only place anything is written. */
 static void me_say_left(FILE *log, const char *path, const char *out) {
-    if (out) me_say(log, "%s not written; %s left unmodified\n", out, path);
-    else     me_say(log, "%s left unmodified\n", path);
+    me_say(log, "%s not written; %s left unmodified\n", out, path);
 }
 
 /* "208526708" -> "208,526,708", the way the report prints a byte count. */
@@ -450,30 +451,25 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
     return 0;
 }
 
-/* The last step of a run that verified: report, and write once unless this
- * is a dry run. Takes ownership of buf. */
-static int me_write_once(uint8_t *buf, size_t size, mode_t mode, const char *path,
-                         const char *out, FILE *log, int verbose, int dry_run) {
-    const char *dest = out ? out : path;
+/* The last step of a run that verified: report, and write OUT once. Takes
+ * ownership of buf. The write goes through wa_write_new, which gives OUT the
+ * INPUT's mode, owner and extended attributes and renames a temp onto it -- so
+ * OUT is whole or as it was, and `path` is never a destination. There is no
+ * mode parameter for the same reason: the mode comes from the input, which
+ * wa_write_new stats itself. */
+static int me_write_once(uint8_t *buf, size_t size, const char *path, const char *out,
+                         FILE *log, int verbose) {
     char bytes[32];
     me_commas(bytes, size);
-    if (dry_run) {
-        me_say(log, "%s: NOT written (--dry-run) -- would be %s bytes\n", dest, bytes);
-        free(buf);
-        return 0;
-    }
-    if (wa_write_atomic(dest, mode, buf, size) != 0) {
-        /* With --output, FILE was never a destination; what OUT holds after
-         * a failed write is atomic_write.h's to say, not this line's. */
-        if (out)
-            me_say(log, "macho9 edit: writing %s failed; %s left unmodified\n", out, path);
-        else
-            me_say(log, "macho9 edit: %s left unmodified (write failed)\n", path);
-        free(buf);
+    int wr = wa_write_new(path, out, buf, size);
+    free(buf);
+    if (wr != 0) {
+        /* What OUT holds after a failed write is atomic_write.h's to say (it
+         * is as it was); FILE was never a destination. */
+        me_say(log, "macho9 edit: writing %s failed; %s left unmodified\n", out, path);
         return MR_FAIL;
     }
-    if (verbose) me_say(log, "%s: written (%s bytes)\n", dest, bytes);
-    free(buf);
+    if (verbose) me_say(log, "%s: written (%s bytes)\n", out, bytes);
     return 0;
 }
 
@@ -540,7 +536,7 @@ static void me_fat_placed(const mfat_arch *a, uint32_t index,
 }
 
 static int me_run_fat(const char *path, const char *out, const ms_script *s,
-                      FILE *log, int verbose, int dry_run) {
+                      FILE *log, int verbose) {
     /* Read the whole container once. */
     int fd = open(path, O_RDONLY);
     struct stat st;
@@ -629,8 +625,9 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     int modified = 0;
     rc = mfat_rewrite(&buf, &size, narch, swap, me_fat_slice, me_fat_placed, &ctx, &modified);
     /* me_fat_slice sets *changed for every selected slice, so *modified is
-     * always true here; a fat run writes regardless. Queue item 9 ("macho9
-     * never writes its input") is what will act on it. */
+     * always true here -- and it would make no difference if it were not: OUT
+     * is the answer, so a successful run writes it whether or not any statement
+     * changed anything. */
     (void)modified;
     free(selected); free(hits); free(renamed);
     if (rc != 0) {
@@ -651,7 +648,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         return MR_REFUSED;
     }
     if (verbose) me_say(log, "%s: verified\n", path);
-    return me_write_once(buf, size, st.st_mode, path, out, log, verbose, dry_run);
+    return me_write_once(buf, size, path, out, log, verbose);
 }
 
 /* mi_open said MI_NOT_MACHO, and me_run has already dispatched every fat
@@ -665,7 +662,22 @@ static int me_refuse_input(const char *path, FILE *log) {
 int me_run(const char *path, const char *out, const ms_script *s, const me_opts *o) {
     FILE *log = (o && o->log) ? o->log : stderr;
     int verbose = o ? o->verbose : 0;
-    int dry_run = o ? o->dry_run : 0;
+
+    /* BEFORE ANYTHING IS READ. `out` is required, and it may not be `path` --
+     * the same two mistakes cli/macho9.c's m9_bad_out refuses for every verb
+     * that names an OUT, refused here as well because me_run is reachable
+     * without going through that CLI. wa_write_new would refuse the second at
+     * the write, but only after the whole rewrite; MR_FAIL, not MR_REFUSED,
+     * because naming one file twice is a mistake about the command rather than a
+     * verdict about the image. */
+    if (!out) {
+        me_say(log, "macho9 edit: no output file was named\n");
+        return MR_FAIL;
+    }
+    if (wa_is_input(path, out)) {
+        me_say(log, "macho9 edit: %s is %s; macho9 never writes its input\n", out, path);
+        return MR_FAIL;
+    }
 
     uint32_t magic = me_magic(path);
     if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
@@ -675,7 +687,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         return MR_REFUSED;
     }
     if (magic == FAT_MAGIC || magic == FAT_CIGAM)
-        return me_run_fat(path, out, s, log, verbose, dry_run);
+        return me_run_fat(path, out, s, log, verbose);
 
     /* Read the image once. */
     mi_image im;
@@ -698,12 +710,6 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
             mi_close(&im);
             return MR_REFUSED;
         }
-    }
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        me_say(log, "macho9 edit: %s: cannot stat\n", path);
-        mi_close(&im);
-        return MR_FAIL;
     }
     size_t size = im.size;
     uint8_t *buf = mi_release(&im);
@@ -744,5 +750,5 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     }
     if (verbose) me_say(log, "%s: verified\n", path);
 
-    return me_write_once(buf, size, st.st_mode, path, out, log, verbose, dry_run);
+    return me_write_once(buf, size, path, out, log, verbose);
 }
