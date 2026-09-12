@@ -52,6 +52,26 @@ All three are resolved:
   regression-tested fact (`tests/grow_test.c`'s
   `test_grow_refuses_32bit_mach_header`, `tests/image_test.c`'s
   `test_wrap_refuses_32bit_mach_header`) instead of an incidental side effect.
+
+  **What would reopen it** (recorded 2026-09-11, so the condition travels with
+  the decision): a target older than 10.9. These tools exist to make software
+  run on a host whose own toolchain cannot build it — today that host is
+  Mavericks, and its inputs come from toolchains fifteen years newer, which
+  emit no `i386` at all. Point the same technique one OS down and that stops
+  being true: Snow Leopard is the last release for Core Duo and Core Solo
+  hardware, which is 32-bit only, so a backport effort aimed at 10.6 is
+  working on `i386` images from the start, not on stragglers.
+
+  That matters because it decides *which* 32-bit work is needed. Editing an
+  old binary in place — an install-name change of equal length, a
+  `-strip-lc`, a segment rename — needs only an `LC_SEGMENT`/`struct section`
+  parsing path, which is bounded and mechanical. Swapping a backport dylib in
+  needs header room, which is the parallel growth geometry described above and
+  the expensive half. The backport pattern this repo was built around is
+  exactly dylib injection, so a real 10.6 effort would need the expensive half
+  immediately; there is no cheap subset that gets it started. The condition to
+  watch for, then, is not "somebody has a 32-bit file" but "a Snow Leopard
+  target is actually being pursued".
 - **Export trie rebuild**: closed. When an address's ULEB would widen under an
   in-place patch (`mg_trie_node`'s `return 1`), `mg_grow_header` now rebuilds
   the trie from scratch (`src/trie.c`, `mt_trie_rebuild`) instead of refusing:
