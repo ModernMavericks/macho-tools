@@ -17,7 +17,8 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
 | 12 | An `insert_dylib` wrapper | — | — | not started; not yet designed |
 | 13 | What real app backports need and we lack | — | — | not started; researched 2026-09-11, see below |
-| 14 | Spike: weaken binds in memory at load time | — | — | not started; spike scoped 2026-09-12, see below |
+| 14 | Spike: weaken binds in memory at load time | — | — | **spike done** 2026-09-12: answered NO; see below |
+| 15 | Flat-namespace shim: satisfy missing symbols at runtime | — | — | not started; came out of item 14's spike |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -347,6 +348,79 @@ file-level and buffer-level operations, so it is not a new architecture — but 
 runtime injector is a new *kind* of artifact, with a test strategy that cannot
 be "hash the output file", so it wants its own spec rather than being folded
 into item 13.
+
+### Spike result, 2026-09-12: **no.** Do not build this.
+
+Run natively on 10.9.5 (`dyld-239.5`). Full evidence in
+`.superpowers/spike-inmemory-bind-weakening.md`.
+
+| case | reachable in time? | weakening effective? |
+|---|---|---|
+| `dlopen`ed dylib | **yes** — handler fires for just that image | **yes** — refs resolve to 0; guarded code survives, unguarded SIGSEGVs |
+| main exe, non-lazy (data) | **no** — dyld aborts inside `link()`; the injected constructor never runs | n/a |
+| main exe, lazy (function) | **yes** — stream patched `0x40`→`0x41` and read back as weak | **no** — dyld's stub-time binder ignores the flag |
+| load-time dependency dylib | **no** — dependencies bind before the main executable | n/a |
+
+**Two complementary walls: everything reachable is ineffective, everything
+effective is unreachable.** The decisive one is that dyld's lazy-binding path
+ignores `BIND_SYMBOL_FLAGS_WEAK_IMPORT` altogether — proven not to be a
+patching artifact, since a genuine `__attribute__((weak_import))` function
+called unguarded dies the same way (`dyld: lazy symbol binding failed`). And
+guarding a function reference forces it *non-lazy*, because you take its
+address — so "reachable in time" and "guarded" are mutually exclusive. What
+timing left open, dyld's binder closes.
+
+**A finding that bears on item 13's gaps 1 and 2, which are the ON-DISK version
+of the same edit.** Those gaps survive this result — patching the file puts the
+flag in place before dyld ever looks, so the timing problem is specific to
+memory. But the spike sharpens *why* weakening alone is not the win:
+`if (&sym)` against a strong import is **compiled away** (`movb $0x1,%cl;
+testb $0x1,%cl` even at `-O0`), so a binary whose source never used
+`weak_import` has no guard to satisfy. Weakening such a bind converts a clean
+launch-time abort into a SIGSEGV at the use site — worse, not better. Gap 1 is
+only useful *with* gap 2: the symbol must end up resolving to a real stub, not
+to 0. Any spec for gaps 1–2 should state that as a precondition.
+
+## Item 15: flat-namespace shim — satisfy missing symbols at runtime
+
+Came out of item 14's spike, which found it while proving the other approach
+dead. `DYLD_FORCE_FLAT_NAMESPACE=1` plus an inserted shim dylib that *defines*
+the missing symbols rescued **all six** probe variants, main executable
+included, with no memory patching and nothing written to disk at all.
+
+Why this is worth a design rather than a shrug:
+
+- **Nothing on disk changes, so the signature survives.** Verified: `md5`
+  identical and `codesign -v` still passes, even with `CS_KILL` set. This is the
+  property that motivated item 14 in the first place, and this route delivers it
+  without the patching.
+- **No bundle edit is needed.** `open` forwards `DYLD_INSERT_LIBRARIES` through
+  LaunchServices on 10.9 — verified with two distinct values plus an unset
+  control — so `Info.plist` stays untouched, and XcodePostFacto's launcher app
+  may have been unnecessary.
+- **It inverts the work.** Instead of rewriting a binary so its imports become
+  satisfiable, supply the imports. The hard part stops being Mach-O surgery and
+  becomes *knowing which symbols to stub and what they should do* — which is
+  what item 13's gap 7 (machine-readable import reporting) exists to answer, and
+  where this repo's `info` verb is the natural on-ramp.
+
+Costs and blockers to settle in the design, not discover later:
+
+- **Process-wide flat lookup** is the price. Two libraries exporting the same
+  name now collide where two-level namespacing kept them apart — a real hazard
+  in a large app with bundled frameworks, and the reason XcodePostFacto
+  presumably rewrote individual binds instead. Whether that is tolerable is the
+  central design question.
+- **A `__RESTRICT` segment is a hard blocker**: it strips every `DYLD_*`
+  variable, so nothing is injected at all. Determine how common that is in the
+  target population before promising anything.
+- A stub that returns the wrong thing is worse than a missing symbol, because it
+  fails later and less legibly. The design needs a story for what a stub does
+  when it cannot do the real work.
+
+This is a different product from `macho9` — a runtime library plus a launch
+wrapper, not a file transformer — so it gets its own spec, and its verification
+cannot be "hash the output file".
 
 ## Outstanding owner actions
 
