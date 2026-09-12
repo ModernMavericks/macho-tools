@@ -33,7 +33,7 @@ command cannot be added to grow's accept side without being added here, and
 adding it here is what teaches `ml_bump_lc` to bump it. The coupling is enforced
 as a **link error**, not merely a test — commit `247d09d`.
 
-**`cli/macho9.c`'s `DYLIB_OPS`** (`:159-166`) carries, per operation, the flag
+**`cli/machotool.c`'s `DYLIB_OPS`** (`:159-166`) carries, per operation, the flag
 spelling, the arity, a capability name, and separate `dylib`/`rpath` columns
 (`-reexport` is `DOP_REEXPORT` for dylib and `DOP_NONE` for rpath). The argument
 parser and the `--capabilities` output are both generated from it.

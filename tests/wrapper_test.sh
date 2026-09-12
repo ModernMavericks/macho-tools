@@ -42,8 +42,8 @@ skip() { echo "SKIP $1: $2"; }
 
 # ---- the six names the rename must not reach, which is also the preflight --
 #
-# A TRIPWIRE, not a test of anything new: it passed before the macho9 ->
-# machotool rename began and it has to keep passing after it. These six names
+# A TRIPWIRE, not a test of anything new: it passed before the rename to
+# machotool began and it has to keep passing after it. These six names
 # are a shipped interface -- mavericksforever.com/claude/install.sh fetches
 # three of them by name -- and the whole point of the compat layer is that a
 # caller who learned it in 2024 still works. The binary, the library, the two
@@ -1662,10 +1662,10 @@ rm -f "$T/-dashy"
 # test must not lend it anything of ours -- and `env -i PATH=...` is the only
 # form that proves the taught program word resolves to the binary shipped
 # beside the wrapper rather than to something this process happened to have.
-# It is also the contract that used to need a `macho9` symlink beside
-# `machotool` to hold, so it is the check that the symlink's deletion rested
-# on. /usr/bin and /bin are on the PATH for `mv`, which the install line the
-# block ends with needs.
+# It is also the contract that used to need a symlink under the tool's
+# pre-rename name beside `machotool` to hold, so it is the check that the
+# symlink's deletion rested on. /usr/bin and /bin are on the PATH for `mv`,
+# which the install line the block ends with needs.
 fresh
 mkdir "$T/wrap" "$T/taught"
 cp "$FIXTURE" "$T/wrap/-dashy"

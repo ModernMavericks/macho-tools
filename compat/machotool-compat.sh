@@ -100,8 +100,8 @@ MW_DIR=$(cd "$MW_DIR" 2>/dev/null && pwd) || {
 # run's stderr and runs it under `env -i PATH=...` in a new /bin/sh, checking
 # it produces the same bytes the wrapper did -- so the word compat/
 # translate.sh emits and the binary this finds have to be the same word. Both
-# are `machotool`; the tool answered to `macho9` until the rename, and that
-# `env -i` check is what lets it stop answering to it.
+# are `machotool`; the tool answered to a different name before the rename,
+# and that `env -i` check is what lets it stop answering to the old one.
 if [ -x "$MW_DIR/machotool" ]; then
     PATH="$MW_DIR:$PATH"
     export PATH

@@ -4,7 +4,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 
 | # | item | spec | plan | state |
 |---|---|---|---|---|
-| 1 | Report what macho9 did | — | `plans/2026-09-10-report-what-macho9-did.md` | **done**, pushed, CI green at `77f076a` |
+| 1 | Report what the pre-rename build did | — | its own plan file, filename kept from before the rename (see item 3's "What is deliberately NOT renamed") | **done**, pushed, CI green at `77f076a` |
 | 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | **done**, pushed, CI green at `36703e0` |
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; unblocked |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | plan written; shelved until item 3 merges |
@@ -12,7 +12,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 6 | **Human code review + excellent documentation** | — | — | not started |
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
-| 9 | `macho9` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | **done**, pushed, `bccd008..1c0c38c` |
+| 9 | `machotool` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | **done**, pushed, `bccd008..1c0c38c` |
 | 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | **done**, pushed, `b76ddf1..9ae6835` |
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
 | 12 | An `insert_dylib` wrapper | — | — | not started; not yet designed |
@@ -21,7 +21,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 15 | Flat-namespace shim: satisfy missing symbols at runtime | — | — | not started; came out of item 14's spike |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
-written against today's names (`macho9`, `cli/macho9.c`) and today's
+written against the pre-rename names and today's
 `--verbose` flag. Item 3 renames the product by sweeping the tree, which
 picks up whatever 9–11 added, and its Task 6 ("always verbose, on stderr")
 deletes the flag -- turning every verbose-only line 9–11 add, such as the
@@ -33,8 +33,8 @@ first would mean rebasing all three plans onto the new names.
 **2 before 5.** Relations and verb lowering have nothing to attach to until
 `MS_TABLE`, `ms_script` and `me_run` exist.
 
-**3 before 4.** `release.yml`'s artifact list names `macho9`, `macho9-compat.sh`
-and `macho9-translate.sh`; the rename changes all three. Landing release
+**3 before 4.** `release.yml`'s artifact list names the pre-rename binary and
+wrapper names; the rename changes all three. Landing release
 conformance first would edit the same lines twice.
 
 **8 is split out of 4, and goes after 7.** The `.pkg` and the Sparkle updater.
@@ -63,7 +63,7 @@ about code the review is about to change.
 **The README is a named input to item 6**, raised by the repo owner
 2026-09-11: it is far too long, and its opening sentence does not parse.
 
-- **Length.** 360 lines, of which the `macho9 edit` manual (its file format,
+- **Length.** 360 lines, of which the `machotool edit` manual (its file format,
   statements, directives, worked example and limits) is about 200 — 55% of the
   front door spent on one verb. That material is reference, not introduction;
   it wants its own file, with the README keeping a short pointer.
@@ -132,7 +132,7 @@ write shifted content.
 `src/grow.h` called that "a real, if unusual, answer". It was not: on a
 sectionless image of 4096 bytes or more, `mr_process_thin` took it as the
 header-pad boundary, and its commit zeroed everything up to it. Reproduced on
-an 8192-byte image: `macho9 dylib F -append /x` exited 0 having zeroed bytes
+an 8192-byte image: `machotool dylib F -append /x` exited 0 having zeroed bytes
 200..4095, with or without `MACHO_NO_VERIFY`, because `mg_plausible` accepts
 that image. (An earlier version of this note said `mg_plausible` happened to
 refuse the fixture without the variable; it does not, so it was never a
@@ -142,10 +142,10 @@ sectionless image shorter than 4096 bytes, which wrote past the buffer -- was
 fixed in item 10 (`34a3187`). `66ca5ce` stops treating "no sections" as
 "4096": `mg_first_sect_off` answers `MG_NO_SECTION_DATA`, every caller that
 writes into the pad refuses it (declassify also refuses a first section past
-the end of the image), and `macho9 info` reports the pad as unknown.
+the end of the image), and `machotool info` reports the pad as unknown.
 `7ea664a` makes `mg_grow_header` refuse a first section whose file offset lies
 past the end of the image, the bound every other caller already had; before
-it, `macho9 grow` on such an image died of SIGSEGV.
+it, `machotool grow` on such an image died of SIGSEGV.
 
 **Four wording overclaims for item 6's documentation pass**, two of them
 resolved by `66ca5ce`, which rewrote both passages: `src/grow.h:99-101` (an
@@ -161,7 +161,7 @@ printed before a refusal on a non-PIE image).
 Item 11 shipped `8f17001..956b4f6`. Its final review found nothing critical or
 important; what it left deliberately:
 
-**For item 9** (`macho9` never writes its input). `me_fat_slice` sets
+**For item 9** (`machotool` never writes its input). `me_fat_slice` sets
 `*changed` for every selected slice, so a fat `edit` always reassembles and
 rewrites the container even when no statement changed a byte — and reassembly
 sizes the output from the furthest slice end, so bytes trailing the last slice
@@ -194,7 +194,7 @@ art we measured ourselves against and took the export-trie rebuild from —
 caller set invokes it, so this is convenience for people who already know that
 grammar, not compatibility debt.
 
-The capability is already here under our own grammar: `macho9 dylib FILE
+The capability is already here under our own grammar: `machotool dylib FILE
 -append PATH` is insert_dylib's core act, `-insert` puts it at ordinal 1, and
 `lc -delete codesig` covers `--strip-codesig`. What a wrapper adds is its CLI
 shape — `insert_dylib dylib_path binary [new_binary]`, with `--inplace`,
@@ -291,7 +291,7 @@ approach rests on:
 (`codesign --force --deep --sign -`) is **mandatory** in their flow, not
 optional: their installer aborts when `codesign --verify` fails, because a
 modified bundle carrying Apple's original signature is rejected at exec. Since
-`macho9 lc delete codesig` makes re-signing unavoidable, our README's
+`machotool lc delete codesig` makes re-signing unavoidable, our README's
 capability list has an undocumented dependency — a user could follow it
 exactly and end up with a bundle the kernel kills. The README should say that
 re-signing is a required external step, and what it costs: ad-hoc signing drops
@@ -422,7 +422,7 @@ Costs and blockers to settle in the design, not discover later:
   fails later and less legibly. The design needs a story for what a stub does
   when it cannot do the real work.
 
-This is a different product from `macho9` — a runtime library plus a launch
+This is a different product from `machotool` — a runtime library plus a launch
 wrapper, not a file transformer — so it gets its own spec, and its verification
 cannot be "hash the output file".
 

@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-10-release-conformance-design.md`
 
-**Depends on:** `docs/superpowers/plans/2026-09-10-machotool-rename-and-target.md` having landed. `release.yml`'s artifact list names `macho9`, `macho9-compat.sh` and `macho9-translate.sh`; the rename changes all three, and this plan edits the same lines. Landing this first means editing them twice.
+**Depends on:** `docs/superpowers/plans/2026-09-10-machotool-rename-and-target.md` having landed. `release.yml`'s artifact list names `machotool`, `machotool-compat.sh` and `machotool-translate.sh`; the rename changes all three, and this plan edits the same lines. Landing this first means editing them twice.
 
 ## Global Constraints
 

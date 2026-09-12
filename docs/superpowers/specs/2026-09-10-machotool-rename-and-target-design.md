@@ -8,7 +8,7 @@ it and adds the one statement whose meaning depends on the binary.
 
 ## Why these two things are one change
 
-`macho9`'s `9` is a claim the tool is about to stop making. The moment a target
+The tool's pre-rename name's trailing `9` is a claim it is about to stop making. The moment a target
 becomes a parameter — `target 10.9` — an OS baked into the binary's name
 contradicts the design. Doing the rename separately would mean shipping a name
 that is wrong on arrival, or delaying the profile until someone gets around to
@@ -37,12 +37,12 @@ document changed as a result.
 
 | what | from | to |
 |---|---|---|
-| binary | `macho9` | **`machotool`** |
+| binary | *(pre-rename name)* | **`machotool`** |
 | repo | `macho-tools` | **`machotool`** |
 | package | `mavericks-macho-tools` | **`mavericks-machotool`** |
-| library target | `macho9core` | **`machotoolcore`** |
-| shared wrapper script | `macho9-compat.sh` | **`machotool-compat.sh`** |
-| translator | `macho9-translate.sh` | **`machotool-translate.sh`** |
+| library target | *(pre-rename name)*`core` | **`machotoolcore`** |
+| shared wrapper script | *(pre-rename name)*`-compat.sh` | **`machotool-compat.sh`** |
+| translator | *(pre-rename name)*`-translate.sh` | **`machotool-translate.sh`** |
 | app identity | — | **"Mavericks Machotool"** |
 | prose name | — | **"Machotool for Mavericks"** |
 | bundle id | — | **`dev.modernmavericks.machotool`** |
@@ -148,7 +148,7 @@ is to make edits nobody can see afterwards should not have an option to say
 nothing about them.
 
 > **Conflict with the edit-scripts design, and how it resolves.** That document
-> (`2026-09-10-edit-scripts-design.md`) shows `macho9 edit --verbose` in two
+> (`2026-09-10-edit-scripts-design.md`) shows `edit --verbose` invocations in two
 > worked examples, and its plan builds the flag — `me_opts.verbose`, a
 > `--verbose` argument, and assertions on both. Since this design is sequenced
 > *after* that one, as written the sequence builds a flag and then deletes it.
@@ -237,7 +237,7 @@ builds, not `sed`-ed". That instruction is now unexecutable**, and the reason is
 worth keeping rather than quietly deleting.
 
 `tests/compat-matrix.tsv` records 1,209 emitted command lines containing
-`macho9`. The original instruction existed because the sweep script once used one
+the tool's pre-rename name. The original instruction existed because the sweep script once used one
 bindir for both sides — measuring a build against itself — so a mechanical
 rewrite of recorded output is exactly the shape that would hide that class of
 problem again. That reasoning still holds; what changed is that **regeneration is
@@ -251,7 +251,7 @@ which rows are now historical — added when the retirement landed, precisely so
 reader who arrives after a rename is not misled by command lines naming a binary
 that no longer exists.
 
-**What the rename does to it: nothing.** The `macho9` strings in those rows are
+**What the rename does to it: nothing.** The pre-rename strings in those rows are
 part of the measurement, not references to a live binary. Renaming them would be
 falsifying a record. If the stale names bother a future reader more than the
 falsification would, the honest options are to delete the file or to write a

@@ -1,4 +1,4 @@
-# Mach-O Tools for Mavericks
+# Machotool for Mavericks
 
 Mach-O surgery for hosts too old to have any. Builds with the stock 10.9 clang,
 no dependencies, and edits binaries produced by toolchains fifteen years newer.
@@ -14,29 +14,29 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 
 ## Layout
 
-- `src/` — the shared toolkit library (`macho9core`): image parsing, ULEB,
+- `src/` — the shared toolkit library (`machotoolcore`): image parsing, ULEB,
   ordinals, fat-arch validation, export-trie rebuild, `__LINKEDIT` bumping,
   header growth, LC-kind tables, the atomic-write helper, the dylib/rpath
   load-command rewriter, the `LC_VERSION_MIN_MACOSX` appender, the segment
   rename, and the Swift class-record retag.
-- `compat/` — these six tools' entry points. They predate `macho9` and keep
+- `compat/` — these six tools' entry points. They predate `machotool` and keep
   their original names because `install.sh` fetches some of them by name. All
-  six are now `/bin/sh` wrappers that print the `macho9` equivalent of what
-  they were asked to do and then do it through `macho9`, so **`macho9` is the
+  six are now `/bin/sh` wrappers that print the `machotool` equivalent of what
+  they were asked to do and then do it through `machotool`, so **`machotool` is the
   only Mach-O rewriting binary this repo ships** and `compat/` contains no C
   at all. `fix_macho` was the last holdout: wrapping it changes what it does
   in five ways, and those changes were adopted deliberately rather than
   papered over — `compat/fix_macho.sh`'s header states each with its reason.
-  Also here: `translate.sh`, the old-grammar-to-`macho9` translator the
-  wrappers source, and `macho9-compat.sh`, the machinery they share. See
+  Also here: `translate.sh`, the old-grammar-to-`machotool` translator the
+  wrappers source, and `machotool-compat.sh`, the machinery they share. See
   `compat/README.md`.
 
-  **Packaging note:** the six wrappers need `macho9`, `macho9-compat.sh` and
-  `macho9-translate.sh` installed beside them. Anything that fetches
+  **Packaging note:** the six wrappers need `machotool`, `machotool-compat.sh` and
+  `machotool-translate.sh` installed beside them. Anything that fetches
   `patch_macho`, `change_dylib` or `add_version_min` by name now has three
   more files to fetch. `compat/README.md` says what that means for
   `mavericksforever.com/claude/install.sh`, which has not been told.
-- `cli/` — `macho9`, the multi-verb CLI built on `src/`.
+- `cli/` — `machotool`, the multi-verb CLI built on `src/`.
 - `tests/` — everything `ctest` runs, plus the fixtures it reads.
 
 ## Building
@@ -104,14 +104,14 @@ file**; these tools **never move a byte of data**, editing only within existing
 header padding. That is why `-strip-lc` and `-grow` exist, and why a replacement
 path that is too long is an error here and a non-event with Apple's tool.
 
-## macho9 never writes its input
+## machotool never writes its input
 
 Every rewriting verb — `dylib`, `rpath`, `lc`, `segment`, `minos`,
 `retag-swift`, `declassify`, `grow`, `edit` — takes `FILE OUT`: `FILE` is
 opened read-only and never touched, and the result goes to `OUT`, the
 positional right after it. An `OUT` that names `FILE` — the same path, a
 symlink to it, or a hard link to it — is refused before any work is done.
-`macho9 --capabilities`' `output positional=2 never-writes-input` line tells
+`machotool --capabilities`' `output positional=2 never-writes-input` line tells
 a caller to expect this shape rather than assume it.
 
 A successful write gives `OUT` `FILE`'s permission bits, `FILE`'s owner
@@ -144,9 +144,9 @@ Two independent checks back that up:
 - **`mg_plausible`** asks a different question of the finished file — do
   initializers and unwind entries still land on an address `LC_FUNCTION_STARTS`
   lists? It needs no "before" image, so the shared rewriter (`change_dylib` and
-  `macho9 dylib`/`rpath`/`lc` alike) runs it immediately before writing and
+  `machotool dylib`/`rpath`/`lc` alike) runs it immediately before writing and
   refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1` opts out.
-  `macho9 segment` never reaches this gate at all — its only form always
+  `machotool segment` never reaches this gate at all — its only form always
   builds a rename-only operation set, and the shared rewriter skips the gate
   outright for those rather than offering an opt-out: a rename moves no
   offset, so the gate could only re-decide a property the input already had
@@ -156,17 +156,17 @@ That gate exists because every defect ever found in this code has been a silent
 success: the tool reported OK and the binary died in the loader — or worse,
 didn't.
 
-## `macho9 edit` — edit scripts
+## `machotool edit` — edit scripts
 
 `install.sh`-style porting runs several rewrites in sequence — strip a load
 command, then repoint a handful of dylibs — each of which is normally its own
-`macho9` invocation and its own full write of the file. `edit` takes a script
+`machotool` invocation and its own full write of the file. `edit` takes a script
 naming every statement instead, applies them all to one in-memory copy, and
 writes once:
 
 ```sh
-macho9 edit FILE OUT SCRIPT             # apply SCRIPT to FILE, writing OUT
-macho9 edit FILE OUT -                  # read the script from stdin
+machotool edit FILE OUT SCRIPT             # apply SCRIPT to FILE, writing OUT
+machotool edit FILE OUT -                  # read the script from stdin
 ```
 
 `FILE` is only read, and `OUT` must not be it — the same file twice, or a
@@ -221,7 +221,7 @@ nothing in any selected slice.
 
 **The write never touches `FILE`.** `edit`, like every other rewriting verb,
 takes `FILE OUT` and writes only `OUT`, by way of a temp file and a rename —
-see "macho9 never writes its input", above, for what that guarantees. So
+see "machotool never writes its input", above, for what that guarantees. So
 whether `FILE` is writable is not a question `edit` asks either; a read-only
 (`0444`) `FILE` in a writable directory is read just fine, and the run exits
 0.
@@ -256,8 +256,8 @@ rpath         append    PATH
 rpath         insert    PATH
 ```
 
-The statements mirror `macho9`'s other rewriting verbs, most spelled as that
-verb with its `FILE OUT` dropped — `macho9 dylib FILE OUT -replace A B` is the same edit
+The statements mirror `machotool`'s other rewriting verbs, most spelled as that
+verb with its `FILE OUT` dropped — `machotool dylib FILE OUT -replace A B` is the same edit
 as the line `dylib replace A B`. Four are renamed: `lc` is `load-command`,
 `minos` is `version-min`, `retag-swift` is `swift-abi`, and `declassify` is
 `fixups`. One rewriting verb has no statement at all: `grow FILE OUT N` (enlarge
@@ -269,7 +269,7 @@ is a different thing from naming a byte count directly.
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
 `dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal
-2, the reverse of `macho9 dylib FILE OUT -insert A -insert B`, which gives A then
+2, the reverse of `machotool dylib FILE OUT -insert A -insert B`, which gives A then
 B. `rpath insert` works the same way, so dyld searches B before A.
 
 ### Directives
@@ -323,7 +323,7 @@ dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
 and one invocation:
 
 ```sh
-macho9 edit "$REAL" "$T" claude.edits
+machotool edit "$REAL" "$T" claude.edits
 ```
 
 ### Limits
@@ -354,7 +354,7 @@ macho9 edit "$REAL" "$T" claude.edits
   any selected slice.
 - **`MACHO_NO_VERIFY` does not affect `edit`'s own final verification.** A
   `dylib`/`rpath`/`load-command` statement still runs the same per-step
-  plausibility check `macho9 dylib`/`rpath`/`lc` run (see "Prove it or
+  plausibility check `machotool dylib`/`rpath`/`lc` run (see "Prove it or
   refuse" above), and that per-step check still honours the variable. But
   the mandatory check `edit` runs after the *last* statement, before the
   single write, has no such escape hatch, by design — no opt-out was

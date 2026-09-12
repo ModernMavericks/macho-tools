@@ -41,9 +41,9 @@ The conventions offer three self-upstream shapes: date-based `YYYYMMDD.N`
 (porthole), semver `vX.Y.Z`, or dimmit's `v0.0.YYYYMMDD.N`. Semver, because this
 product's user-visible surface is a **CLI grammar that consumers probe**:
 `--capabilities` exists precisely so a wrapper and the tool need not move in
-lockstep, and the grammar is about to change materially (`macho9` → `machotool`,
-`lc` → `load-command`, `declassify` → `fixups set classic`, the `edit` verb, the
-`target` statement). A version that communicates compatibility is worth more here
+lockstep, and the grammar is about to change materially beyond the rename
+already landed (`lc` → `load-command`, `declassify` → `fixups set classic`, the
+`edit` verb, the `target` statement). A version that communicates compatibility is worth more here
 than one that communicates recency. A date says when; semver says whether your
 script still runs.
 
@@ -169,9 +169,10 @@ step with the family's own list, not just with the general rule.
 
 ## Sequencing note
 
-`release.yml`'s artifact list names `macho9`, `macho9-compat.sh` and
-`macho9-translate.sh`. The rename spec changes all three. Land the rename first,
-or this work edits the same lines twice.
+`release.yml`'s artifact list named the binary and the two wrapper scripts by
+their pre-rename names; the rename spec changed all three. That rename has
+since landed, so this note is now historical: it recorded why this work had to
+sequence after it rather than edit the same lines twice.
 
 ## Out of scope
 

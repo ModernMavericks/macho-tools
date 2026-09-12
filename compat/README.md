@@ -1,11 +1,11 @@
 # compat/
 
 The six original entry points, kept for compatibility. All six are now
-`/bin/sh` wrappers around `macho9`. There is no C left in this directory.
+`/bin/sh` wrappers around `machotool`. There is no C left in this directory.
 
-> **The goal is met.** The retirement plan's headline was "`macho9` becomes
-> the only Mach-O rewriting binary this repo ships." It is: `compat/` holds
-> six shell wrappers and two shell support files, and `macho9` is the only
+> **The goal is met.** The retirement plan's headline was that the rewritten
+> binary becomes the only Mach-O rewriting binary this repo ships. It is: `compat/` holds
+> six shell wrappers and two shell support files, and `machotool` is the only
 > binary `CMakeLists.txt` builds or installs. `fix_macho` was the holdout —
 > see "Why `fix_macho` could not be wrapped, and what changed" below, which is
 > the record of what adopting its five divergences cost and why that was the
@@ -13,19 +13,19 @@ The six original entry points, kept for compatibility. All six are now
 
 | installed name | what it is now |
 |---|---|
-| `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT`, installed over `OUT` |
-| `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE OUT -` when more than one of those |
-| `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
-| `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OUT OLD NEW` |
-| `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE OUT`, once per file, installed over each `FILE` |
-| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE OUT -` when more than one command's worth (two renames already are) |
+| `patch_macho` | `patch_macho.sh` → `machotool declassify IN OUT`, installed over `OUT` |
+| `change_dylib` | `change_dylib.sh` → `machotool lc` / `dylib` / `rpath`, or `machotool edit FILE OUT -` when more than one of those |
+| `add_version_min` | `add_version_min.sh` → `machotool minos FILE OUT 10.9`, installed over `FILE` |
+| `rename_segment` | `rename_segment.sh` → `machotool segment FILE OUT OLD NEW` |
+| `retag_swift_classes` | `retag_swift_classes.sh` → `machotool retag-swift FILE OUT`, once per file, installed over each `FILE` |
+| `fix_macho` | `fix_macho.sh` → `machotool lc` / `dylib` / `segment`, or `machotool edit FILE OUT -` when more than one command's worth (two renames already are) |
 
 plus the two files every wrapper sources:
 
 | file | installed as | what it does |
 |---|---|---|
-| `translate.sh` | `macho9-translate.sh` | old argv → the `macho9` command line(s) it means. Pure text; runs nothing. |
-| `macho9-compat.sh` | `macho9-compat.sh` | finds `macho9`, prints the teaching message, and runs the translation. |
+| `translate.sh` | `machotool-translate.sh` | old argv → the `machotool` command line(s) it means. Pure text; runs nothing. |
+| `machotool-compat.sh` | `machotool-compat.sh` | finds `machotool`, prints the teaching message, and runs the translation. |
 
 ## Why the names are unchanged
 
@@ -45,8 +45,8 @@ invocations have to already resolve to the same names here.
 
 ### What a packager has to change, and who has not been told
 
-**A wrapper cannot work without `macho9`, `macho9-compat.sh` and
-`macho9-translate.sh` sitting in the same directory.** `install.sh` fetches
+**A wrapper cannot work without `machotool`, `machotool-compat.sh` and
+`machotool-translate.sh` sitting in the same directory.** `install.sh` fetches
 `patch_macho`, `change_dylib` and `add_version_min` **by name**, three files;
 those three now need three more beside them. Fetch the three alone and you get
 three names that cannot run.
@@ -82,7 +82,7 @@ for why they would be rare:
     library-ordinal map before it looks at whether any operation could
     renumber. `compat/rename_segment.sh`'s header has the measurement. It is
     one file out of 300 in `tests/differential.sh`'s corpus, and closing it
-    means changing `macho9`.
+    means changing `machotool`.
   * `patch_macho`'s `OUT` gets a NEW INODE where the C tool's
     `open(O_WRONLY|O_CREAT|O_TRUNC)` wrote through the path and kept it. The
     install is `mv`, like every other wrapper's, which is what makes `OUT`
@@ -112,14 +112,14 @@ for why they would be rare:
     the shared rewrite drivers' (`mr_apply_file`, `mv_add_version_min`) own
     exit code verbatim, with no mapping at all -- unlike `fix_macho`,
     `patch_macho` and `rename_segment`, which translate every nonzero
-    macho9 exit to one flat historical code, and `retag_swift_classes`,
+    machotool exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
     header has it) and is likewise unaffected by this. (EVERY wrapper whose
     verb now writes an output the wrapper installs -- all six, `patch_macho`
     included: its verb's output goes to a temp beside the `OUT` it was asked
     for, and is installed onto it --
     has refusals of its OWN on top of that,
-    exiting 1, made before macho9 runs for the argument in question: an
+    exiting 1, made before machotool runs for the argument in question: an
     absent or unwritable `FILE`, a `FILE` carrying other hard links, and a
     failed install. Those are the wrapper's, not a forwarded code -- and for
     `retag_swift_classes` an absent or unwritable argument is a WORDING
@@ -127,7 +127,7 @@ for why they would be rare:
     before the wrapper's own pre-check began answering first) have both
     sides agreeing on `perror(path)`'s
     "`<path>: No such file or directory`", which is still what
-    `mswift_retag_file` itself prints when macho9 actually reaches the
+    `mswift_retag_file` itself prints when machotool actually reaches the
     open() -- but the wrapper's own pre-check now answers first, in its own
     words (`open: No such file or directory`), so only the exit code still
     matches. `add_version_min.sh` has no such gap: its own C tool's
@@ -162,8 +162,8 @@ for why they would be rare:
     pure segment rename -- every rewrite `change_dylib` can ask for --
     unless `MACHO_NO_VERIFY` is set. `src/rewrite.c`'s own comment on that
     fold has the reasoning. An invocation touching more than one family is
-    no longer a sequence of `macho9` lines with shell steps between them:
-    it is one `macho9 edit FILE OUT -`, whose exit code is `me_run`'s own, from
+    no longer a sequence of `machotool` lines with shell steps between them:
+    it is one `machotool edit FILE OUT -`, whose exit code is `me_run`'s own, from
     the same `MR_REFUSED`/`MR_FAIL` vocabulary. `compat/change_dylib.sh`
     and `compat/add_version_min.sh`'s own headers have the rest of the
     detail.
@@ -175,7 +175,7 @@ combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 argument vocabulary short enough, that nothing in it ever needs to grow. 72
 of those rows DO give one old mixed-family `-grow` two chances to grow
 (compat/change_dylib.c issued one grow call for the whole operation set; the
-emitted `macho9 edit` script runs a dylib statement and an rpath statement as
+emitted `machotool edit` script runs a dylib statement and an rpath statement as
 separate passes under one `allow-grow`, each capable of growing on its own),
 and no row forces either of those to actually grow. `tests/change_dylib_test.sh`'s "mixed-family
 double grow" case closes that gap directly (not through the sweep) with
@@ -198,7 +198,7 @@ exception is `fix_macho`, whose stdout is deliberately not reproduced at all —
 see below.
 
 Stderr is where the wrappers deliberately differ: each one prints the
-`macho9` equivalent of the invocation it just received, so the caller's
+`machotool` equivalent of the invocation it just received, so the caller's
 script keeps working while the message teaches the new grammar. That is the
 retirement plan's "phase one", and stdout stays clean precisely so this can
 go on stderr.
@@ -233,7 +233,7 @@ each with its reason:
    instead of rewriting `LC_ID_DYLIB` — `fix_macho.c`'s own comment said
    "nothing in `changes` is ever meant to match it", but its match block had
    no exclusion for `LC_ID_DYLIB` and rewrote it anyway. Both sides exit 0
-   and the bytes differ; nothing on stderr named the reason. `macho9`'s
+   and the bytes differ; nothing on stderr named the reason. `machotool`'s
    `-change` now matches what `install_name_tool` does (`-id`, never
    `-change`, touches identity) — `src/rewrite.c` enforces it, and
    `tests/wrapper_test.sh` pins it on a dylib fixture, alongside a real
@@ -241,8 +241,8 @@ each with its reason:
 
 `fix_macho`'s stdout is not reproduced either, and that is deliberate:
 `Processing thin Mach-O:` / `Changed: X -> Y` / `File updated: F` /
-`No changes needed: F` are replaced by `macho9`'s own reporting plus the
-per-operation `macho9: <path> matched nothing` lines on stderr, which say more
+`No changes needed: F` are replaced by `machotool`'s own reporting plus the
+per-operation `machotool: <path> matched nothing` lines on stderr, which say more
 than `No changes needed` could. This repo's own `tests/change_dylib_test.sh`
 was `fix_macho`'s only caller.
 
@@ -250,6 +250,6 @@ Its two repeated options are still capped, in `compat/translate.sh`'s
 `mt_room`, with the same wording — the fixed-size arrays they filled had no
 bounds check at all, which is the same stack smash `docs/PROPOSAL.md` records
 being fixed in `change_dylib` alone. The `-rename_seg` cap exists nowhere
-else: `macho9` sees one rename at a time either way — its `segment` verb takes
+else: `machotool` sees one rename at a time either way — its `segment` verb takes
 one pair, and an edit script's `segment rename` statement is one pair — so
 nothing downstream would ever count them.

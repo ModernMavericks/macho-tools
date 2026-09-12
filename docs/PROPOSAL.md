@@ -107,7 +107,7 @@ Two consequences for this toolkit:
 
 ## Shape
 
-One repo, one library, one multi-call CLI. Working name `macho9` — Mach-O
+One repo, one library, one multi-call CLI. Working name `machotool` — Mach-O
 surgery for hosts too old to have any: builds with stock 10.9 clang, no
 dependencies, edits binaries from toolchains fifteen years newer.
 
@@ -121,7 +121,7 @@ src/
   grow.c       header growth + every base-relative fixup it invalidates
   ordinals.c   the library-ordinal map: build, apply, validate
   live.h       header-only, malloc-free: the same queries against loaded images
-cli/macho9.c   verbs
+cli/machotool.c   verbs
 tests/         hermetic fixtures + end-to-end against a real binary
 ```
 
@@ -136,32 +136,32 @@ Grammar settled 2026-09-08. The family is a **subcommand**, the operation is a
 **flag**, and both are always explicit.
 
 ```
-macho9 declassify IN OUT      chained fixups -> LC_DYLD_INFO_ONLY   (patch_macho)
+machotool declassify IN OUT      chained fixups -> LC_DYLD_INFO_ONLY   (patch_macho)
 
-macho9 dylib FILE OUT [--allow-grow] OP...    (change_dylib + fix_macho)
+machotool dylib FILE OUT [--allow-grow] OP...    (change_dylib + fix_macho)
     -replace  OLD NEW     rewrite a path in place; position and ordinal kept
     -delete   PATH        remove it; renumber survivors; refuse if symbols bind
     -append   PATH        add a dependency, initialized LAST
     -insert   PATH        add a dependency, initialized FIRST; renumbers
     -reexport PATH        promote LC_LOAD_DYLIB -> LC_REEXPORT_DYLIB
 
-macho9 rpath FILE OUT [--allow-grow] OP...
+machotool rpath FILE OUT [--allow-grow] OP...
     -replace  OLD NEW     rewrite a search path in place, keeping its position
     -delete   PATH        remove a search path
     -append   PATH        add one, searched LAST
     -insert   PATH        add one, searched FIRST
 
-macho9 lc FILE OUT OP...
+machotool lc FILE OUT OP...
     -delete   KIND        uuid | codesig | source-version | build-version
                           | code-sign-drs
 
-macho9 grow FILE OUT N                                      (macho_grow)
-macho9 minos FILE OUT 10.9 [--allow-grow]                   (add_version_min)
-macho9 segment FILE OUT OLD NEW                             (rename_segment)
-macho9 retag-swift FILE OUT                                 (retag_swift_classes)
-macho9 info FILE              dump load commands, ordinals, pads
-macho9 verify FILE            check the invariants
-macho9 port FILE --for 10.9 --insert @loader_path/libA.dylib ...
+machotool grow FILE OUT N                                      (macho_grow)
+machotool minos FILE OUT 10.9 [--allow-grow]                   (add_version_min)
+machotool segment FILE OUT OLD NEW                             (rename_segment)
+machotool retag-swift FILE OUT                                 (retag_swift_classes)
+machotool info FILE              dump load commands, ordinals, pads
+machotool verify FILE            check the invariants
+machotool port FILE --for 10.9 --insert @loader_path/libA.dylib ...
 ```
 
 ### Why these names
@@ -250,11 +250,11 @@ the wrapper between the rewrite and the `mv` converts this whole class from
 ### Migration
 
 The CLI break is real: every existing invocation changes. Settled approach is
-**build it, ship behind a probe** — `macho9 --capabilities` reports the grammar
+**build it, ship behind a probe** — `machotool --capabilities` reports the grammar
 and verbs a given build accepts, so the tool and the wrapper never have to move
 in lockstep, and `MF_GEN` coordinates retiring the old spellings rather than
 gating a flag day. `change_dylib` survives as a compatibility entry point over
-`macho9 dylib` for the transition, and is removed at a later `MF_GEN`.
+`machotool dylib` for the transition, and is removed at a later `MF_GEN`.
 
 ## One repo — `macho-tools`
 
@@ -286,6 +286,11 @@ hosting `patch_macho`/`change_dylib`/`add_version_min` for `install.sh` from
 that same repo, exactly as it builds them from `Mavericks-Porting-Resources`
 today; ModernMavericks additionally ships a `.pkg` for people who want the tools
 on their 10.9 machine.
+
+**Naming, per the family conventions.** App identity — the `.app` bundle,
+`CFBundleName`, the Sparkle `PRODUCT_NAME` — is **"Mavericks Machotool"**.
+Prose — the `.pkg` title, the appcast channel title, README prose — is
+**"Machotool for Mavericks"**. The bundle id is `dev.modernmavericks.machotool`.
 
 **The repo count follows ownership, not function.** If Wowfunhappy would rather
 keep the Mach-O tools under his own account — reasonable, `patch_macho` and
@@ -330,7 +335,7 @@ The order below assumes the new repo from day one rather than a later split:
 against `change_dylib` as it stands — it is the only part with a user-visible
 payoff, and the migration probe means it need not wait for the rest. The one
 thing not worth doing twice is renaming: `change_dylib` should become
-`macho9 dylib` or stay `change_dylib`, never something in between.
+`machotool dylib` or stay `change_dylib`, never something in between.
 
 ## How this meets avxemu
 

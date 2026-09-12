@@ -31,7 +31,7 @@ Data and one derivation function. Nothing consumes it yet, so this task is safe 
 **Files:**
 - Create: `src/relations.h`, `src/relations.c`
 - Create: `tests/relations_test.c`
-- Modify: `CMakeLists.txt` — add `src/relations.c` to `macho9core`; add the `relations_test` target and test
+- Modify: `CMakeLists.txt` — add `src/relations.c` to `machotoolcore`; add the `relations_test` target and test
 
 **Interfaces:**
 - Consumes: `mi_image` (`src/image.h`).
@@ -160,7 +160,7 @@ Make `mrel_live` return `MREL_HEADER_PAD` unconditionally and confirm the func-s
 # made cli_test's build-version fixtures pass here and fail on the cross runner.
 add_executable(relations_test tests/relations_test.c)
 target_compile_options(relations_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(relations_test PRIVATE macho9core)
+target_link_libraries(relations_test PRIVATE machotoolcore)
 add_test(NAME relations_test COMMAND relations_test)
 ```
 
@@ -179,7 +179,7 @@ git commit -m "feat: declare the five relations and which are live in an image"
 
 **Files:**
 - Modify: `src/script.h`, `src/script.c` — the table gains columns
-- Modify: `cli/macho9.c` — delete `DYLIB_OPS`; the verb parser and `--capabilities` read the merged table
+- Modify: `cli/machotool.c` — delete `DYLIB_OPS`; the verb parser and `--capabilities` read the merged table
 - Modify: `tests/script_test.c`, `tests/cli_test.sh`
 
 **Interfaces:**
@@ -268,16 +268,16 @@ Each `MS_TABLE` row gains: `flag` (the verb spelling, `NULL` for script-only), `
 
 - [ ] **Step 4: Point the verb parser and `--capabilities` at the merged table**
 
-Delete `DYLIB_OPS` and `N_DYLIB_OPS` from `cli/macho9.c`. `cmd_dylib_or_rpath`'s flag matching and the capability printer both walk `ms_table_row`, filtering on `modes`.
+Delete `DYLIB_OPS` and `N_DYLIB_OPS` from `cli/machotool.c`. `cmd_dylib_or_rpath`'s flag matching and the capability printer both walk `ms_table_row`, filtering on `modes`.
 
 The `--capabilities` **output text must not change**: it is a documented interface that wrappers read. Assert that in `tests/cli_test.sh`:
 
 ```sh
 # The merged table must produce the SAME capabilities text as the two tables
-# did. This is a documented interface -- compat/macho9-compat.sh probes it --
+# did. This is a documented interface -- compat/machotool-compat.sh probes it --
 # so merging the tables is allowed to change where the text comes from and
 # not what it says.
-"$MACHO9" --capabilities >"$T/caps_merged.out" 2>&1
+"$MACHOTOOL" --capabilities >"$T/caps_merged.out" 2>&1
 grep -q "verb dylib ops=replace,delete,append,insert,reexport" "$T/caps_merged.out" \
     && ok "capabilities: dylib op list unchanged by the merge" \
     || bad "capabilities merge" "dylib ops line changed: $(grep "^verb dylib" "$T/caps_merged.out")"
@@ -286,7 +286,7 @@ grep -q "verb rpath ops=replace,delete,append,insert" "$T/caps_merged.out" \
     || bad "capabilities merge" "rpath ops line changed: $(grep "^verb rpath" "$T/caps_merged.out")"
 ```
 
-Before writing those two `grep` patterns, run `macho9 --capabilities` on the pre-merge build and copy the real lines. Do not trust the patterns above to match verbatim — they are the shape, and the build is the authority.
+Before writing those two `grep` patterns, run `machotool --capabilities` on the pre-merge build and copy the real lines. Do not trust the patterns above to match verbatim — they are the shape, and the build is the authority.
 
 - [ ] **Step 5: Run everything and watch it pass**
 
@@ -301,7 +301,7 @@ sh tests/known-callers.sh /private/tmp/mm-build/schmonz/macho-tools/native
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/script.h src/script.c cli/macho9.c tests/script_test.c tests/cli_test.sh
+git add src/script.h src/script.c cli/machotool.c tests/script_test.c tests/cli_test.sh
 git commit -m "refactor: one operation table, carrying what each op disturbs"
 ```
 
@@ -431,7 +431,7 @@ git commit -m "test: prove the derived applicability against mr_is_rename_only"
 
 - [ ] **Step 1: Rewrite the case**
 
-Keep the fixture, the structure, and the failure message `"was NOT refused, so the gate is gone"`. Change the operation to one that rebuilds `__LINKEDIT` and re-bases — `fixups set classic` via `macho9 edit`, or the `declassify` verb if that is the spelling at the time.
+Keep the fixture, the structure, and the failure message `"was NOT refused, so the gate is gone"`. Change the operation to one that rebuilds `__LINKEDIT` and re-bases — `fixups set classic` via `machotool edit`, or the `declassify` verb if that is the spelling at the time.
 
 **Do not delete the case.** Its purpose — proving the skip is narrow rather than a hole — is *more* important after Task 6, not less, because the skip gets much wider.
 
@@ -450,7 +450,7 @@ git commit -m "test: gate-is-narrow assertion moves to an op that disturbs the r
 ### Task 6: Verbs build scripts; `mr_is_rename_only` is deleted
 
 **Files:**
-- Modify: `cli/macho9.c` — each `cmd_*` builds an `ms_script` and calls `me_run`
+- Modify: `cli/machotool.c` — each `cmd_*` builds an `ms_script` and calls `me_run`
 - Modify: `src/rewrite.c` — delete `mr_is_rename_only` and its layout tripwire; the gate's applicability comes from the derivation
 - Delete: `tests/rename_only_differential.c`; remove its CMake entries
 - Modify: `CMakeLists.txt`
@@ -497,7 +497,7 @@ The digest must be unmoved: this plan changes which checks run, never what gets 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cli/macho9.c src/rewrite.c src/rewrite.h CMakeLists.txt
+git add cli/machotool.c src/rewrite.c src/rewrite.h CMakeLists.txt
 git rm tests/rename_only_differential.c
 git commit -m "refactor: verbs lower to scripts; applicability is derived, not hand-written"
 ```

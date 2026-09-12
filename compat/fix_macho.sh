@@ -46,7 +46,7 @@
 # The other five wrappers close their tool's divergences. This one does NOT,
 # and that is the point: the repo owner ruled these five differences
 # improvements to ADOPT rather than behaviour to preserve
-# (docs/superpowers/plans/2026-09-10-report-what-macho9-did.md, "The decision
+# (the plan reporting what the pre-rename build did, "The decision
 # this plan rests on"). Every one of them is a case where fix_macho and the
 # shared rewriter give different answers, and the shared rewriter's is better.
 #

@@ -636,9 +636,9 @@ $3
             # the "plausible-looking command that would do something else" the
             # retirement plan forbids, so it refused instead.
             #
-            # WHAT REVERSED IT: the repo owner's ruling, recorded in
-            # docs/superpowers/plans/2026-09-10-report-what-macho9-did.md ("The
-            # decision this plan rests on"), that fix_macho's divergences from
+            # WHAT REVERSED IT: the repo owner's ruling, recorded in the plan
+            # reporting what the pre-rename build did ("The decision this plan
+            # rests on"), that fix_macho's divergences from
             # the shared drivers are improvements to ADOPT deliberately rather
             # than behaviour to preserve -- chaining is listed there as "doing
             # what was asked". compat/fix_macho.c is gone; there is no longer a
