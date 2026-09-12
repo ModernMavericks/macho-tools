@@ -134,3 +134,59 @@ int wa_write_atomic(const char *path, mode_t mode, const uint8_t *buf, size_t si
     free(tmpl);
     return 0;
 }
+
+int wa_is_input(const char *in, const char *out) {
+    char rin[PATH_MAX], rout[PATH_MAX];
+    if (realpath(in, rin) && realpath(out, rout) && strcmp(rin, rout) == 0) return 1;
+    struct stat si, so;
+    if (stat(in, &si) == 0 && stat(out, &so) == 0 &&
+        si.st_dev == so.st_dev && si.st_ino == so.st_ino) return 1;
+    return 0;
+}
+
+int wa_write_new(const char *in, const char *out, const uint8_t *buf, size_t size) {
+    if (wa_is_input(in, out)) {
+        fprintf(stderr, "%s: the output is the input; refusing to write it\n", out);
+        return WA_IS_INPUT;
+    }
+    /* An existing `out` that is a symlink is followed, so the link keeps
+     * pointing where it did and its target gets the new content. */
+    char real[PATH_MAX];
+    const char *target = (realpath(out, real) != NULL) ? real : out;
+
+    struct stat ist;
+    int have_in = (stat(in, &ist) == 0);
+
+    size_t tlen = strlen(target) + 8;
+    char *tmpl = (char *)malloc(tlen);
+    if (!tmpl) { fprintf(stderr, "out of memory\n"); return WA_FAILED; }
+    snprintf(tmpl, tlen, "%s.XXXXXX", target);
+    int tfd = mkstemp(tmpl);
+    if (tfd < 0) { perror("mkstemp"); free(tmpl); return WA_FAILED; }
+
+    if (have_in) {
+        fchmod(tfd, ist.st_mode & 07777);
+        fchown(tfd, ist.st_uid, ist.st_gid);   /* best-effort: needs privilege */
+    }
+    if (wa_copy_xattrs(in, tfd) != 0)
+        fprintf(stderr, "warning: %s: could not copy all extended attributes "
+                        "(e.g. com.apple.quarantine) from %s\n", target, in);
+
+    size_t off = 0;
+    int failed = 0;
+    while (off < size) {
+        ssize_t n = write(tfd, buf + off, size - off);
+        if (n < 0) { perror("write"); failed = 1; break; }
+        off += (size_t)n;
+    }
+    if (!failed && fsync(tfd) != 0) { perror("fsync"); failed = 1; }
+    close(tfd);
+    if (failed || rename(tmpl, target) != 0) {
+        if (!failed) perror("rename");
+        unlink(tmpl);
+        free(tmpl);
+        return WA_FAILED;
+    }
+    free(tmpl);
+    return 0;
+}

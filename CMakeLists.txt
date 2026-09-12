@@ -255,6 +255,19 @@ target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(linkedit_test PRIVATE macho9core)
 add_test(NAME linkedit_test COMMAND linkedit_test)
 
+# Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
+# directory under $TMPDIR: it never writes its input, it writes its output
+# whole or not at all, and the output carries the input's metadata.
+# MallocScribble for the same reason as script_test: wa_write_new and its
+# helpers free the temp-path and xattr buffers on every path, and a
+# use-after-free there reads garbage rather than crashing unless freed
+# memory is scribbled.
+add_executable(atomic_write_test tests/atomic_write_test.c)
+target_compile_options(atomic_write_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(atomic_write_test PRIVATE macho9core)
+add_test(NAME atomic_write_test COMMAND atomic_write_test)
+set_tests_properties(atomic_write_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
 # Fixture helpers, not tests: build and inspect a fat container without
 # system lipo, whose accepted architectures are not the suites' to pin.
 # Built beside macho9 so every CLI suite finds them in the directory it is
