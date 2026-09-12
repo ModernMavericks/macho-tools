@@ -53,14 +53,21 @@ sha()   { shasum -a 256 < "$1" | cut -d' ' -f1; }
 # strip_vm FILE -- remove FILE's LC_VERSION_MIN_MACOSX, so add_version_min has
 # something to do to it. tests/fixture.macho is a real 10.9 binary and already
 # carries one, and a wrapper that installed nothing would pass an "it landed"
-# assertion just as well as one that installed correctly. The reader is
-# tests/strip_version_min.c, shared with tests/cli_test.sh, which needs the
-# same fixture for the same reason; built here on first use.
+# assertion just as well as one that installed correctly. The program that
+# does it is tests/strip_version_min.c, shared with tests/cli_test.sh, which
+# needs the same fixture for the same reason; built here on first use.
+#
+# A FAILURE HERE IS LOUD, via bad(), rather than a return code the callers
+# below would have to check one by one: a silent strip failure leaves an
+# unstripped fixture, against which every "the command is there afterward"
+# assertion passes without the wrapper having done anything at all.
 strip_vm() {
     [ -x "$T/strip_version_min" ] \
-        || "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c" \
-        || return 1
-    "$T/strip_version_min" "$1" >/dev/null
+        || "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c" 2>"$T/strip_vm.out" \
+        || { bad "strip_vm" "cannot build $HERE/strip_version_min.c: $(cat "$T/strip_vm.out")"; return 1; }
+    "$T/strip_version_min" "$1" >"$T/strip_vm.out" 2>&1 \
+        || { bad "strip_vm" "$1: $(cat "$T/strip_vm.out")"; return 1; }
+    return 0
 }
 
 # firstline_is <file> <exact text> -- string equality, never a regex. The
@@ -461,6 +468,21 @@ ln -s w_real "$T/w_link"
 [ -L "$T/w_link" ] && "$BIN/macho9" info "$T/w_real" | grep -q LC_VERSION_MIN_MACOSX \
     && ok "wrapper: ... through the link, which is still a link" || bad "wrapper symlink" "link replaced or target unchanged"
 
+# mw_finish DISCARDS a temp whose bytes already match the target rather than
+# mv-ing an identical copy over it -- the C tool wrote nothing when nothing
+# changed, and a rename would hand the file a fresh inode (and leave every
+# other name for the old one behind). A second run on the file the run above
+# just converted is exactly that case, and the INODE is what distinguishes
+# "discarded" from "installed an identical copy"; the bytes cannot.
+w_ino=$(stat -f %i "$T/w_real")
+( cd "$T" && "$BIN/add_version_min" w_link ) >"$T/w2.out" 2>/dev/null
+[ "$(stat -f %i "$T/w_real")" = "$w_ino" ] \
+    && ok "wrapper: a run that changes nothing discards its temp, keeping the inode" \
+    || bad "wrapper no-op run" "the target got a new inode"
+grep -q "already present" "$T/w2.out" \
+    && ok "wrapper: ... and prints the C tool's 'already present' line" \
+    || bad "wrapper no-op run" "stdout: $(cat "$T/w2.out")"
+
 cp "$FIXTURE" "$T/w_h1"; strip_vm "$T/w_h1"; ln "$T/w_h1" "$T/w_h2"
 h_before=$(shasum -a 256 < "$T/w_h1")
 rc=0; "$BIN/add_version_min" "$T/w_h1" >/dev/null 2>"$T/wh.err" || rc=$?
@@ -469,6 +491,23 @@ rc=0; "$BIN/add_version_min" "$T/w_h1" >/dev/null 2>"$T/wh.err" || rc=$?
 grep -q "hard link" "$T/wh.err" && ok "wrapper: ... and says why" || bad "wrapper hard link" "$(cat "$T/wh.err")"
 ls -a "$T" | grep -q 'macho9-compat' && bad "wrapper" "a temp file was left behind" \
     || ok "wrapper: no temp file left behind"
+
+# A DIRECTORY IS NOT A HARD-LINK PROBLEM. Every directory's link count is
+# greater than one (`.`, its parent's entry, one per subdirectory), so a
+# link-count check that did not ask whether it was looking at a regular file
+# would refuse one as "has N hard links" and offer a remedy -- break the link
+# -- that means nothing. mw_prepare checks regular files only, so a directory
+# falls through to macho9 and gets a true answer instead.
+mkdir -p "$T/w_dir/sub1" "$T/w_dir/sub2"
+rc=0; ( cd "$T" && "$BIN/add_version_min" w_dir ) >/dev/null 2>"$T/wd.err" || rc=$?
+grep -q "hard link" "$T/wd.err" \
+    && bad "wrapper directory" "diagnosed as a hard-link problem: $(cat "$T/wd.err")" \
+    || ok "wrapper: a directory is not diagnosed as a hard-link problem"
+[ "$rc" -ne 0 ] \
+    && ok "wrapper: ... it is still refused (exit $rc), by macho9's own open" \
+    || bad "wrapper directory" "exit 0 on a directory"
+ls -a "$T" | grep -q 'macho9-compat' && bad "wrapper directory" "a temp file was left behind" \
+    || ok "wrapper: ... and left no temp beside it"
 
 cp "$FIXTURE" "$T/w_meta"; strip_vm "$T/w_meta"; chmod 0751 "$T/w_meta"
 xattr -w com.apple.quarantine "0081;00000000;test;" "$T/w_meta"

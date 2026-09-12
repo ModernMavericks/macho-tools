@@ -13,15 +13,25 @@
 # knows that floor); `macho9 minos` refuses any other, which is why the
 # translation can name it literally rather than passing something through.
 #
-# THE IN-PLACE EDIT. add_version_min rewrote FILE; macho9 never writes the
-# file it is given. So this wrapper does what the old tool looked like it did,
-# safely: mw_prepare names a temp beside the file FILE really is (following
-# symlinks, refusing an unwritable FILE or one with other hard links),
-# mw_retranslate re-emits the command with that temp as OUT, mw_run_to_tmp
-# runs it, and mw_finish mv's the temp over the target -- or discards it when
-# the bytes did not change, since the C tool wrote nothing in that case.
-# macho9-compat.sh's "the install path" section has the reasoning for each
-# step; all of it is shared, none of it is this wrapper's own.
+# THE IN-PLACE EDIT. add_version_min rewrote FILE; `macho9 minos` does not
+# write the file it is given. So this wrapper does what the old tool looked
+# like it did, safely: mw_prepare names a temp beside the file FILE really is
+# (following symlinks, refusing an unwritable FILE or one with other hard
+# links), mw_retranslate re-emits the command with that temp as OUT,
+# mw_run_to_tmp runs it, and mw_finish mv's the temp over the target -- or
+# discards it when the bytes did not change, since the C tool wrote nothing in
+# that case. macho9-compat.sh's "the install path" section has the reasoning
+# for each step; all of it is shared, none of it is this wrapper's own.
+#
+# ONE CONSEQUENCE WORTH NAMING: creating a temp beside FILE and renaming it
+# needs the DIRECTORY writable, where the C tool needed only FILE itself to be
+# -- it opened FILE O_RDWR and wrote through that descriptor, never creating a
+# second name. So a writable binary inside a read-only directory, which
+# add_version_min patched, now fails: `mkstemp: Permission denied`, exit 2,
+# from macho9's own write of the temp, with FILE untouched. compat/
+# change_dylib.sh's header records the same shape for the same reason (the
+# mirror-image case, an unwritable FILE in a writable directory, is what
+# mw_prepare's writability check exists to keep refusing).
 #
 # EXIT CODES. macho9's, forwarded unchanged, with the wrapper's own refusals
 # at 1. The old C tool returned mv_add_version_min's own 0/1 (0 ok, 1 the flat

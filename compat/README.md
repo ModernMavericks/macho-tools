@@ -100,11 +100,16 @@ for why it would be rare:
     `patch_macho` and `rename_segment`, which translate every nonzero
     macho9 exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
-    header has it) and is likewise unaffected by this. (Both still have
-    refusals of their OWN, made before macho9 runs and exiting 1: an absent
-    or unwritable `FILE`, and -- wherever the wrapper installs its result
-    over `FILE` -- a `FILE` carrying other hard links. Those are the
-    wrapper's, not a forwarded code.) A CONSIDERED refusal
+    header has it) and is likewise unaffected by this. (`add_version_min`
+    has refusals of its OWN on top of that, made before macho9 runs and
+    exiting 1, because it installs its result over `FILE` itself: an absent
+    or unwritable `FILE`, a `FILE` carrying other hard links, and a failed
+    install. Those are the wrapper's, not a forwarded code. `change_dylib`'s
+    own unwritable-`FILE` guard exits 2 instead, deliberately: it reproduces
+    what `mr_apply_file`'s own `open` failure gives on the path that still
+    reaches it, rather than inventing a second answer.
+    `compat/change_dylib.sh`'s header has the reasoning.) A CONSIDERED
+    refusal
     (the input examined and declined) still exits 1, matching the C tool by
     coincidence, not by construction; but a genuine operational failure
     (open, fstat, read or write failing,

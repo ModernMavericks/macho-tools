@@ -5,10 +5,12 @@
 #   MW_DIR=... ; . "$MW_DIR/macho9-compat.sh"
 #
 # Each wrapper is then a handful of lines of its own: translate this argv,
-# teach the equivalent on stderr, run it -- into a temp beside the caller's
-# file, since macho9 never writes the file it is given -- install that temp
-# over the file, and map the exit code and stdout back to what the C tool it
-# replaced would have produced.
+# teach the equivalent on stderr, run it, and map the exit code and stdout
+# back to what the C tool it replaced would have produced. A wrapper whose
+# verb has been converted to write an OUTPUT instead of rewriting its input
+# has two more steps -- run it into a temp beside the caller's file, then
+# install that temp over the file. add_version_min.sh is the first; see "the
+# install path" below.
 #
 # WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. Task 1 put the whole
 # old-grammar-to-macho9 translation in ONE file (compat/translate.sh) so that
@@ -265,12 +267,13 @@ mw_require_writable() {
 
 # ---- the install path ----------------------------------------------------
 #
-# macho9 never writes the file it is given: every rewriting verb is now
-# `macho9 VERB FILE OUT ...`. The historical tools DID edit FILE in place, and
-# their callers still expect that, so a wrapper reproduces it in the only way
-# that is safe: write a temp beside the real target, then mv it over. The five
-# functions below are that sequence, shared rather than copied into each
-# wrapper:
+# macho9's rewriting verbs are being converted, one at a time, so that none of
+# them writes the file it is given: each becomes `macho9 VERB FILE OUT ...`.
+# `minos` is the first one converted; the rest follow. The historical tools DID
+# edit FILE in place, and their callers still expect that, so a wrapper whose
+# verb has moved reproduces it in the only way that is safe: write a temp
+# beside the real target, then mv it over. The five functions below are that
+# sequence, shared rather than copied into each wrapper as they arrive:
 #
 #   mw_prepare FILE       -> MW_TARGET, MW_TMPFILE   (and the refusals)
 #   mw_retranslate TOOL ARG...                       -> MW_CMDS naming the temp
@@ -308,7 +311,17 @@ mw_prepare() {
     else
         mw_require_writable "$1" || return 1
         MW_TARGET=$(mw_resolve "$1") || return 1
-        mw_links=$(stat -f %l "$MW_TARGET" 2>/dev/null) || mw_links=1
+        # REGULAR FILES ONLY. A directory's link count is always greater than
+        # one (`.`, its parent's entry, and one per subdirectory), so without
+        # this gate `add_version_min somedir` would be refused as a hard-link
+        # problem, with a remedy -- break the link -- that means nothing. A
+        # directory is not something this check has an opinion about at all:
+        # it falls through to macho9, whose open says `Is a directory`, which
+        # is what the C tool's own open(O_RDWR) said.
+        mw_links=1
+        if [ -f "$MW_TARGET" ]; then
+            mw_links=$(stat -f %l "$MW_TARGET" 2>/dev/null) || mw_links=1
+        fi
         if [ "$mw_links" -gt 1 ]; then
             printf '%s: %s has %d hard links; replacing it would leave the others with the old content. Break the link first, or run macho9 with an explicit output.\n' \
                 "$MW_TOOL" "$1" "$mw_links" >&2
@@ -326,8 +339,10 @@ mw_prepare() {
 }
 
 # mw_retranslate TOOL ARG... -- translate again, this time writing MW_TMPFILE.
-# The same argv translated a moment ago, with only the output named; a
-# difference means the translation depends on something it must not.
+# The same argv mw_translate accepted a moment ago, with only the output
+# named, so it cannot fail on its own: if it does, the translation depends on
+# something it must not, and that is the one difference this can observe --
+# it inspects the exit status, not the text.
 mw_retranslate() {
     MT_PROG0=$0
     MW_CMDS=$(MT_OUT=$MW_TMPFILE mt_translate "$@")

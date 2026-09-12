@@ -1275,7 +1275,7 @@ fi
 # regardless). The fixture is therefore test-tool-constructed, not
 # linker-constructed, for this one load command only.
 #
-# The reader itself is tests/strip_version_min.c, a file rather than a
+# The program that does it is tests/strip_version_min.c, a file rather than a
 # here-document because tests/wrapper_test.sh needs exactly the same fixture
 # for exactly the same reason, and one copy of it is enough.
 "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"

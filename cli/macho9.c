@@ -1,8 +1,8 @@
 /*
  * macho9 — the multi-call CLI the seven rewriters converge behind.
  *
- * Grammar settled in docs/PROPOSAL.md ("Verbs"); task-4-brief.md gives the
- * verbatim subset this build targets:
+ * Grammar settled in docs/PROPOSAL.md ("Verbs"). The subset this build
+ * actually implements, verbatim:
  *
  *   macho9 declassify IN OUT
  *   macho9 dylib FILE [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert -reexport

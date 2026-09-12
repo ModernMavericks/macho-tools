@@ -29,12 +29,14 @@
 #     Arguments are single-quoted only when they contain something
 #     outside [A-Za-z0-9_@%+=:,./-], so the common case stays readable and the
 #     hostile case stays correct.
-#   * macho9 NEVER WRITES THE FILE IT IS GIVEN, so a rewriting verb names an
-#     OUTPUT of its own. Which output depends on who is reading: with MT_OUT
-#     set (a wrapper, naming the temp it will install) the emitted command
-#     writes exactly that and nothing follows it; without it -- the teaching
-#     form a human sees -- the output is FILE.new and the command is followed
-#     by `mv -f FILE.new FILE`, so what is shown is a complete, pasteable
+#   * A CONVERTED VERB NAMES AN OUTPUT of its own, because it no longer writes
+#     the file it is given. macho9's rewriting verbs are being converted one
+#     at a time; `minos` is the first, so `add_version_min` is so far the only
+#     translation here that names one. Which output depends on who is reading:
+#     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
+#     command writes exactly that and nothing follows it; without it -- the
+#     teaching form a human sees -- the output is FILE.new and the command is
+#     followed by `mv -f FILE.new FILE`, so what is shown is a pasteable
 #     equivalent of the old in-place edit rather than half of one.
 #     mt_out_for and mt_install_line are that fork, in one place.
 #   * A command is USUALLY one line, but `macho9 edit FILE -` carries its
@@ -247,8 +249,17 @@ mt_qargs() {
 # The output a translated command writes. A wrapper sets MT_OUT to its temp
 # file. Without it -- the teaching form, printed on stderr and by
 # `sh translate.sh` -- the output is FILE.new, and the caller appends
-# mt_install_line so the equivalent shown is complete: macho9 never writes
-# its input, so replacing FILE is a second step.
+# mt_install_line, because a converted verb does not write its input and
+# replacing FILE is therefore a second step a reader has to be shown.
+#
+# THE TEACHING FORM IS THE STRAIGHTFORWARD EQUIVALENT, NOT THE WRAPPER'S OWN
+# SEQUENCE. Pasted, `mv -f FILE.new FILE` replaces FILE -- so if FILE is a
+# symlink it becomes a regular file, which is the answer `mv` gives and the
+# one a reader typing this would get. A wrapper does something narrower: it
+# resolves FILE through its symlinks first (mw_resolve, macho9-compat.sh) and
+# installs onto the target, so the link survives and everything else pointing
+# through it sees the new content. Teaching the resolve step would be teaching
+# the wrapper's implementation rather than the command a human wants.
 mt_out_for() {
     if [ -n "${MT_OUT:-}" ]; then printf '%s' "$MT_OUT"; else printf '%s.new' "$1"; fi
 }
