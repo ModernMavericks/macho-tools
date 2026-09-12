@@ -209,8 +209,12 @@ README. Runs after item 9, since it inherits the `FILE OUT` grammar.
 
 Researched 2026-09-11 after the repo owner recalled a project running newer
 iLife/iWork on Mavericks. Full report, with sources and line references, in
-`.superpowers/research-ilife-iwork-backports.md` (git-ignored; move it into
-`docs/` if item 13 gets a spec).
+`.superpowers/research-ilife-iwork-backports.md`. **That path is untracked, not
+ignored** — `.gitignore` covers only the build directories, `/VERSION` and
+`CMakeUserPresets.json` — so the file is one `git clean -fdx` from gone. Both it
+and item 14's spike report want moving into `docs/` when either item gets a
+spec, after a read-through: this repo is public, so committing them is
+publishing, and they are subagent prose that has not had a documentation pass.
 
 **What exists.** One direct hit:
 `nfzerox/MavericksAppCompatibilityLayer`, which patches Keynote 6.6.2 / Pages
