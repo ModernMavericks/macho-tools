@@ -177,8 +177,14 @@ mw_translate() {
     # the install step mt_install_line appends to the teaching form, which is
     # a command a reader would type too. A statement line cannot be mistaken
     # for either -- every statement begins with its kind.
-    MW_NCMDS=$(printf '%s\n' "$MW_CMDS" | awk -v p="$(mt_pre_word) " \
-        'index($0, p) == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
+    #
+    # Through the environment, not `awk -v`, for the reason mw_run_to_tmp's own
+    # comment gives at length: `-v` escape-processes what it assigns, so a
+    # $MACHO9 containing a backslash would make awk look for a word the emitted
+    # lines do not start with, and every command would go uncounted.
+    MW_NCMDS=$(printf '%s\n' "$MW_CMDS" \
+        | MW_PRE="$(mt_pre_word) " awk \
+            'index($0, ENVIRON["MW_PRE"]) == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
     mw_teach
     return 0
 }
@@ -205,8 +211,8 @@ mw_teach() {
     # command itself is harmless, so the block still reads as a block. The
     # same two-part test mw_translate counts with, for the same reason.
     printf '%s\n' "$MW_CMDS" \
-        | awk -v p="$(mt_pre_word) " \
-            '{ if (index($0, p) == 1 || index($0, "mv -f ") == 1) print "    " $0; else print }' >&2
+        | MW_PRE="$(mt_pre_word) " awk \
+            '{ if (index($0, ENVIRON["MW_PRE"]) == 1 || index($0, "mv -f ") == 1) print "    " $0; else print }' >&2
     return 0
 }
 
@@ -374,10 +380,23 @@ mw_retranslate() {
 # fix_macho -rename_seg the temp-naming line is not the last one. A line naming
 # anything else still comes through -- that is somebody's contract, not this
 # function's to edit.
+#
+# THE PREFIX REACHES awk THROUGH THE ENVIRONMENT, NOT THROUGH `-v`, and that is
+# not a style choice: `awk -v x=VALUE` runs VALUE through the same escape
+# processing a string literal gets, so a path containing a backslash arrives at
+# awk as something else and the line this function exists to suppress leaks
+# through. Measured, before this was ENVIRON: `change_dylib 'back\slash/f'`
+# printed `Wrote back\slash/.f.macho9-compat.NNNNN (8528 bytes)` on stdout.
+# ENVIRON's values are taken verbatim (POSIX awk, and 10.9's), so the prefix awk
+# compares is the real temp path. The whole point of a temp beside the caller's
+# file is that its name is the caller's to choose, backslashes included -- so
+# every awk in this file passes its needle the same way, mw_translate's and
+# mw_teach's program-word tests included.
 mw_run_to_tmp() {
     mw_run >"$MW_T/out"
     mw_rc=$?
-    awk -v p="Wrote $MW_TMPFILE (" 'index($0, p) != 1' "$MW_T/out"
+    MW_WROTE_PREFIX="Wrote $MW_TMPFILE (" \
+        awk 'index($0, ENVIRON["MW_WROTE_PREFIX"]) != 1' "$MW_T/out"
     return "$mw_rc"
 }
 

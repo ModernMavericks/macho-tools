@@ -74,7 +74,11 @@ m9ip() {
     rm -f "$m9ip_tmp"
     m9ip_rc=0
     "$MACHO9" "$m9ip_verb" "$m9ip_file" "$m9ip_tmp" "$@" >"$T/m9ip.out" || m9ip_rc=$?
-    awk -v p="Wrote $m9ip_tmp (" 'index($0, p) != 1' "$T/m9ip.out"
+    # Through the environment, not `awk -v`: that escape-processes what it
+    # assigns, so a $T containing a backslash would leave the line unsuppressed.
+    # compat/macho9-compat.sh's mw_run_to_tmp, which this mirrors, has the
+    # measurement.
+    M9IP_PREFIX="Wrote $m9ip_tmp (" awk 'index($0, ENVIRON["M9IP_PREFIX"]) != 1' "$T/m9ip.out"
     if [ "$m9ip_rc" -eq 0 ]; then
         mv -f "$m9ip_tmp" "$m9ip_file" || return 2
     else
@@ -2489,6 +2493,46 @@ nwi segment __DATA __DATA_NWI
 "$MACHO9" info "$T/nwi_segment_out" | grep -q "segname=__DATA_NWI" \
     && ok "segment FILE OUT: OUT carries the renamed segment" \
     || bad "segment FILE OUT" "OUT lacks the renamed segment"
+
+# AN OUT THAT BEGINS WITH '-' IS REFUSED, not created. `dylib FILE
+# --allow-grow -append /x` is the flag-first habit from before these verbs took
+# an output, and nothing here treats a positional as a flag -- so without the
+# check it creates a regular file called "--allow-grow" and exits 0, doing
+# something the caller did not ask for. Every verb that takes an OUT gets the
+# same answer from the same place (m9_bad_out), so all six are asserted.
+# The operands after OUT are each verb's own, because the argc-exact verbs reach
+# their usage line before m9_bad_out if the count is wrong -- which would make
+# this pass for the wrong reason.
+for nwid_verb in dylib rpath lc segment minos retag-swift; do
+    case $nwid_verb in
+        dylib|rpath)  set -- -append /x ;;
+        lc)           set -- -delete uuid ;;
+        segment)      set -- __DATA __DATX ;;
+        minos)        set -- 10.9 ;;
+        retag-swift)  set -- ;;
+    esac
+    build_main "$T/nwid"
+    rm -f -- "$T/--nwid-flag"
+    rc=0
+    # Run IN $T with a bare OUT word, because that is the shape of the mistake:
+    # a flag-looking OUT is relative to the caller's directory, and a test that
+    # spelled it "$T/--nwid-flag" would be asserting about a path that does not
+    # begin with '-' at all. The `cd` is also what keeps the file the check
+    # exists to prevent out of the source tree when the check is not there.
+    ( cd "$T" && "$MACHO9" "$nwid_verb" nwid --nwid-flag "$@" ) \
+        >/dev/null 2>"$T/nwid.err" || rc=$?
+    [ "$rc" -eq 2 ] && [ ! -e "$T/--nwid-flag" ] && [ ! -e "$T/-append" ] \
+        && grep -q "which begins with '-'" "$T/nwid.err" \
+        && ok "$nwid_verb: an OUT beginning with '-' is refused (2), not created" \
+        || bad "$nwid_verb OUT=-flag" "rc $rc, exists=$([ -e "$T/--nwid-flag" ] && echo YES || echo no), stderr: $(cat "$T/nwid.err")"
+done
+# ... and the remedy the message names really does work, so the refusal is not
+# a wall in front of a legal path.
+build_main "$T/nwid2"
+( cd "$T" && "$MACHO9" lc nwid2 ./-nwid-out -delete uuid ) >/dev/null 2>"$T/nwid2.err" \
+    && [ -e "$T/-nwid-out" ] \
+    && ok "lc: ... and './-name', the remedy the message names, writes that file" \
+    || bad "lc OUT=./-name" "$(cat "$T/nwid2.err")"
 
 # A 0 EXIT MUST LEAVE OUT THERE, even when there was nothing to change: OUT is
 # the answer, so a caller that got exit 0 and no OUT would have been told the

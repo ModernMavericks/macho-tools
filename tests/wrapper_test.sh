@@ -216,11 +216,16 @@ sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
     && ok "change_dylib: a single-family run is byte-identical to macho9's, stdout included" \
     || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from macho9 dylib's; wrapper said [$(cat "$T/cd.out")] want [$(cat "$T/m9.want")]"
 
-# MORE THAN ONE FAMILY is ONE `macho9 edit FILE -`, so everything it touches is
-# FILE itself. It used to be a sequence run against a copy beside FILE named
-# `.FILE.macho9-compat.PID`, which is what made these two worth asserting: the
-# copy is gone, so nothing may appear beside FILE, and every line macho9 prints
-# must name FILE rather than some temporary it was handed instead.
+# MORE THAN ONE FAMILY is ONE `macho9 edit FILE - --output <temp>`, and what
+# these two assert is that NOTHING IS LEFT beside FILE afterwards and that every
+# line macho9 printed names FILE. Not that no temp is created -- one is, and
+# always was: it used to be a copy of FILE that a SEQUENCE of commands was run
+# against (`.FILE.macho9-compat.PID`), and it is now the output the one command
+# writes and mw_finish installs, under that same name. The difference the first
+# assertion is about is that the name must not SURVIVE; the difference the
+# second is about is that macho9 is handed FILE as its input and so labels its
+# progress lines with FILE, where the copy-aside sequence labelled them with the
+# copy.
 # In a directory of its OWN, holding nothing but FILE, so "nothing new
 # appeared" is exact: run in $T and a stray left by one of the many earlier
 # change_dylib invocations here would already be in the before-listing and
@@ -242,6 +247,37 @@ cdmixrc=$?
     && ok "change_dylib: a multi-family run's stdout names FILE, not a copy" \
     || bad "change_dylib multi-family stdout" "stdout: $(cat "$T/out")"
 rm -rf "$T/stray"
+
+# A BACKSLASH IN THE PATH. The temp mw_prepare names is derived from the
+# caller's own path, so its name is the caller's to choose -- and the filter
+# that suppresses macho9's "Wrote <temp> (N bytes)" line has to compare against
+# that name exactly. It once did not: passing the prefix to awk with `-v` ran it
+# through awk's string-escape processing, so for a path containing a backslash
+# awk looked for something the line does not start with and the stray line
+# reached stdout, naming a temp no caller has heard of and breaking the
+# byte-identical claim the assertion above makes. Both wrappers here go through
+# the SAME shared mw_run_to_tmp, so one of them would have been enough to catch
+# it; both are asserted because both leaked.
+rm -rf "$T/bs"; mkdir "$T/bs" "$T/bs/back\slash"
+cp "$FIXTURE" "$T/bs/back\slash/f"; cp "$FIXTURE" "$T/bs/back\slash/g"
+strip_vm "$T/bs/back\slash/g"
+( cd "$T/bs" && "$BIN/change_dylib" 'back\slash/f' -strip-lc uuid ) >"$T/bs.out" 2>"$T/bs.err"
+bsrc=$?
+[ "$bsrc" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs.out" \
+    && has_line "$T/bs.out" 'Updated back\slash/f (8528 bytes)' \
+    && ok "change_dylib: a path containing a backslash still suppresses the temp-naming line" \
+    || bad "change_dylib backslash path" "exit $bsrc, stdout: $(cat "$T/bs.out")"
+( cd "$T/bs" && "$BIN/add_version_min" 'back\slash/g' ) >"$T/bs2.out" 2>"$T/bs2.err"
+bsrc2=$?
+[ "$bsrc2" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs2.out" \
+    && ok "add_version_min: ... and so does every other wrapper on the shared path" \
+    || bad "add_version_min backslash path" "exit $bsrc2, stdout: $(cat "$T/bs2.out")"
+# The teaching message reaches awk the same way, for command COUNTING and for
+# indenting the block, so it is measured on the same path rather than assumed.
+grep -q '^    macho9 lc ' "$T/bs.err" \
+    && ok "change_dylib: ... and the teaching block is still indented and counted" \
+    || bad "change_dylib backslash path" "teaching message: $(cat "$T/bs.err")"
+rm -rf "$T/bs"
 
 # EVERY -insert GOES TO THE FRONT, so as ONE batch `-insert A -insert B` leaves
 # A at ordinal 1 and B at ordinal 2. Reaching that through a SEQUENCE of

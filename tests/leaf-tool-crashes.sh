@@ -270,6 +270,7 @@ for grow in "" --allow-grow; do
             continue
         fi
         cp "$T/nosect.macho" "$T/dy.macho"
+        rm -f "$T/dy.out.macho"
         before=$(sha_of "$T/dy.macho")
         rc=0
         if [ -n "$gm" ]; then
@@ -289,6 +290,9 @@ for grow in "" --allow-grow; do
         [ "$(sha_of "$T/dy.macho")" = "$before" ] \
             && ok "$what: leaves the file unchanged" \
             || bad "$what" "the refused run modified the file"
+        [ ! -e "$T/dy.out.macho" ] \
+            && ok "$what: writes no output either" \
+            || bad "$what" "a refused run left an output behind"
     done
 done
 
@@ -422,6 +426,7 @@ for grow in "" --allow-grow; do
             continue
         fi
         cp "$T/oobsection.macho" "$T/od.macho"
+        rm -f "$T/od.out.macho"
         rc=0
         if [ -n "$gm" ]; then
             DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/od.macho" "$T/od.out.macho" \
@@ -442,6 +447,9 @@ for grow in "" --allow-grow; do
         else
             bad "$what" "the file changed"
         fi
+        [ ! -e "$T/od.out.macho" ] \
+            && ok "$what: writes no output either" \
+            || bad "$what" "a refused run left an output behind"
     done
 done
 

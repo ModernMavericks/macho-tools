@@ -496,9 +496,11 @@ $3
         [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fo" "$mt_lc"
         [ -n "$mt_dy" ] && printf '%s dylib%s%s%s\n' "$mt_pre" "$mt_fo" "$mt_grow" "$mt_dy"
         [ -n "$mt_rp" ] && printf '%s rpath%s%s%s\n' "$mt_pre" "$mt_fo" "$mt_grow" "$mt_rp"
-        # Only when a command was actually emitted. `change_dylib FILE -grow`
-        # reaches here with mt_nfam 0 and prints nothing, and an install line
-        # with no command ahead of it would name an output nothing wrote.
+        # Only when a command was actually emitted. `change_dylib FILE -grow
+        # -grow` reaches here with mt_nfam 0 and prints nothing (a single
+        # `-grow` never gets this far -- the `[ $# -ge 3 ]` usage check above
+        # refuses it), and an install line with no command ahead of it would
+        # name an output nothing wrote.
         [ "$mt_nfam" -eq 1 ] && mt_install_line "$mt_file"
         return 0
     fi

@@ -65,8 +65,8 @@
  * and `retag-swift` converted first, and `dylib`, `rpath`, `lc` and `segment`
  * followed together, since all four are one mr_apply_file call. `grow` and
  * `edit` still write the file they are given; the verbs' own comments below
- * say which is which. m9_out_is_input is the one refusal every converted verb
- * makes up front.
+ * say which is which. m9_bad_out holds the refusals every converted verb makes
+ * about OUT before it reads anything.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,27 +167,46 @@ typedef char mr_refused_is_ex_refused[(MR_REFUSED == EX_REFUSED) ? 1 : -1];
  * a lie for exactly those failures. */
 typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
 
-/* THE OUT-IS-FILE REFUSAL, once, for every verb that reads FILE and writes
- * OUT. Naming FILE as OUT is a mistake about what the tool does, not about
- * this file's content, so it is refused UP FRONT -- before any read, and
+/* THE TWO THINGS OUT MUST NOT BE, once, for every verb that reads FILE and
+ * writes OUT. Both are mistakes about what the tool does rather than about
+ * this file's content, so both are refused UP FRONT -- before any read, and
  * before whatever else the verb validates -- which is the difference between
  * "refused, nothing happened" and a refusal that arrives after the work.
- * wa_write_new refuses it again at the write (a path can change in between),
- * but that answer arrives in atomic_write.c's words, after the rewrite; this
- * one arrives in the verb's own, immediately.
  *
- * ONE function rather than the same three lines in each verb, because the six
- * callers must not drift: the wording is asserted from the outside (the
- * "never writes its input" greps in tests/cli_test.sh), and a verb that grew
- * its own phrasing would be a verb whose refusal reads differently for no
- * reason. `verb` is the grammar's own spelling, so the message names the verb
- * the caller typed.
+ * OUT MUST NOT BE FILE. wa_write_new refuses that again at the write (a path
+ * can change in between), but that answer arrives in atomic_write.c's words,
+ * after the rewrite; this one arrives in the verb's own, immediately.
+ *
+ * OUT MUST NOT BEGIN WITH '-'. Nothing here treats a positional as a flag, so
+ * `macho9 dylib FILE --allow-grow -append /x` -- the old flag-first habit, from
+ * before these verbs took an output -- would otherwise CREATE a file called
+ * "--allow-grow" and exit 0, having done something the caller plainly did not
+ * ask for. The grammar just moved under every caller, so that is the mistake
+ * people will actually make, and silently obeying it is the shape of failure
+ * this whole toolkit is written to refuse. A caller who really does mean a file
+ * whose name starts with a dash can spell it `./-name`, which the message says.
+ * FILE gets no such check: it is only read, and mi_open's own failure names it.
+ *
+ * ONE function rather than the same lines in each verb, because the six callers
+ * must not drift: both wordings are asserted from the outside, per verb
+ * (tests/cli_test.sh greps for "never writes its input" and for "which begins
+ * with '-'"), and a verb that grew its own phrasing would be a verb whose
+ * refusal reads differently for no reason. `verb` is the grammar's own
+ * spelling, so the message names the verb the caller typed.
  *
  * Returns 1 when it printed a refusal (the caller returns EX_FAIL), else 0. */
-static int m9_out_is_input(const char *verb, const char *path, const char *out) {
-    if (!wa_is_input(path, out)) return 0;
-    fprintf(stderr, "macho9 %s: %s is %s; macho9 never writes its input\n", verb, out, path);
-    return 1;
+static int m9_bad_out(const char *verb, const char *path, const char *out) {
+    if (out[0] == '-') {
+        fprintf(stderr, "macho9 %s: OUT is '%s', which begins with '-'; OUT is the "
+                        "positional right after FILE, not a flag. Write './%s' if a "
+                        "file of that name is really meant.\n", verb, out, out);
+        return 1;
+    }
+    if (wa_is_input(path, out)) {
+        fprintf(stderr, "macho9 %s: %s is %s; macho9 never writes its input\n", verb, out, path);
+        return 1;
+    }
+    return 0;
 }
 
 /* The KIND vocabulary `lc -delete` accepts is LC_STRIP_KINDS (src/lc_kinds.h),
@@ -297,12 +316,13 @@ static void print_ops_csv(int is_rpath) {
  *         flags=a,b      verb-level flags, e.g. allow-grow. fatal-warnings
  *                        (dylib/rpath/lc) turns "an operation matched
  *                        nothing" from a stderr report into a refusal
- *                        (EX_REFUSED) -- but it NEVER ROLLS BACK a write it
- *                        made: if some other operation in the same run DID
- *                        match, that write already happened by the time
- *                        this refuses. (If EVERY operation matched nothing,
- *                        there was no write to roll back in the first
- *                        place -- same as any other all-miss run.) Named
+ *                        (EX_REFUSED), and THERE IS NOTHING TO ROLL BACK:
+ *                        mr_apply_file decides that verdict before its one
+ *                        write, so a refused run leaves OUT unwritten
+ *                        whether one operation matched or none did -- and it
+ *                        never writes FILE at all. (It used to refuse AFTER
+ *                        rewriting FILE when some other operation matched,
+ *                        which is what taking an OUT removed.) Named
  *                        after `ld`/`gas`'s own --fatal-warnings. It catches
  *                        "you asked for something that matched nothing",
  *                        NOT "you asked for something that matched but was
@@ -618,8 +638,8 @@ static int cmd_grow(const char *path, const char *n_str) {
  * version: there is only one this build can honor, so refusing anything else
  * up front is a clearer failure than calling in and hoping. */
 static int cmd_minos(const char *path, const char *out, const char *version, int allow_grow) {
-    /* Before the version check, and before any read -- see m9_out_is_input. */
-    if (m9_out_is_input("minos", path, out)) return EX_FAIL;
+    /* Before the version check, and before any read -- see m9_bad_out. */
+    if (m9_bad_out("minos", path, out)) return EX_FAIL;
     if (strcmp(version, "10.9") != 0) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
@@ -644,7 +664,7 @@ static int cmd_lc(int argc, char **argv) {
     /* argv[0]=macho9 argv[1]="lc" argv[2]=FILE argv[3]=OUT argv[4..]=ops */
     const char *path = argv[2];
     const char *out = argv[3];
-    if (m9_out_is_input("lc", path, out)) return EX_FAIL;
+    if (m9_bad_out("lc", path, out)) return EX_FAIL;
     uint32_t strip[MR_MAX_STRIP];
     int nstrip = 0;
     int fatal_warnings = 0;
@@ -720,17 +740,16 @@ static int cmd_lc(int argc, char **argv) {
  * `gas`'s own --fatal-warnings (and GCC's -Werror, the same idea under a
  * different name): "an operation matched nothing" already IS a warning
  * (mr_report_unmatched, src/rewrite.c), and this promotes it to a refusal.
- * It never rolls back a write it made -- if some other operation in the
- * same run DID match, that write already happened by the time this
- * refuses, and this only refuses about the miss after the fact. (If every
- * operation matched nothing there was no write to roll back at all.) See
+ * Nothing is written when it fires, whether one operation matched or none
+ * did: mr_apply_file asks for the verdict before its wa_write_new, so OUT is
+ * never created, and FILE it never writes in any case. See
  * mr_ops.fatal_unmatched's own comment in rewrite.h for the full contract.
  */
 static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     /* argv[0]=macho9 argv[1]=verb argv[2]=FILE argv[3]=OUT argv[4..]=ops */
     const char *path = argv[2];
     const char *out = argv[3];
-    if (m9_out_is_input(is_rpath ? "rpath" : "dylib", path, out)) return EX_FAIL;
+    if (m9_bad_out(is_rpath ? "rpath" : "dylib", path, out)) return EX_FAIL;
     /* Fixed-size, capped exactly where change_dylib's own parser caps (see
      * MR_MAX_OPS in src/rewrite.h) so the two front-ends refuse the same
      * inputs -- but in this grammar's vocabulary, since the wrapper contract
@@ -920,11 +939,10 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  * that CAN move an offset still meets the gate exactly as before. */
 static int cmd_segment(const char *path, const char *out,
                        const char *oldname, const char *newname) {
-    /* Before the name-length check, and before any read -- see
-     * m9_out_is_input. Both checks refuse before any I/O; this one first,
-     * because naming FILE as OUT is a mistake about the tool rather than
-     * about what was asked of it. */
-    if (m9_out_is_input("segment", path, out)) return EX_FAIL;
+    /* Before the name-length check, and before any read -- see m9_bad_out. Both
+     * checks refuse before any I/O; this one first, because an unusable OUT is
+     * a mistake about the tool rather than about what was asked of it. */
+    if (m9_bad_out("segment", path, out)) return EX_FAIL;
     if (!mseg_name_fits(newname)) {
         fprintf(stderr, "macho9 segment: new segment name '%s' is longer than the %d bytes "
                         "a segname field holds\n", newname, MSEG_NAME_MAX);
@@ -987,8 +1005,8 @@ static int cmd_segment(const char *path, const char *out,
  * failure, which is the same "two places deciding one thing" drift the
  * shared module exists to prevent. */
 static int cmd_retag_swift(const char *path, const char *out) {
-    /* Before any read -- see m9_out_is_input. */
-    if (m9_out_is_input("retag-swift", path, out)) return EX_FAIL;
+    /* Before any read -- see m9_bad_out. */
+    if (m9_bad_out("retag-swift", path, out)) return EX_FAIL;
     size_t out_size = 0;
     int n = mswift_retag_file(path, out, &out_size);
     if (n == MSWIFT_NOT_MACHO) {
