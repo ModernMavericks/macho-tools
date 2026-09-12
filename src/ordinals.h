@@ -77,7 +77,7 @@ int mo_is_ordinal_lc(uint32_t cmd);
  * cmdsize, making a naive `(char *)lc + offset` point past the command, into
  * whatever follows it (or past the mapped buffer entirely) instead of at a
  * NUL-terminated string. Every reader of one of these names must go through
- * here rather than repeating the check inline: cli/macho9.c's info dump,
+ * here rather than repeating the check inline: cli/machotool.c's info dump,
  * change_dylib.c's build_lcs, and mo_map_build below each used to compute
  * this pointer independently, and only one of the three actually checked.
  * Returns NULL for an out-of-bounds offset; the caller decides whether that

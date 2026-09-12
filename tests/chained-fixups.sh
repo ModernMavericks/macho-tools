@@ -135,7 +135,7 @@ echo "chained-fixups: input uses LC_DYLD_CHAINED_FIXUPS, converting"
 # The CONVERTING path's last stdout line. patch_macho printed
 # "Wrote %s (%zu bytes)" only when it actually converted something, naming OUT
 # and OUT's size; compat/patch_macho.sh has to print that itself now, because
-# `macho9 declassify` writes into a temp whose name must not leak. 10.9 cannot
+# `machotool declassify` writes into a temp whose name must not leak. 10.9 cannot
 # emit chained fixups, so this is the ONLY place the converting path runs --
 # tests/wrapper_test.sh can only reach the pass-through, where the line is
 # correctly absent.
@@ -158,7 +158,7 @@ fi
 echo "chained-fixups: converted to LC_DYLD_INFO_ONLY"
 
 # The same conversion through the other front-end. Task 0.6b lifted it into
-# src/declassify.c, so `macho9 declassify IN OUT` and `patch_macho IN OUT` are
+# src/declassify.c, so `machotool declassify IN OUT` and `patch_macho IN OUT` are
 # two drivers over ONE implementation and must write the same bytes -- which is
 # the strongest available evidence that the move changed nothing. Done here,
 # before the rest of the pipeline edits "$T/out", and on the same real

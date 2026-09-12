@@ -32,7 +32,7 @@ typedef struct {
 } mfat_arch;
 
 /* mfat_parse's two failure reasons -- the same distinction image.h's
- * MI_IO_ERROR/MI_NOT_MACHO draws, for the same reason (cli/macho9.c's
+ * MI_IO_ERROR/MI_NOT_MACHO draws, for the same reason (cli/machotool.c's
  * EX_REFUSED/EX_FAIL, src/rewrite.c's/src/version_min.c's MR_REFUSED/
  * MR_FAIL). mfat_parse takes an already-read buffer, not a path, so it has
  * no open/fstat/read of its own to fail -- its ONE environment failure is

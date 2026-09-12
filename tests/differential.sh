@@ -7,7 +7,7 @@
 #
 # This is the check that a refactor which is supposed to change NOTHING really
 # changed nothing. It was written for Task 0.5 (moving change_dylib's rewrite
-# into src/rewrite.c so macho9 stops fork/exec'ing it) and it is expected to be
+# into src/rewrite.c so machotool stops fork/exec'ing it) and it is expected to be
 # useful for every later task in the compat-retirement plan, which are all the
 # same shape: replace how the work is reached without changing what it does.
 #
@@ -45,7 +45,7 @@
 # If that number is near zero, the corpus or the operations are wrong.
 #
 # HOW LONG IT TAKES. Every sweep is 18 invocations x 2 builds per input (plus
-# one more, `macho9 declassify`, on the new build alone), each reading and
+# one more, `machotool declassify`, on the new build alone), each reading and
 # rewriting the whole file, plus three SHA-256s. On real 10.9 hardware that is
 # minutes for /usr/lib and /usr/bin, but the default roots
 # include /System/Library/Frameworks, whose binaries are large and mostly fat
@@ -135,11 +135,11 @@ record() {
     return 0
 }
 
-# macho9 VERB f o ARGS... -- for a verb that READS f and writes a named
+# machotool VERB f o ARGS... -- for a verb that READS f and writes a named
 # output rather than rewriting f. What gets compared is `o`, plus the two
 # sides agreeing that they left `f` alone.
 #
-# EVERY macho9 VERB THIS SWEEP DRIVES IS ONE OF THOSE NOW. There used to be a
+# EVERY machotool VERB THIS SWEEP DRIVES IS ONE OF THOSE NOW. There used to be a
 # second helper, `m9`, for the verbs that rewrote the file they were given
 # (dylib, rpath, lc, segment); all four take FILE OUT, so it had no callers
 # left and is gone. `grow` has since taken FILE OUT too, leaving `edit` as the
@@ -174,18 +174,18 @@ tool() {
     compare "$tl $SRC $*"
 }
 
-# patch_macho f o -- and, on the NEW build only, `macho9 declassify f o9`.
+# patch_macho f o -- and, on the NEW build only, `machotool declassify f o9`.
 #
 # This tool does not rewrite its input: it reads IN and writes OUT, which is
 # why the helpers above could not sweep it and, until Task 0.6b, nothing did.
 # That task moved its chained-fixups conversion into src/declassify.c and gave
-# macho9 a `declassify` verb over the same code, so two questions get asked
+# machotool a `declassify` verb over the same code, so two questions get asked
 # here, both about bytes rather than exit status:
 #
 #   REF vs NEW patch_macho          did the extraction change what the tool
 #                                    produces? (the same question every other
 #                                    line of this sweep asks of its tool)
-#   NEW patch_macho vs NEW macho9   do the two front-ends over that one
+#   NEW patch_macho vs NEW machotool   do the two front-ends over that one
 #                                    implementation really write the same
 #                                    output? Asked of the NEW build only --
 #                                    the REF build's `declassify` predates the
@@ -193,7 +193,7 @@ tool() {
 #                                    comparing it across builds would report a
 #                                    difference that is the point of the task.
 #
-# The macho9 half runs on EVERY file, not only the ones patch_macho converted:
+# The machotool half runs on EVERY file, not only the ones patch_macho converted:
 # where patch_macho declines, declassify must decline too (with its own code --
 # EX_REFUSED for a judgement about the input, EX_FAIL for an operational
 # failure -- but never 0, which would be a silent success on an input the
@@ -241,7 +241,7 @@ while IFS= read -r SRC; do
     SRCHASH=$(shasum -a 256 < "$SRC" | cut -d' ' -f1)
     # The -replace/-delete/-reexport target has to be a dependency this file
     # really has, or those cases all collapse into "nothing matched". Read it
-    # out of `macho9 info`'s stable output -- never otool's.
+    # out of `machotool info`'s stable output -- never otool's.
     first=$("$REF/machotool" info "$T/probe" 2>/dev/null | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
     [ -n "$first" ] || first="/usr/lib/libSystem.B.dylib"
 

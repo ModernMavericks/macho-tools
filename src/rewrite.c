@@ -1,5 +1,5 @@
 /*
- * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/macho9.c, by
+ * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/machotool.c, by
  * src/edit.c's edit scripts (through mr_apply_image), and by the old
  * change_dylib grammar that reaches it through compat/change_dylib.sh.
  * See rewrite.h for the operation set and why this is a library function
@@ -249,7 +249,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
              * not only the first. A -delete and a -change can legitimately
              * name the SAME old_path -- see mr_is_deleted just below, which
              * makes a -delete win over a conflicting -change regardless of
-             * argument order -- so `macho9 dylib f -replace X N -delete X`
+             * argument order -- so `machotool dylib f -replace X N -delete X`
              * has two dylib_changes entries sharing old_path X. Breaking
              * here would count only the -replace's entry as a hit and
              * report the -delete's entry as "matched nothing", which is
@@ -401,7 +401,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
  * can name the operations that matched nothing. Caller-owned and
  * caller-zeroed, sized MR_MAX_OPS / MR_MAX_STRIP -- the same bound mr_ops's
  * own arrays are already required to respect (mr_apply_file's own comment,
- * rewrite.h, states the precondition; cli/macho9.c is the one caller that
+ * rewrite.h, states the precondition; cli/machotool.c is the one caller that
  * enforces it today). NULL is legal and means "do not count" -- the sizing
  * pass passes NULL, because counting a dry run would double every hit (see
  * mr_process_thin's two call sites). */
@@ -909,10 +909,10 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * for it was. This comment used to say mg_plausible's heuristic has false
      * positives on real, untouched 10.9 system dylibs, naming
      * libSystem.B.dylib, libc++.1.dylib, libicucore.A.dylib and libz.1.dylib
-     * as refused by `macho9 lc -delete uuid` where /bin/ls, /bin/cat,
+     * as refused by `machotool lc -delete uuid` where /bin/ls, /bin/cat,
      * /usr/bin/grep and /usr/bin/awk passed, and 14 of the 16 thin binaries
      * in a 120-file /usr/lib corpus (tests/differential.sh) as refused by
-     * `macho9 segment`. That split -- every dylib refused, every executable
+     * `machotool segment`. That split -- every dylib refused, every executable
      * passed -- was not the heuristic at all: mg_plausible read its image
      * base from mi_text_base, whose 0 means BOTH "no segment maps the header"
      * and "the base is 0", and a dylib is linked at base 0. It bailed at the
@@ -935,7 +935,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * re-decide a property the input already had.
      *
      * Scoped by mr_is_rename_only, not by an environment variable: an env var
-     * would switch the gate off for the whole macho9 invocation, would keep
+     * would switch the gate off for the whole machotool invocation, would keep
      * covering any operation a caller later added to the same command line,
      * and would read like someone disabling a safety check. This says the one
      * true thing instead, at the one site where it is true. Every operation
@@ -976,7 +976,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
 }
 
 /* The verb path's slice callback: the thin rewrite, under the label and with
- * the stdout lines `macho9 dylib`/`change_dylib` have always printed for a
+ * the stdout lines `machotool dylib`/`change_dylib` have always printed for a
  * fat file. */
 typedef struct {
     const mr_ops *ops;
@@ -1252,7 +1252,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
      * MR_MAX_OPS / MR_MAX_STRIP, the same bound `ops`'s own arrays are
      * required to respect -- an UNENFORCED precondition on this function's
      * caller; see this function's own declaration in rewrite.h for the
-     * detail (only cli/macho9.c enforces it today, and only because it is
+     * detail (only cli/machotool.c enforces it today, and only because it is
      * the sole caller, not because anything here checks). */
     mr_hits hits;
     memset(&hits, 0, sizeof hits);
@@ -1406,7 +1406,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
      * it has to exist either way -- an identical copy of `path` when no
      * operation matched. wa_write_new creates it afresh from `path`'s mode,
      * owner and xattrs and never touches `path`; WA_IS_INPUT can only happen if
-     * a path changed under us, since cli/macho9.c refuses `out` == `path` up
+     * a path changed under us, since cli/machotool.c refuses `out` == `path` up
      * front (see mr_apply_file's PRECONDITION in rewrite.h). `modified`, filled
      * in by the drivers above, no longer decides anything here. */
     if (rc == 0) {

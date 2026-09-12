@@ -10,7 +10,7 @@
  * The other thing that changed is the return VALUE: process() collapsed "not
  * a Mach-O" into the same 0 it uses for "nothing to retag", which left a
  * caller unable to tell a refusal from a silent success. That now has its own
- * code (swift_retag.h's MSWIFT_NOT_MACHO), and cli/macho9.c's `retag-swift`
+ * code (swift_retag.h's MSWIFT_NOT_MACHO), and cli/machotool.c's `retag-swift`
  * verb reports it -- while the old grammar's wrapper
  * (compat/retag_swift_classes.sh) maps it back onto the same "skip quietly,
  * not an error" the C tool did: no message, no had_error, loop continues.

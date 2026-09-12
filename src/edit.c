@@ -334,7 +334,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
          * stdout, where the core has always printed it. The append's own
-         * "Added ..." line belongs to `macho9 minos`, which edit does not
+         * "Added ..." line belongs to `machotool minos`, which edit does not
          * call, so an append prints nothing on stdout -- unless it grew the
          * header pad, when mg_ensure_pad's two grow lines, labelled with
          * `path`, are there. */
@@ -346,7 +346,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     case MS_SWIFT_ABI: {
         /* `legacy` is the only value ms_parse accepts. A count of zero is
          * not a refusal: an image with no Swift classes has nothing to
-         * retag, as `macho9 retag-swift` reports with exit 0. */
+         * retag, as `machotool retag-swift` reports with exit 0. */
         mi_image im;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
         int retagged = mswift_retag_image(&im);
@@ -421,7 +421,7 @@ unknown:
  * slice. Returns 0, or the first failing statement's code after printing the
  * refusal line.
  *
- * WHY NOT BATCH THE STATEMENTS into one operation set, the way `macho9
+ * WHY NOT BATCH THE STATEMENTS into one operation set, the way `machotool
  * dylib` batches its flags into one mr_ops: because `fixups set classic`
  * cannot batch with anything -- every later statement has to see the lowered
  * image, with its new LC_DYLD_INFO_ONLY and extended __LINKEDIT -- and

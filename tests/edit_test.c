@@ -579,7 +579,7 @@ static void test_out_that_is_the_input_is_refused(void) {
 
     /* And no `out` at all is the same answer: there is no "write it back"
      * fallback left for a NULL to mean. Only reachable from inside this repo --
-     * cli/macho9.c's parser requires the positional -- which is why it is
+     * cli/machotool.c's parser requires the positional -- which is why it is
      * checked here. */
     before = take(path);
     rc = run(path, NULL, "load-command delete uuid\n", 0);
@@ -752,7 +752,7 @@ static void test_the_file_level_operations_run_in_memory(void) {
     CHECK(count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 1,
           "in memory: LC_VERSION_MIN_MACOSX was appended");
     /* The append is the one trace the statement leaves: the stdout line
-     * that reports it belongs to `macho9 minos`, which edit does not call.
+     * that reports it belongs to `machotool minos`, which edit does not call.
      * So --verbose says so, beneath the statement, as a follow-up. */
     {
         const char *stmt = strstr(g_log, "  version-min set 10.9\n");

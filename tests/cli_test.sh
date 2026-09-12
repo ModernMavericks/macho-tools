@@ -1,12 +1,12 @@
 #!/bin/sh
-# tests/cli_test.sh — exercises the macho9 CLI itself: --capabilities, and
+# tests/cli_test.sh — exercises the machotool CLI itself: --capabilities, and
 # each verb this build actually implements.
 #
 # What this does NOT re-prove: change_dylib_test.sh already runs real dylib
 # renumbering, -insert/-delete ordinal correctness, and header-growth end to
 # end, through change_dylib. dylib/rpath/lc/minos here call the very same
 # code -- mr_apply_file/mv_add_version_min in src/, which is all change_dylib
-# and add_version_min are too (see cli/macho9.c's file header) -- so this
+# and add_version_min are too (see cli/machotool.c's file header) -- so this
 # asserts the TRANSLATION and DISPATCH are correct, one exemplar op per verb,
 # not the underlying rewrite a second time.
 #
@@ -15,7 +15,7 @@
 #     linker's LC_DYLD_CHAINED_FIXUPS default can't sneak in and ask a
 #     different question on the cross runner than it asks natively here.
 #   - nothing here parses otool/nm text. Facts about a binary come either
-#     from `macho9 info`'s own stable output, or from a tiny C reader built
+#     from `machotool info`'s own stable output, or from a tiny C reader built
 #     alongside the fixtures (same trick change_dylib_test.sh's ordinal_of.c
 #     uses), never from a format Apple's tools are free to reformat.
 set -eu
@@ -23,9 +23,9 @@ BIN="${1:?usage: cli_test.sh <bindir>}"
 MACHOTOOL="$BIN/machotool"
 [ -x "$MACHOTOOL" ] || { echo "cli_test: $MACHOTOOL not found or not executable" >&2; exit 1; }
 [ -x "$BIN/makefat" ] && [ -x "$BIN/fatcheck" ] || { echo "cli_test: need makefat and fatcheck in $BIN" >&2; exit 1; }
-# macho9 needs NOTHING else in $BIN: dylib/rpath/lc/minos used to run
+# machotool needs NOTHING else in $BIN: dylib/rpath/lc/minos used to run
 # change_dylib/add_version_min as subprocesses found next to it, and this
-# script used to refuse to start without them. The "macho9 alone in an empty
+# script used to refuse to start without them. The "machotool alone in an empty
 # directory" assertions below are what replaced that requirement -- they check
 # the property the requirement existed for, from the outside, instead of
 # taking it on trust.
@@ -64,7 +64,7 @@ sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 # are passed through unchanged, less the "Wrote <temp>" line, which names a
 # path no assertion here asked about.
 #
-# WHAT THIS DOES NOT HIDE: that FILE is never written by macho9 itself is
+# WHAT THIS DOES NOT HIDE: that FILE is never written by machotool itself is
 # asserted directly, per verb, in "the rewriting verbs never write their input"
 # below -- against FILE's bytes AND its inode, with no helper in the way. This
 # one is an ergonomic for everything else, not a stand-in for that.
@@ -149,7 +149,7 @@ int main(void) { return a_sym() == 11 && c_sym() == 33 ? 0 : 1; }
 EOF
 
 # The ordinals above are the premise, so check them rather than trust the
-# linker: `macho9 info`'s own stable output, as the header says.
+# linker: `machotool info`'s own stable output, as the header says.
 fixture_ordinals() {
     fo_info=$("$MACHOTOOL" info "$1")
     shift
@@ -187,7 +187,7 @@ build_main_three_dylibs() {
 # So stop asserting what a linker emits and MAKE the premise true: strip the
 # kind first, unconditionally. A no-op where it was already absent.
 #
-# This uses macho9 to set up a macho9 test, which is circular only in
+# This uses machotool to set up a machotool test, which is circular only in
 # appearance: if the strip silently did nothing, the delete under test would
 # FIND build-version and report no miss, and the assertions fail loudly. The
 # setup cannot mask the defect it is setting up for.
@@ -195,7 +195,7 @@ build_main_without_build_version() {
     build_main "$1"
     mtip lc "$1" -delete build-version >/dev/null 2>&1 || true
     # Assert the precondition rather than trusting the strip. otool, not
-    # macho9, so a macho9 defect cannot certify its own setup. Without this
+    # machotool, so a machotool defect cannot certify its own setup. Without this
     # the test would pass on 10.9 for the OLD reason (the linker never
     # emitted it) and silently stop testing anything the day it does.
     if otool -l "$1" 2>/dev/null | grep -q LC_BUILD_VERSION; then
@@ -207,27 +207,27 @@ build_main_without_build_version() {
 # Host capability: can this host run a Mach-O binary that was modified
 # in-place after being signed at link time, AT ALL?
 #
-# This must be established WITHOUT running macho9 on the probe binary. The
-# grow/lc "still runs" assertions below rewrite a fixture with macho9 and
+# This must be established WITHOUT running machotool on the probe binary. The
+# grow/lc "still runs" assertions below rewrite a fixture with machotool and
 # then run it; if this host's kernel kills any modified binary, that proves
-# nothing about macho9 -- but if the probe used to detect that ALSO goes
-# through macho9, a real macho9 regression that corrupts its output looks
+# nothing about machotool -- but if the probe used to detect that ALSO goes
+# through machotool, a real machotool regression that corrupts its output looks
 # IDENTICAL to a host that kills modified binaries: same symptom (the child
-# doesn't run), same wrong conclusion ("host policy, not a macho9 defect"),
+# doesn't run), same wrong conclusion ("host policy, not a machotool defect"),
 # and a genuine defect ships as a green, honest-looking SKIP. That is worse
 # than no check at all.
 #
-# So this probe never calls macho9. It builds a plain fixture, flips ONE
+# So this probe never calls machotool. It builds a plain fixture, flips ONE
 # byte inside the existing header pad (unused space between the end of the
 # load commands and the first section's file data -- computed here by an
-# independent read, not by calling into macho9/image.h, for the same
+# independent read, not by calling into machotool/image.h, for the same
 # non-circularity reason tests/strip_version_min.c is self-contained) via a
 # throwaway C program, and tries to run the result. If the kernel/dyld kills
 # THAT, this host enforces code-signing on any post-link modification,
 # unconditionally of what changed or which tool changed it -- an honest,
 # independently-established fact the grow/lc sections can trust. If it
 # still runs, this host does NOT enforce that, and a failure to run
-# macho9's OWN rewritten fixture later is no longer explainable by host
+# machotool's OWN rewritten fixture later is no longer explainable by host
 # policy -- it must be treated as a real defect (FAIL), not silently
 # skipped.
 cat > "$T/perturb_pad.c" <<'EOF'
@@ -299,10 +299,10 @@ else
 fi
 if [ "$signing_probe_rc" -eq 0 ]; then
     signing_enforced=0
-    ok "host probe: a trivially-perturbed binary still runs (macho9-independent)"
+    ok "host probe: a trivially-perturbed binary still runs (machotool-independent)"
 elif [ "$signing_probe_rc" -eq 137 ]; then
     signing_enforced=1
-    ok "host probe: a trivially-perturbed binary is SIGKILLed (137) -- code-signing enforcement, independent of macho9"
+    ok "host probe: a trivially-perturbed binary is SIGKILLed (137) -- code-signing enforcement, independent of machotool"
 else
     # Neither a clean run nor the specific signal we know how to explain.
     # Per the coordinator: do not guess. Anything unrecognized here means the
@@ -344,8 +344,8 @@ case "$caps" in
     "format 1"*) ok "capabilities: starts with format line" ;;
     *) bad "capabilities: format line" "got: $(echo "$caps" | head -1)" ;;
 esac
-# exitcodes documents EX_REFUSED (see cli/macho9.c) so a caller can tell
-# "macho9 examined FILE and declined" apart from "macho9 itself failed"
+# exitcodes documents EX_REFUSED (see cli/machotool.c) so a caller can tell
+# "machotool examined FILE and declined" apart from "machotool itself failed"
 # without scraping stderr text. Assert the line exists, names refused=1,
 # and that a real refusal (verify on a non-Mach-O file) actually exits with
 # that code -- not just some nonzero value. The corrected scheme is 0 ok, 1
@@ -456,12 +456,12 @@ done
 #
 # --capabilities' "kinds=" and "ops=" lists and the cmd_lc/cmd_dylib_or_rpath
 # parsers that decide what a real invocation accepts are now both built from
-# ONE table each (LC_STRIP_KINDS, DYLIB_OPS in cli/macho9.c) precisely so
+# ONE table each (LC_STRIP_KINDS, DYLIB_OPS in cli/machotool.c) precisely so
 # they cannot say different things -- before this they were three
-# hand-copied lists (change_dylib's strippable[], macho9's own LC_KINDS[],
+# hand-copied lists (change_dylib's strippable[], machotool's own LC_KINDS[],
 # and a hardcoded "kinds=..." string) that a review found had already drifted
 # apart in spirit even where the values still matched by luck. This does not
-# re-derive the table (it can't see the C source); it drives macho9 itself
+# re-derive the table (it can't see the C source); it drives machotool itself
 # with every name --capabilities claims and confirms none of them is refused
 # as unrecognized -- which is exactly what would happen if a name were ever
 # added to (or dropped from) one list and not the other.
@@ -491,7 +491,7 @@ mtip lc "$T/vocab_fixture" -delete not-a-real-kind >"$T/vocab_bogus.out" 2>&1 \
 # verb must be recognized by that verb's own parser (never "unknown or
 # incomplete operation"), and rpath must still refuse an op that belongs to
 # dylib's vocabulary but not its own (-reexport: LC_RPATH has only one kind
-# -- see DYLIB_OPS in cli/macho9.c).
+# -- see DYLIB_OPS in cli/machotool.c).
 vocab_ops_fail=0
 check_ops_accepted() {
     # $1=verb (dylib|rpath)  $2=ops csv from capabilities
@@ -690,14 +690,14 @@ done
 # BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting
 # the conversion into src/declassify.c did not change it: the two front-ends
 # are handed the same buffer by md_declassify and must write the same bytes.
-# Not a hard requirement of THIS script (macho9 stands alone, and $BIN need
+# Not a hard requirement of THIS script (machotool stands alone, and $BIN need
 # not hold anything else), so its absence is a SKIP, not a failure.
 if [ -x "$BIN/patch_macho" ]; then
     "$BIN/patch_macho" "$T/chained.in" "$T/chained.pm" >/dev/null 2>&1
     if cmp -s "$T/chained.out" "$T/chained.pm"; then
         ok "declassify: byte-identical to patch_macho's output"
     else
-        bad "declassify: byte-identity" "macho9 and patch_macho produced different bytes"
+        bad "declassify: byte-identity" "machotool and patch_macho produced different bytes"
     fi
     # patch_macho returns a flat 1 for everything that goes wrong; this verb
     # distinguishes "examined it and declined" (EX_REFUSED=1) from an
@@ -733,7 +733,7 @@ fi
 
 # IN AND OUT MAY NO LONGER BE THE SAME PATH. This verb used to allow it (the
 # whole image is in memory before a byte is written, so it worked), and now
-# refuses it UP FRONT -- before any read -- because macho9 never writes its
+# refuses it UP FRONT -- before any read -- because machotool never writes its
 # input. The same four facts every other converted verb is held to: refused
 # with 2, IN untouched in bytes AND inode, the refusal is the up-front one, and
 # a symlink to IN is caught too. `patch_macho IN IN` still converts IN: its
@@ -767,9 +767,9 @@ rc=0
     && ok "declassify: OUT is created with IN's mode" \
     || bad "declassify: OUT mode" "rc $rc, mode $(stat -f %Lp "$T/dcl_mode_out" 2>/dev/null): $(cat "$T/dcl_mode.err")"
 
-# Refusals. Each is a decision macho9 made about the INPUT, so each is
+# Refusals. Each is a decision machotool made about the INPUT, so each is
 # EX_REFUSED (1), never EX_FAIL (2), which means "something went wrong running
-# macho9" -- that distinction is what --capabilities' exitcodes line promises.
+# machotool" -- that distinction is what --capabilities' exitcodes line promises.
 "$MACHOTOOL" declassify "$T/not-a-macho-in-cli-test" "$T/nope" >/dev/null 2>"$T/nm.err" && rc=0 || rc=$?
 [ "$rc" -eq 1 ] && ok "declassify: refuses a non-Mach-O with EX_REFUSED" \
     || bad "declassify: non-Mach-O" "expected 1, got $rc"
@@ -788,22 +788,22 @@ grep -q "No chained fixups found" "$T/plain.err" \
     || bad "declassify: no fixups" "no reason on stderr: $(cat "$T/plain.err")"
 
 # An OUT that cannot be written is an OPERATIONAL failure, not a refusal: the
-# input was fine and macho9 declined nothing. It must exit 2 (EX_FAIL), and
+# input was fine and machotool declined nothing. It must exit 2 (EX_FAIL), and
 # this is the assertion that keeps EX_REFUSED from decaying into "any nonzero".
 "$MACHOTOOL" declassify "$T/chained.in" "$T/no/such/dir/out" >/dev/null 2>"$T/unwritable.err" && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && ok "declassify: an unwritable OUT is a failure (2), not a refusal (1)" \
     || bad "declassify: unwritable OUT" "expected 2, got $rc"
 
 # ============================================================================
-# macho9 stands alone
+# machotool stands alone
 #
 # dylib/rpath/lc/minos used to fork and exec change_dylib/add_version_min,
-# located next to macho9 on disk, and --capabilities hid those four verbs
+# located next to machotool on disk, and --capabilities hid those four verbs
 # whenever the sibling was missing. Both are gone: the rewrite is linked in
 # (src/rewrite.c, src/version_min.c). That is the whole point of the
-# extraction -- it is what lets change_dylib become a wrapper AROUND macho9
+# extraction -- it is what lets change_dylib become a wrapper AROUND machotool
 # without a cycle -- so prove it from the outside rather than by reading the
-# source: copy ONLY macho9 into an empty directory and make it do real work
+# source: copy ONLY machotool into an empty directory and make it do real work
 # there. A regression that restored the subprocess would fail here even
 # though every other assertion in this file, run from a full bindir, would
 # still pass.
@@ -816,12 +816,12 @@ for v in verify info grow minos lc dylib rpath segment retag-swift; do
     echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
 done
 [ -z "$alone_missing" ] && ok "alone: --capabilities still advertises every verb with no sibling present" \
-    || bad "alone: capabilities" "verbs missing when macho9 stands alone:$alone_missing"
+    || bad "alone: capabilities" "verbs missing when machotool stands alone:$alone_missing"
 
 build_main "$T/alone/fixture"
 if "$T/alone/machotool" dylib "$T/alone/fixture" "$T/alone/fixture.out" \
         -append "@loader_path/libalone.dylib" >"$T/alone_dylib.out" 2>&1; then
-    ok "alone: dylib -append works with no change_dylib anywhere near macho9"
+    ok "alone: dylib -append works with no change_dylib anywhere near machotool"
 else
     bad "alone: dylib -append" "$(cat "$T/alone_dylib.out")"
 fi
@@ -831,7 +831,7 @@ fi
 
 if "$T/alone/machotool" lc "$T/alone/fixture.out" "$T/alone/fixture.out2" -delete uuid \
         >"$T/alone_lc.out" 2>&1; then
-    ok "alone: lc -delete works with no change_dylib anywhere near macho9"
+    ok "alone: lc -delete works with no change_dylib anywhere near machotool"
 else
     bad "alone: lc -delete" "$(cat "$T/alone_lc.out")"
 fi
@@ -845,12 +845,12 @@ fi
 # "already present" path), a 2026 one emits LC_BUILD_VERSION instead (so this
 # actually appends). Both are exit 0 and both prove the point, so accept
 # either MESSAGE rather than asserting which -- what must not happen is
-# macho9 failing because a binary it no longer needs isn't there. (Note the
+# machotool failing because a binary it no longer needs isn't there. (Note the
 # fixture is deliberately NOT stripped of its version-min first: the helper
 # that does that is built further down, and this assertion is about reaching
 # the driver at all, not about which branch of it ran.)
 if "$T/alone/machotool" minos "$T/alone/fixture" "$T/alone/fixture.minos" 10.9 >"$T/alone_minos.out" 2>&1; then
-    ok "alone: minos works with no add_version_min anywhere near macho9"
+    ok "alone: minos works with no add_version_min anywhere near machotool"
 else
     bad "alone: minos" "$(cat "$T/alone_minos.out")"
 fi
@@ -912,7 +912,7 @@ else
 fi
 
 # The gate refusing every dylib meant no dylib could be rewritten at all:
-# mr_process_thin gates on mg_plausible, so macho9 dylib/rpath/lc -- and
+# mr_process_thin gates on mg_plausible, so machotool dylib/rpath/lc -- and
 # change_dylib, which is the same code -- refused every dylib outright.
 cp "$T/fixture.dylib" "$T/dylibrw"
 if mtip lc "$T/dylibrw" -delete uuid >"$T/dylibrw.out" 2>&1; then
@@ -1052,7 +1052,7 @@ else
     grow_run_rc=$?
     grow_run_diag=$(cat "$T/grow_run.out" 2>/dev/null | tr '\n' ' ' | cut -c1-800)
     if [ "$is_target_platform" -eq 1 ]; then
-        bad "grow: run" "grown binary failed to execute ON THE TARGET PLATFORM ITSELF (Darwin 13 / Mac OS X 10.9) -- this is a real macho9 defect, not a portability question. exit $grow_run_rc: $grow_run_diag"
+        bad "grow: run" "grown binary failed to execute ON THE TARGET PLATFORM ITSELF (Darwin 13 / Mac OS X 10.9) -- this is a real machotool defect, not a portability question. exit $grow_run_rc: $grow_run_diag"
     else
         skip "grow: grown binary still runs" \
             "not the product's target platform (Darwin $darwin_major; the target is Darwin 13 / Mac OS X 10.9) -- mg_grow_header's image-base-lowering trick is only promised to load there. This host's loader says: exit $grow_run_rc: $grow_run_diag"
@@ -1074,7 +1074,7 @@ fi
 # ============================================================================
 # build_main's FIXTURE_FLAGS (-mmacosx-version-min=10.9) makes the linker
 # emit LC_VERSION_MIN_MACOSX itself -- so a fixture built that way already
-# HAS the load command macho9 minos is supposed to add, and the "happy
+# HAS the load command machotool minos is supposed to add, and the "happy
 # path" below would pass even with cmd_minos's body replaced by `return 0`
 # (confirmed by doing exactly that -- see the commit message).
 #
@@ -1088,7 +1088,7 @@ fi
 # surgery, with a tiny throwaway C program compiled by plain $CC with no
 # special flags -- the same "read/write the structure directly" idiom
 # change_dylib_test.sh's ordinal_of.c already uses, so nothing here depends
-# on a specific ld/clang version, and nothing here depends on macho9 or
+# on a specific ld/clang version, and nothing here depends on machotool or
 # change_dylib's own strip machinery either (their -strip-lc/`lc -delete`
 # vocabulary doesn't cover LC_VERSION_MIN_MACOSX today, and reusing the
 # tool under test to build that test's own fixture would be circular
@@ -1116,7 +1116,7 @@ if [ "$strip_rc" -ne 0 ]; then
     bad "minos: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
 fi
 # The precondition is specifically "no LC_VERSION_MIN_MACOSX" -- that is the
-# ONE load command macho9 minos adds, and the thing the "present after"
+# ONE load command machotool minos adds, and the thing the "present after"
 # assertion below checks for. LC_BUILD_VERSION is a DIFFERENT load command a
 # modern linker emits instead (add_version_min.c only ever looks for
 # LC_VERSION_MIN_MACOSX, so LC_BUILD_VERSION's presence is orthogonal to
@@ -1188,10 +1188,10 @@ else
     ok "lc: delete uuid removed it"
 fi
 # Whether a binary that's had its LC_UUID deleted can still be EXECUTED
-# turns on TWO independent host facts, not on macho9: (a) kernel
+# turns on TWO independent host facts, not on machotool: (a) kernel
 # code-signing enforcement, killing ANY binary modified since it was
 # signed -- see $signing_enforced, established above without ever running
-# macho9; (b) modern dyld separately refusing to load an image with no
+# machotool; (b) modern dyld separately refusing to load an image with no
 # LC_UUID at all ("missing LC_UUID load command"), which 10.9's dyld does
 # not require. These showed up as genuinely different failure modes on the
 # cross runner that motivated this (grow got SIGKILLed outright; this got
@@ -1199,13 +1199,13 @@ fi
 #
 # signing_enforced already answers (a) honestly. For (b), run lc_fixture
 # for real and read its OWN failure, rather than inferring it from a
-# separate macho9-produced probe (the same masking risk as grow's old
+# separate machotool-produced probe (the same masking risk as grow's old
 # probe): only a failure whose message literally names the missing-LC_UUID
 # refusal is treated as (b) and skipped; anything else, with signing
 # already ruled out, is a real defect and FAILS.
 if [ "$signing_enforced" -eq 1 ]; then
     skip "lc: binary still runs after uuid deletion" \
-        "this host SIGKILLs any binary modified since it was signed at link time (established independently of macho9 by the host probe above); a host policy, not a macho9 defect, and exercised for real on 10.9"
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of machotool by the host probe above); a host policy, not a machotool defect, and exercised for real on 10.9"
 else
     if (cd "$T" && ./lc_fixture) >"$T/lc_fixture_run.out" 2>&1; then
         ok "lc: binary still runs after uuid deletion"
@@ -1213,9 +1213,9 @@ else
         lc_run_rc=$?
         if grep -qi "missing LC_UUID" "$T/lc_fixture_run.out" 2>/dev/null; then
             skip "lc: binary still runs after uuid deletion" \
-                "modern dyld refuses to load any image with no LC_UUID at all ('missing LC_UUID load command'); 10.9's dyld has no such requirement. Code-signing enforcement was independently ruled out above (a trivially-perturbed binary DID run on this host), so this is dyld's own content-driven refusal, not a masked macho9 defect"
+                "modern dyld refuses to load any image with no LC_UUID at all ('missing LC_UUID load command'); 10.9's dyld has no such requirement. Code-signing enforcement was independently ruled out above (a trivially-perturbed binary DID run on this host), so this is dyld's own content-driven refusal, not a masked machotool defect"
         else
-            bad "lc: run" "binary failed to execute after uuid deletion (exit $lc_run_rc: $(head -1 "$T/lc_fixture_run.out" 2>/dev/null || echo 'no output')), this host DOES run a trivially-perturbed binary fine (see host probe above), and dyld did not report its missing-LC_UUID message -- code-signing and the known dyld requirement are both ruled out, so this looks like a real macho9 defect"
+            bad "lc: run" "binary failed to execute after uuid deletion (exit $lc_run_rc: $(head -1 "$T/lc_fixture_run.out" 2>/dev/null || echo 'no output')), this host DOES run a trivially-perturbed binary fine (see host probe above), and dyld did not report its missing-LC_UUID message -- code-signing and the known dyld requirement are both ruled out, so this looks like a real machotool defect"
         fi
     fi
 fi
@@ -1299,7 +1299,7 @@ mtip lc "$T/lc_fw_ok_fixture" --fatal-warnings -delete uuid \
 # (k, which included it), so this exact invocation fell through to
 # change_dylib and printed ITS usage -- leaking the -change/-add/-strip-lc/
 # -add-rpath spellings this grammar deliberately does not offer (see
-# cmd_dylib_or_rpath's `nops` counter in cli/macho9.c). Regression test for
+# cmd_dylib_or_rpath's `nops` counter in cli/machotool.c). Regression test for
 # that fix: no cli_test.sh assertion existed for it before.
 # ============================================================================
 build_main "$T/dylib_noop_fixture"
@@ -1308,8 +1308,8 @@ if mtip dylib "$T/dylib_noop_fixture" --allow-grow >/dev/null 2>"$T/dylib_noop.e
 else
     ok "dylib: --allow-grow alone is refused"
 fi
-grep -q "need at least one operation" "$T/dylib_noop.err" && ok "dylib: --allow-grow alone prints macho9's own usage" \
-    || bad "dylib: --allow-grow alone message" "missing macho9's 'need at least one operation'"
+grep -q "need at least one operation" "$T/dylib_noop.err" && ok "dylib: --allow-grow alone prints machotool's own usage" \
+    || bad "dylib: --allow-grow alone message" "missing machotool's 'need at least one operation'"
 if grep -qE -- "-strip-lc|-add-rpath" "$T/dylib_noop.err"; then
     bad "dylib: --allow-grow alone" "leaked change_dylib's usage (-strip-lc/-add-rpath) in: $(cat "$T/dylib_noop.err")"
 else
@@ -1357,7 +1357,7 @@ echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: --allow-grow result
 
 # ============================================================================
 # dylib: pinning the MR_REFUSED/MR_FAIL split (rewrite.h) through mr_apply_file
-# and mi_open, which reaching this verb from macho9's own EX_REFUSED/EX_FAIL
+# and mi_open, which reaching this verb from machotool's own EX_REFUSED/EX_FAIL
 # checks never exercised. Without these, reverting the reclassification in
 # src/rewrite.c leaves this whole suite green -- confirmed by temporarily
 # reverting the 64-bit-fat classification below and watching this section's
@@ -1447,7 +1447,7 @@ fi
 # the operation that actually removed the load command -- as having matched
 # nothing, which is false. This is exactly tests/change_dylib_test.sh's
 # historical-bug regression case and compat/translate.sh's accumulation of
-# -change/-delete into one macho9 invocation, reached through this same
+# -change/-delete into one machotool invocation, reached through this same
 # code path.
 build_main "$T/dylib_conflict_fixture"
 conflict_path="@loader_path/libconflict.dylib"
@@ -1567,13 +1567,13 @@ mtip segment "$T/segment_fw_fixture" __DATA __DATA_R9 --fatal-warnings \
 # dylib -append / -insert / -delete / -reexport
 #
 # -replace and --allow-grow (above) exercise only two of change_dylib's
-# translation targets. The mapping itself -- macho9's flag to change_dylib's
+# translation targets. The mapping itself -- machotool's flag to change_dylib's
 # -- is the only new logic dylib/rpath add, so every op needs its own
 # observable check, not just an exit code: a swapped mapping (say -append
 # landing on change_dylib's -insert) would ship silently and INVERT dylib
 # initialization order, which is the whole reason -insert exists (see
 # docs/PROPOSAL.md "Why these names"). None of these dylibs need to exist on
-# disk -- only the load-command rewrite is being checked here, via `macho9
+# disk -- only the load-command rewrite is being checked here, via `machotool
 # info`, never by running the binary.
 # ============================================================================
 spare="@loader_path/libspare.dylib"
@@ -1724,7 +1724,7 @@ mtip rpath "$T/rpath_fw_ok_fixture" --fatal-warnings \
 # indistinguishable from an -append that silently stood in for it -- which is
 # exactly the wrong answer this operation exists to rule out
 # (docs/PROPOSAL.md: "flipping their order flips which one loads"). Every
-# assertion below therefore compares POSITIONS in `macho9 info`'s rpath list,
+# assertion below therefore compares POSITIONS in `machotool info`'s rpath list,
 # never mere presence.
 #
 # `grep -n` over info's own stable "  rpath=" lines gives those positions
@@ -1805,7 +1805,7 @@ empty_all=$(rpath_positions "$T/rpath_insert_empty" | sed 's/^[0-9]* //' | tr '\
 # failure rather than as a passing byte comparison.
 if [ "$signing_enforced" -eq 1 ]; then
     skip "rpath: -insert result still runs" \
-        "this host SIGKILLs any binary modified since it was signed at link time (established independently of macho9 by the host probe above)"
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of machotool by the host probe above)"
 elif (cd "$T" && ./rpath_insert_fixture) >"$T/rpath_insert_run.out" 2>&1; then
     ok "rpath: -insert result still runs"
 else
@@ -1815,7 +1815,7 @@ fi
 # ============================================================================
 # segment: rename every matching LC_SEGMENT_64, and its sections' copy
 # ============================================================================
-# `macho9 info` prints a segment's segname but NOT the copy of that name each
+# `machotool info` prints a segment's segname but NOT the copy of that name each
 # section_64 carries, and the section copies are half of what this verb must
 # change (getsectiondata matches on the section's copy -- see
 # src/segname.h's header comment). segread below is a purpose-built
@@ -1983,7 +1983,7 @@ grep -q "^SEG __DATA$" "$T/segs_after" \
 grep -q "^SEG __DATA_R9$" "$T/segs_after" \
     && ok "segment: the new name is what landed" \
     || bad "segment: new name" "no __DATA_R9 segment in: $(cat "$T/segs_after")"
-# The half `macho9 info` cannot see: every section's own copy of the name.
+# The half `machotool info` cannot see: every section's own copy of the name.
 if grep -q "^SECT __DATA/" "$T/segs_after"; then
     bad "segment: section segnames" "a section still names __DATA: $(cat "$T/segs_after")"
 else
@@ -2004,7 +2004,7 @@ grep -q "^SEG __TEXT$" "$T/segs_after" && grep -q "^SECT __TEXT/__text$" "$T/seg
     || bad "segment: collateral" "__TEXT changed: $(cat "$T/segs_after")"
 if [ "$signing_enforced" -eq 1 ]; then
     skip "segment: the renamed binary still runs" \
-        "this host SIGKILLs any binary modified since it was signed at link time (established independently of macho9 by the host probe above)"
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of machotool by the host probe above)"
 elif (cd "$T" && ./segment_fixture) >"$T/segment_run.out" 2>&1; then
     ok "segment: the renamed binary still runs"
 else
@@ -2087,7 +2087,7 @@ cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
 "$MACHOTOOL" verify "$T/implausible" >/dev/null 2>"$T/imp_verify.err" || true
 grep -q 'implausible' "$T/imp_verify.err" \
     && ok "segment: the fixture really is one mg_plausible rejects" \
-    || bad "segment: mg_plausible fixture" "macho9 verify did not call it implausible: $(cat "$T/imp_verify.err")"
+    || bad "segment: mg_plausible fixture" "machotool verify did not call it implausible: $(cat "$T/imp_verify.err")"
 
 # An ordinary operation on it still meets the gate and is refused, with the
 # input left alone -- so the skip below is narrow, not a hole.
@@ -2863,7 +2863,7 @@ build_main_two_dylibs "$T/edit_quiet"
 
 # Statements run one at a time, so each `dylib insert` goes to the front of
 # the image the statement before it left: two insert lines land in the
-# REVERSE of the order written, where `macho9 dylib -insert A -insert B`
+# REVERSE of the order written, where `machotool dylib -insert A -insert B`
 # keeps its order. The README and src/edit.h disclose that; this pins it.
 # Two 32-byte commands overflow the 56-byte pad the modern cross runner's
 # linker leaves (as the `edit --verbose` insert case above notes), so both
@@ -2890,7 +2890,7 @@ echo "$cins2" | grep -qxF "  ordinal=1 path=/A" && echo "$cins2" | grep -qxF "  
 # reallocates the image partway through the script, and the NEXT statement
 # must run against the reallocated buffer. build_main's fixture is
 # MH_EXECUTE and PIE, the one shape mg_grow_header grows. The appended path
-# is sized from the fixture's own pad as `macho9 info` reports it, not
+# is sized from the fixture's own pad as `machotool info` reports it, not
 # hard-coded, because each host's linker leaves a different pad: an
 # LC_LOAD_DYLIB is 24 bytes plus the path and its NUL, so a path longer
 # than the pad cannot fit in it. Messages are cut short because the path is
@@ -2899,7 +2899,7 @@ build_main "$T/edit_grow"
 grow_pad=$("$MACHOTOOL" info "$T/edit_grow" \
     | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
 if [ -z "$grow_pad" ]; then
-    bad "edit allow-grow: fixture setup" "macho9 info reported no header pad"
+    bad "edit allow-grow: fixture setup" "machotool info reported no header pad"
     grow_pad=0
 fi
 grow_path="/$(printf "%${grow_pad}s" '' | tr ' ' x)"
@@ -2929,7 +2929,7 @@ echo "$grow_info" | grep -q "LC_UUID" \
     && bad "edit allow-grow" "LC_UUID survived: the statement after the grow did not apply" \
     || ok "edit: allow-grow: the statement after the grow applied to the grown image"
 "$MACHOTOOL" verify "$T/edit_grow_out" >/dev/null 2>"$T/grow_verify.err" \
-    && ok "edit: allow-grow: the result passes macho9 verify" \
+    && ok "edit: allow-grow: the result passes machotool verify" \
     || bad "edit allow-grow" "verify refused the result: $(cat "$T/grow_verify.err")"
 
 # version-min set and allow-grow. LC_VERSION_MIN_MACOSX needs 16 bytes of
@@ -2939,7 +2939,7 @@ echo "$grow_info" | grep -q "LC_UUID" \
 # append whose LC_LOAD_DYLIB is the largest multiple of 8 that fits. An
 # LC_LOAD_DYLIB is 24 bytes plus the path and its NUL, rounded up to 8, so a
 # path of C-25 bytes makes a command of exactly C, leaving pad % 8 bytes --
-# fewer than 16. Sized from `macho9 info`, not hard-coded, because each
+# fewer than 16. Sized from `machotool info`, not hard-coded, because each
 # host's linker leaves a different pad.
 vm_pad_of() {
     "$MACHOTOOL" info "$1" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p'
@@ -2991,10 +2991,10 @@ grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
     && ok "edit: allow-grow: LC_VERSION_MIN_MACOSX is in the written image" \
     || bad "edit version-min" "no LC_VERSION_MIN_MACOSX after the grow"
 "$MACHOTOOL" verify "$T/vm_e_out" >/dev/null 2>"$T/vm_verify.err" \
-    && ok "edit: allow-grow: the grown image passes macho9 verify" \
+    && ok "edit: allow-grow: the grown image passes machotool verify" \
     || bad "edit version-min" "verify refused: $(cat "$T/vm_verify.err")"
 
-# macho9 minos takes --allow-grow, after the version, as dylib/rpath take
+# machotool minos takes --allow-grow, after the version, as dylib/rpath take
 # their flags; without it the verb refuses exactly as before.
 cp "$T/vm_tight" "$T/vm_m"
 vm_m_before=$(sha "$T/vm_m")
@@ -3021,7 +3021,7 @@ vm_m_grows=$(grep -c "grew header pad" "$T/vm_m_yes.out" || true)
     && ok "minos: --allow-grow: LC_VERSION_MIN_MACOSX is present" \
     || bad "minos --allow-grow" "no LC_VERSION_MIN_MACOSX after the grow"
 "$MACHOTOOL" verify "$T/vm_m_out" >/dev/null 2>"$T/vm_m_verify.err" \
-    && ok "minos: --allow-grow: the grown file passes macho9 verify" \
+    && ok "minos: --allow-grow: the grown file passes machotool verify" \
     || bad "minos --allow-grow" "verify refused: $(cat "$T/vm_m_verify.err")"
 rc=0
 "$MACHOTOOL" minos "$T/vm_m" "$T/vm_m_out" 10.9 --bogus >/dev/null 2>&1 || rc=$?
@@ -3078,7 +3078,7 @@ grep -q "slice arm64: moved from offset" "$T/fat.err" \
     && ok "edit: the x86_64 slice carries the appended dylib" \
     || bad "edit fat" "the appended dylib is not in slice 0"
 "$MACHOTOOL" verify "$T/fat_out0" >/dev/null 2>"$T/fat_v.err" \
-    && ok "edit: the grown x86_64 slice passes macho9 verify" \
+    && ok "edit: the grown x86_64 slice passes machotool verify" \
     || bad "edit fat" "verify refused slice 0: $(cat "$T/fat_v.err")"
 cmp -s "$T/fat_out1" "$T/fat_s1" \
     && ok "edit: the arm64 slice is byte-identical, though it moved" \

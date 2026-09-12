@@ -5,7 +5,7 @@
  * directly in the header. Splitting into grow.h (declarations) + grow.c
  * (definitions) is why each one below lost its `static` -- external linkage
  * is what a declaration in a header now promises callers in other
- * translation units (change_dylib.c, cli/macho9.c, tests/grow_test.c).
+ * translation units (change_dylib.c, cli/machotool.c, tests/grow_test.c).
  * Nothing else changed in this move; characterize and the (also-moved)
  * grow_test are the proof. */
 
@@ -750,7 +750,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
      * ran and `verify` printed a verdict it had not reached.
      *
      * This path says so on stderr because the caller that matters prints
-     * "FAILED (see above)" (cli/macho9.c's cmd_verify) and a silent -1 here
+     * "FAILED (see above)" (cli/machotool.c's cmd_verify) and a silent -1 here
      * is what made that line contentless -- the exact fingerprint this bug
      * was finally identified by. The refusal is correct and now rare; it
      * should still be legible when it happens.

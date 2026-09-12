@@ -3,14 +3,14 @@
  * down over it, zero the freed tail bytes (they become header pad), and fix
  * up ncmds/sizeofcmds.
  *
- * A FIXTURE BUILDER, for the tests that need a binary macho9 minos (and
+ * A FIXTURE BUILDER, for the tests that need a binary machotool minos (and
  * add_version_min) has something to do to. A fixture linked with
  * -mmacosx-version-min=10.9 by a 10.9 linker already CARRIES the one load
  * command those tools add, so without this a "it added the command"
  * assertion passes against a tool that does nothing at all.
  *
  * Direct structure surgery, compiled by plain $CC with no special flags --
- * the same idiom tests/change_dylib_test.sh's ordinal_of.c uses. Not `macho9
+ * the same idiom tests/change_dylib_test.sh's ordinal_of.c uses. Not `machotool
  * lc -delete` or change_dylib's -strip-lc: neither vocabulary covers
  * LC_VERSION_MIN_MACOSX, and building a test's fixture with the tool under
  * test would be circular anyway.

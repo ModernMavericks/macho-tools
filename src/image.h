@@ -30,7 +30,7 @@ typedef struct {
 
 /* mi_open/mi_open_slack's two failure reasons -- distinguishable so a caller
  * that wants to tell "the file couldn't even be opened or read" apart from
- * "it opened fine and just isn't a valid 64-bit Mach-O" can (cli/macho9.c's
+ * "it opened fine and just isn't a valid 64-bit Mach-O" can (cli/machotool.c's
  * EX_REFUSED/EX_FAIL split, and src/rewrite.c's/src/version_min.c's
  * MR_REFUSED/MR_FAIL, both need exactly this distinction and used to have no
  * way to get it from these two functions). Both are negative so 0 stays

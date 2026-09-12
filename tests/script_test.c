@@ -327,7 +327,7 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
  * round-trips through an actual ms_parse -- not just that one known row's
  * text appears somewhere. tests/cli_test.sh separately counts
  * --capabilities' own "statement " lines (exactly 14, all unique); together
- * the two catch the generator (cli/macho9.c's loop over ms_table_row) and
+ * the two catch the generator (cli/machotool.c's loop over ms_table_row) and
  * the table itself going out of step with each other -- a dropped, extra,
  * or duplicated line on either side. */
 static void test_capabilities_table_round_trips(void) {

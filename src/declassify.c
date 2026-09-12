@@ -319,7 +319,7 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
     struct opbuf rebase, bind;
     ob_init(&rebase); ob_init(&bind);
     /* An allocation failure is an operational failure, not a judgement about
-     * the input, so it is MDCL_ERROR and not MDCL_REFUSED -- cli/macho9.c's
+     * the input, so it is MDCL_ERROR and not MDCL_REFUSED -- cli/machotool.c's
      * EX_REFUSED comment is explicit that "a malloc that failed" must not be
      * reported as a refusal. */
     if (rebase.overflow || bind.overflow) {

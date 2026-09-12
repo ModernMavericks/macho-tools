@@ -1,22 +1,22 @@
 /*
- * macho9 — the multi-call CLI the seven rewriters converge behind.
+ * machotool — the multi-call CLI the seven rewriters converge behind.
  *
  * Grammar settled in docs/PROPOSAL.md ("Verbs"). The subset this build
  * actually implements, verbatim:
  *
- *   macho9 declassify IN OUT
- *   macho9 dylib FILE OUT [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert -reexport
- *   macho9 rpath FILE OUT [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert
- *   macho9 segment FILE OUT OLD NEW
- *   macho9 retag-swift FILE OUT
- *   macho9 lc FILE OUT [--fatal-warnings] -delete KIND
- *   macho9 grow FILE OUT N
- *   macho9 minos FILE OUT 10.9 [--allow-grow]
- *   macho9 info FILE
- *   macho9 verify FILE
- *   macho9 edit FILE OUT SCRIPT [--verbose]
+ *   machotool declassify IN OUT
+ *   machotool dylib FILE OUT [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert -reexport
+ *   machotool rpath FILE OUT [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert
+ *   machotool segment FILE OUT OLD NEW
+ *   machotool retag-swift FILE OUT
+ *   machotool lc FILE OUT [--fatal-warnings] -delete KIND
+ *   machotool grow FILE OUT N
+ *   machotool minos FILE OUT 10.9 [--allow-grow]
+ *   machotool info FILE
+ *   machotool verify FILE
+ *   machotool edit FILE OUT SCRIPT [--verbose]
  *
- * Not every line above is implemented by every build -- `macho9 --capabilities`
+ * Not every line above is implemented by every build -- `machotool --capabilities`
  * is the machine-readable truth about which ones are, so the wrapper and this
  * binary never have to move in lockstep (docs/PROPOSAL.md "Migration"). See
  * print_capabilities() below for the exact format and what is real today.
@@ -37,7 +37,7 @@
  * however it is reached.
  *
  * Those last four verbs used to be delegated by RUNNING change_dylib and
- * add_version_min as subprocesses, found next to macho9 on disk. That made
+ * add_version_min as subprocesses, found next to machotool on disk. That made
  * this binary depend at runtime on the very binaries the compat-retirement
  * plan replaces with wrappers around it -- a cycle. Task 0.5 lifted the
  * rewrite out of change_dylib.c's main() into src/rewrite.c and
@@ -98,14 +98,14 @@
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
- * supported -- see below) could not tell "macho9 examined FILE and declined,
+ * supported -- see below) could not tell "machotool examined FILE and declined,
  * on purpose, because of what it found" (not a Mach-O, not plausible, a
  * KIND/version/segment name this build doesn't support, mg_grow_header's own
- * designed refusal) apart from "something actually went wrong running macho9 itself"
+ * designed refusal) apart from "something actually went wrong running machotool itself"
  * (couldn't open/read/write, malloc failed, a usage error). Refusal is
  * load-bearing throughout this codebase -- "-grow refuses rather than
  * guesses" is a global rule, not an incidental behavior -- so a
- * caller that wants to script around "this file just isn't one macho9 will
+ * caller that wants to script around "this file just isn't one machotool will
  * touch" (vs. "retry, or investigate an environment problem") deserves a way
  * to tell the two apart without scraping stderr text, which --capabilities
  * already exists to make unnecessary for everything else this binary
@@ -123,7 +123,7 @@
  * point at which the numbering could change for free -- after `edit` ships,
  * it no longer is.
  *
- * EX_REFUSED is used ONLY at a point where macho9 itself examined the input
+ * EX_REFUSED is used ONLY at a point where machotool itself examined the input
  * and made that call; it is never used for a genuine operational failure (a
  * syscall that failed, a bad number of command-line arguments), save the one
  * allocation fold described below -- EX_FAIL is that catch-all, named the
@@ -181,7 +181,7 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * after the rewrite; this one arrives in the verb's own, immediately.
  *
  * OUT MUST NOT BEGIN WITH '-'. Nothing here treats a positional as a flag, so
- * `macho9 dylib FILE --allow-grow -append /x` -- the old flag-first habit, from
+ * `machotool dylib FILE --allow-grow -append /x` -- the old flag-first habit, from
  * before these verbs took an output -- would otherwise CREATE a file called
  * "--allow-grow" and exit 0, having done something the caller plainly did not
  * ask for. The grammar just moved under every caller, so that is the mistake
@@ -283,7 +283,7 @@ static void print_ops_csv(int is_rpath) {
  *                                  TEXT's shape in a way old parsing breaks.
  *   line 2: "exitcodes ok=0 refused=<N> failed=<M>" -- what this binary's own
  *       exit codes mean: ok=0 always; refused=EX_REFUSED is used wherever
- *       macho9 (or a shared rewrite driver it calls into) examined FILE and
+ *       machotool (or a shared rewrite driver it calls into) examined FILE and
  *       declined on purpose -- bad magic, implausible, an unsupported KIND/
  *       version, a grow mg_grow_header itself refused, new load commands
  *       that don't fit and can't be grown, an unmatched --fatal-warnings
@@ -303,7 +303,7 @@ static void print_ops_csv(int is_rpath) {
  *       use this SAME EX_REFUSED/EX_FAIL split themselves (as MR_REFUSED/
  *       MR_FAIL, rewrite.h, enforced equal to these two by the typedefs
  *       below) -- so their exit codes ARE covered by this line, including
- *       the checks macho9 makes BEFORE calling them (an unknown lc KIND, a
+ *       the checks machotool makes BEFORE calling them (an unknown lc KIND, a
  *       version other than 10.9) and a dylib/rpath/lc run given
  *       --fatal-warnings, where mr_apply_file returns MR_REFUSED for an
  *       operation that matched nothing -- see that flag's own entry below.
@@ -370,10 +370,10 @@ static void print_ops_csv(int is_rpath) {
  *
  * Every verb listed below is unconditional now. dylib/rpath/lc/minos used to
  * be gated on a sibling binary (change_dylib / add_version_min) being present
- * and executable next to macho9, because that is what they ran to do the
+ * and executable next to machotool, because that is what they ran to do the
  * work: advertising them when the sibling was missing would have violated
  * this function's own contract ("never advertise one that errors out") the
- * moment macho9 was packaged apart from them. Task 0.5 removed the
+ * moment machotool was packaged apart from them. Task 0.5 removed the
  * subprocess -- the rewrite is linked in from src/rewrite.c and
  * src/version_min.c now -- so there is no external file left whose absence
  * could make an advertised verb fail, and nothing left to probe. */
@@ -381,7 +381,7 @@ static int print_capabilities(void) {
     printf("format 1\n");
     printf("exitcodes ok=0 refused=%d failed=%d\n", EX_REFUSED, EX_FAIL);
     /* Every rewriting verb reads FILE and writes OUT, the positional right
-     * after it, and refuses an OUT that is FILE: macho9 never writes its
+     * after it, and refuses an OUT that is FILE: machotool never writes its
      * input. A wrapper checks for this line rather than assume the shape. */
     printf("output positional=2 never-writes-input\n");
     printf("verb declassify\n");
@@ -678,7 +678,7 @@ static int cmd_minos(const char *path, const char *out, const char *version, int
  * ops.fatal_unmatched. See cmd_dylib_or_rpath's own comment for what it
  * means and why it is named after `ld`/`gas`'s flag of the same name. */
 static int cmd_lc(int argc, char **argv) {
-    /* argv[0]=macho9 argv[1]="lc" argv[2]=FILE argv[3]=OUT argv[4..]=ops */
+    /* argv[0]=machotool argv[1]="lc" argv[2]=FILE argv[3]=OUT argv[4..]=ops */
     const char *path = argv[2];
     const char *out = argv[3];
     if (bad_out("lc", path, out)) return EX_FAIL;
@@ -763,14 +763,14 @@ static int cmd_lc(int argc, char **argv) {
  * mr_ops.fatal_unmatched's own comment in rewrite.h for the full contract.
  */
 static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
-    /* argv[0]=macho9 argv[1]=verb argv[2]=FILE argv[3]=OUT argv[4..]=ops */
+    /* argv[0]=machotool argv[1]=verb argv[2]=FILE argv[3]=OUT argv[4..]=ops */
     const char *path = argv[2];
     const char *out = argv[3];
     if (bad_out(is_rpath ? "rpath" : "dylib", path, out)) return EX_FAIL;
     /* Fixed-size, capped exactly where change_dylib's own parser caps (see
      * MR_MAX_OPS in src/rewrite.h) so the two front-ends refuse the same
      * inputs -- but in this grammar's vocabulary, since the wrapper contract
-     * is that macho9 never leaks change_dylib's flag spellings. */
+     * is that machotool never leaks change_dylib's flag spellings. */
     mr_change changes[MR_MAX_OPS];   int nchanges = 0;
     mr_change rchanges[MR_MAX_OPS];  int nrchanges = 0;
     const char *appends[MR_MAX_OPS]; int nappends = 0;
@@ -924,7 +924,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  *     change", writes OUT as a copy of FILE, and exits 0; rename_segment
  *     exits 2. This verb hands back the
  *     shared driver's own code, exactly as dylib/rpath/lc do -- but it also
- *     prints `macho9 segment: renamed=<N>`, so a wrapper can tell the two
+ *     prints `machotool segment: renamed=<N>`, so a wrapper can tell the two
  *     apart exactly rather than by inference. See the count's own comment in
  *     cmd_segment below.
  *   - STDOUT. mr_process_thin prints its own "header pad N bytes available"
@@ -977,7 +977,7 @@ static int cmd_segment(const char *path, const char *out,
      *
      * A caller cannot derive it. mseg_rename_lc matches with strncmp over the
      * 16-byte segname field, which is neither NUL-terminated nor free of
-     * whitespace, so reading a name back out of `macho9 info`'s human-readable
+     * whitespace, so reading a name back out of `machotool info`'s human-readable
      * dump gets it wrong in at least two reachable ways -- an OLD longer than
      * 16 bytes whose first 16 match, and a segname containing a space. That is
      * tests/README.md's second lesson ("never parse human-readable output as
@@ -1018,7 +1018,7 @@ static int cmd_segment(const char *path, const char *out,
  * back.
  *
  * MSWIFT_NOT_MACHO is tested BY NAME below, never as `n < 0` -- swift_retag.h
- * says why: a future benign code would otherwise silently become a macho9
+ * says why: a future benign code would otherwise silently become a machotool
  * failure, which is the same "two places deciding one thing" drift the
  * shared module exists to prevent. */
 static int cmd_retag_swift(const char *path, const char *out) {
@@ -1063,7 +1063,7 @@ static int cmd_retag_swift(const char *path, const char *out) {
  * IN OUT, not in place: this was the FIRST verb to read one file and write
  * another, because that is the grammar docs/PROPOSAL.md settled on and what
  * patch_macho's callers pass. IN is only ever read (the whole image is in
- * memory before a byte is written), but `macho9 declassify F F` is no longer
+ * memory before a byte is written), but `machotool declassify F F` is no longer
  * allowed on that account: every rewriting verb here refuses an OUT that is its
  * FILE, up front, and this one is not an exception to a rule it started. The
  * wrapper is what still gives patch_macho's callers an IN == OUT conversion,
@@ -1137,7 +1137,7 @@ static int cmd_declassify(const char *in, const char *out) {
      * could not make -- md_declassify already reported which. NOT a
      * refusal either way: EX_REFUSED's contract above rules out using it
      * for any of those, and a caller scripting around "this file just
-     * isn't one macho9 will touch" would be told the wrong thing. */
+     * isn't one machotool will touch" would be told the wrong thing. */
     if (rc == MDCL_ERROR) return EX_FAIL;
     if (rc != MDCL_CONVERTED && rc != MDCL_PASSTHROUGH) {
         /* A code declassify.h grew that this verb has not been taught. Refuse
@@ -1245,8 +1245,8 @@ static int cmd_edit(int argc, char **argv) {
              * left: every other verb takes its FILE positionally without
              * examining it -- the historical tools open()ed whatever argv
              * handed them, so a file really named "-dashy" is a file name.
-             * Rejecting a single dash here made `macho9 edit -dashy o -` fail
-             * where `macho9 dylib -dashy ...` succeeds, which
+             * Rejecting a single dash here made `machotool edit -dashy o -` fail
+             * where `machotool dylib -dashy ...` succeeds, which
              * tests/wrapper_test.sh's leading-dash case caught the moment the
              * compat wrappers started emitting `edit`. "-" alone stays the
              * stdin marker for SCRIPT. `--output` and `--dry-run` land here

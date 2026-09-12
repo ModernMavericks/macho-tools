@@ -8,20 +8,20 @@
 # five of them exist only in a build of commit 91b30b3 (the last commit
 # carrying all six compat/*.c files; tests/README.md's "Not run by ctest"
 # section has the full account), so that is what to point it at. The NEW
-# side needs a macho9, and by default takes it from the same
+# side needs a machotool, and by default takes it from the same
 # directory -- which was right while both families came out of one build, and
-# is wrong now: it would record what the macho9 OF THAT COMMIT did, not what
+# is wrong now: it would record what the machotool OF THAT COMMIT did, not what
 # this tree's does. Set
 #
 #   MACHO_SWEEP_NEW_BIN=<current bindir>
 #
-# to point the translated side at the macho9 under test. Both directories are
+# to point the translated side at the machotool under test. Both directories are
 # recorded in the matrix header, because a reader cannot otherwise tell which
 # two things a row compares.
 #
 # The deliverable is the matrix it writes (default tests/compat-matrix.tsv),
 # not a pass/fail. Every row says what the OLD tool did and what the
-# compat/translate.sh -> macho9 translation did, so the two can be compared
+# compat/translate.sh -> machotool translation did, so the two can be compared
 # after the C sources are gone. Task 2 deletes them; from that commit on, these
 # rows and the SHA-256s in them are the only surviving record of what the old
 # binaries produced.
@@ -84,7 +84,7 @@
 #              stopping at the first nonzero exit
 #
 # AFTER TASK 2, POINT <bindir> AT A PRE-TASK-2 BUILD. All six tools
-# are /bin/sh wrappers around macho9 now (Task 2 converted five; fix_macho
+# are /bin/sh wrappers around machotool now (Task 2 converted five; fix_macho
 # followed once its divergences were ruled adopted rather than closed), so running this against a current
 # build makes the "old side" a wrapper and the comparison close to
 # tautological. The bindir is recorded in the matrix header for exactly that
@@ -96,7 +96,7 @@
 #
 # Stdout used to be left out on the grounds that mr_apply_file prints a "header
 # pad"/"updated" pair per pass, so one old invocation and a sequence of two or
-# three macho9 ones cannot possibly print the same thing, and that the plan's
+# three machotool ones cannot possibly print the same thing, and that the plan's
 # Task 0 evidence found no caller parsing these tools' stdout as data. Both
 # statements are still true, but leaving it unmeasured meant nobody knew HOW
 # FAR apart the two sides' stdout was -- and Task 2's wrappers have to close
@@ -110,7 +110,7 @@
 #   re-running anything.
 #
 # A row WITHOUT "+stdout" is a positive result: that old invocation and its
-# translation printed the same bytes, so a wrapper that simply passes macho9's
+# translation printed the same bytes, so a wrapper that simply passes machotool's
 # stdout through is byte-identical there.
 #
 # The first line of each side's STDERR is recorded too, so a reader can see
@@ -129,7 +129,7 @@
 #
 # `blocked` splits by WHO said no, in the refuser column: refuser=macho9 is the
 # regression-shaped one; refuser=translate is compat/translate.sh refusing on
-# purpose, because no macho9 command line means what that argv meant. Those two
+# purpose, because no machotool command line means what that argv meant. Those two
 # must not be read as the same thing, and the generated matrix header says so
 # as well. NOTE, for anyone reading the COMMITTED tests/compat-matrix.tsv: it
 # has 31 refuser=translate rows, and only ONE of them is `blocked+stdout` --
@@ -164,7 +164,7 @@ BIN="${1:?usage: compat-sweep.sh <bindir> [outfile]}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 OUT="${2:-$ROOT/tests/compat-matrix.tsv}"
-# The macho9 the TRANSLATED side runs; see the header. Defaults to $BIN so a
+# The machotool the TRANSLATED side runs; see the header. Defaults to $BIN so a
 # single-build invocation still works exactly as it did.
 NEWBIN="${MACHO_SWEEP_NEW_BIN:-$BIN}"
 
@@ -191,7 +191,7 @@ mkdir -p "$T/A" "$T/B"
 # is reproducible from the repo alone. It carries one LC_LOAD_DYLIB, LC_UUID,
 # LC_SOURCE_VERSION, LC_DYLIB_CODE_SIGN_DRS, a __DATA segment and 2576 bytes of
 # header pad -- but NO LC_RPATH, which would collapse every -*-rpath row into
-# "nothing matched". So the base gets one appended, ONCE, with macho9 (the same
+# "nothing matched". So the base gets one appended, ONCE, with machotool (the same
 # mr_apply_file both families reach), and its digest is printed into the matrix
 # header so a later reader knows exactly what these rows describe.
 #
@@ -204,7 +204,7 @@ mkdir -p "$T/A" "$T/B"
 # bug lived in. The spare has nothing bound to it, so -delete really deletes
 # and really renumbers. The binding refusal is still swept, on libSystem, in
 # EXTRA CASES.
-# Prepared with $BIN's macho9, not $NEWBIN's, deliberately: the base image is
+# Prepared with $BIN's machotool, not $NEWBIN's, deliberately: the base image is
 # the INPUT both sides are handed, so it must not come from the build under
 # test. Its digest is printed into the matrix header either way.
 cp "$ROOT/tests/fixture.macho" "$T/base" || exit 1
@@ -555,7 +555,7 @@ run_case fix_macho f -change "$DY_OLD" "$DY_NEW1" -strip_build_version -rename_s
 
 # The capacity caps: exactly at, and one past, each one. change_dylib prints
 # the origin message; compat/translate.sh must print the same text (ruling from
-# Task 0.5 -- routing through macho9 would print macho9's own wording).
+# Task 0.5 -- routing through machotool would print machotool's own wording).
 i=0; strip16=''; while [ $i -lt 16 ]; do strip16="$strip16 -strip-lc uuid"; i=$((i+1)); done
 run_case change_dylib f $strip16
 run_case change_dylib f $strip16 -strip-lc uuid
@@ -603,7 +603,7 @@ done
 
 # The chained rename: fix_macho breaks out of its rename loop on the first
 # match and does NOT re-examine the segment, so the second pair never fires.
-# The translation runs two separate `macho9 segment` passes, and the second
+# The translation runs two separate `machotool segment` passes, and the second
 # one's input is the first one's output.
 run_case fix_macho f -rename_seg "$SEG_OLD" __X -rename_seg __X __Y
 # ... and the three neighbouring shapes that must NOT be refused: same OLD
@@ -620,7 +620,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "# tests/compat-matrix.tsv -- generated by tests/compat-sweep.sh; DO NOT EDIT BY HAND."
     echo "#"
     echo "# Every enumerated argument combination of the six historical tools, run BOTH"
-    echo "# ways on the same input: the old binary once, and compat/translate.sh's macho9"
+    echo "# ways on the same input: the old binary once, and compat/translate.sh's machotool"
     echo "# command line(s) in the order it printed them. After Task 2 deletes the C"
     echo "# sources this file is the surviving record of what those binaries did."
     echo "#"
@@ -634,14 +634,14 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#              rows are only a record of the C binaries if that bindir"
     echo "#              is a build of commit 91b30b3 -- see this script's header)"
     echo "# new side:   $NEWBIN/machotool"
-    echo "#             (the macho9 the TRANSLATED side ran; the two directories"
-    echo "#              differ whenever the C tools and the macho9 under test"
+    echo "#             (the machotool the TRANSLATED side ran; the two directories"
+    echo "#              differ whenever the C tools and the machotool under test"
     echo "#              come from different commits, which after Task 2 is the"
     echo "#              only way to compare the two families at all)"
     echo "#"
     echo "# columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg  old_out  new_out"
     echo "#   old_argv     the old tool's argv[1..], file named 'f'"
-    echo "#   translation  the macho9 command lines, ';'-joined, or '-' for none"
+    echo "#   translation  the machotool command lines, ';'-joined, or '-' for none"
     echo "#   *_sha        sha256[0:16] of that side's file AFTER the run; equal to the"
     echo "#                base digest above means the run changed nothing"
     echo "#   refuser      which side said no: translate (the old grammar's own"
@@ -665,24 +665,24 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#   The first line of each side's stderr is in every row too."
     echo "#"
     echo "#   The class ignores the EXACT exit code, only whether it was zero. A"
-    echo "#   FRESH run of this generator reflects whatever cli/macho9.c currently"
+    echo "#   FRESH run of this generator reflects whatever cli/machotool.c currently"
     echo "#   says -- unlike the checked-in tests/compat-matrix.tsv, a frozen"
     echo "#   measurement against the numbering in effect when IT was generated,"
     echo "#   annotated separately rather than kept in sync with this text; see its"
     echo "#   own header. Today, that leaves exactly ONE row differing there, and it"
     echo "#   says so in its own columns rather than its class:"
     echo "#"
-    echo "#   patch_macho on an ABSENT file exits its own flat 1; macho9 declassify"
+    echo "#   patch_macho on an ABSENT file exits its own flat 1; machotool declassify"
     echo "#   exits 2 (EX_FAIL) -- md_declassify's own mi_open_slack call cannot even"
     echo "#   open the file, which is MDCL_ERROR (an operational failure), not"
     echo "#   MDCL_NOT_MACHO. patch_macho on a NON-MACH-O (but readable) file no"
     echo "#   longer differs at all: both sides exit 1 (patch_macho's flat 1;"
-    echo "#   macho9 declassify's EX_REFUSED, which this build numbers 1). That"
+    echo "#   machotool declassify's EX_REFUSED, which this build numbers 1). That"
     echo "#   agreement is new and coincidental, not designed -- EX_REFUSED was 2"
     echo "#   when this repo's exit-code scheme first shipped, and this file's own"
     echo "#   MEASURED row (frozen in tests/compat-matrix.tsv, not this generator's"
     echo "#   live text) still records BOTH cases as divergent, from when they both"
-    echo "#   were. The absent-file difference is deliberate -- cli/macho9.c's"
+    echo "#   were. The absent-file difference is deliberate -- cli/machotool.c's"
     echo "#   cmd_declassify names the EXIT CODES distinction as one of FOUR"
     echo "#   DELIBERATE DIVERGENCES FROM patch_macho -- but, like the non-Mach-O"
     echo "#   one before it, it is not visible to anyone grepping by class: both"
@@ -694,8 +694,8 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#   must be REPRODUCED by the wrapper, not kept."
     echo "#"
     echo "#   blocked with refuser=translate is compat/translate.sh refusing ON"
-    echo "#   PURPOSE -- an argv the old tool accepted that no macho9 command line"
-    echo "#   means the same thing as. It is not a macho9 gap. blocked with"
+    echo "#   PURPOSE -- an argv the old tool accepted that no machotool command line"
+    echo "#   means the same thing as. It is not a machotool gap. blocked with"
     echo "#   refuser=macho9 is the regression-shaped one."
     echo "#"
     echo "#   The plan's sixth category, \"crashed -> refuses\", has no class of its"

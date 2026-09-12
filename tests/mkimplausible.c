@@ -8,7 +8,7 @@
  * WHY IT EXISTS. src/rewrite.c's mr_process_thin skips mg_plausible when the
  * operation set is a rename only, because that gate asks an OFFSET question
  * and a segment rename moves no offset (the reasoning is at the site). Two
- * suites assert that: tests/cli_test.sh at the `macho9 segment` level and
+ * suites assert that: tests/cli_test.sh at the `machotool segment` level and
  * tests/wrapper_test.sh through the `rename_segment` wrapper. Both need an
  * input the gate rejects.
  *
@@ -24,7 +24,7 @@
  * How far that generalises is bounded by what has been swept, and this
  * comment used to overclaim it as "nothing to use on ANY host". What was
  * actually measured: the old scan's own filter (`grep -q 'no known
- * function'`, over `macho9 lc COPY -delete uuid`) run RECURSIVELY over every
+ * function'`, over `machotool lc COPY -delete uuid`) run RECURSIVELY over every
  * thin 64-bit .dylib/.so/.bundle under /usr/lib, /usr/libexec and
  * /System/Library/PrivateFrameworks on this 10.9 host -- 131 files -- turns
  * up no usable victim. It DID turn one up until src/grow.c's mg_plausible
@@ -67,7 +67,7 @@
  * for one -- and the original reason still stands on its own: a scan
  * passes on the target and silently covers NOTHING on the cross/CI runner,
  * where those dylibs live only in the dyld shared cache: the one behavioural
- * change this repo made to macho9 would have shipped with no coverage at all
+ * change this repo made to machotool would have shipped with no coverage at all
  * anywhere it is actually built. A committed, hand-built fixture asks the same
  * question on every host, which is this suite's rule for exactly this reason
  * (tests/README.md, "A fixture built without -mmacosx-version-min=10.9 asks a
@@ -88,11 +88,11 @@
  * validation and mg_classify's per-command and per-section-type checks, it has
  * header pad to spare, and it carries
  *
- *   an LC_UUID    so that `macho9 lc -delete uuid` has something to strip and
+ *   an LC_UUID    so that `machotool lc -delete uuid` has something to strip and
  *                 therefore reaches the gate at all (mr_apply_file returns
  *                 early, before the gate, when nothing changed), and
  *   a __DATA segment with two sections
- *                 so that `macho9 segment __DATA __X` has something to rename
+ *                 so that `machotool segment __DATA __X` has something to rename
  *                 AND has section segname copies to rename with it.
  *
  * It carries NO dylib load command, so it cannot be refused earlier by

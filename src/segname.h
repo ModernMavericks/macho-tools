@@ -5,7 +5,7 @@
  * repeats.
  *
  * This is compat/rename_segment.c's rs_rename_lc, lifted out of that tool so
- * it is a library function rather than one program's static. cli/macho9.c's
+ * it is a library function rather than one program's static. cli/machotool.c's
  * `segment` verb and src/edit.c's `segment rename` statement are its only C
  * front-ends, both through src/rewrite.h's mr_ops; the old grammar,
  * `rename_segment binary OLDNAME NEWNAME`, reaches this same code through

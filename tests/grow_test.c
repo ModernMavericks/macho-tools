@@ -1634,7 +1634,7 @@ static struct section_64 *find_section_struct(uint8_t *buf, size_t fsize, const 
  * (see src/linkedit.h's ml_bump_all doc comment). What must hold, and is
  * verified separately below via the real CLI (not exercised by this
  * hermetic file), is that the OUTER caller never writes a refused buffer to
- * disk -- confirmed by hand against `macho9 grow` on poked copies of
+ * disk -- confirmed by hand against `machotool grow` on poked copies of
  * tests/fixture.macho for all three guards (section offset, reloff,
  * entryoff): an observation made at or before cbcacd3 (the old numbering,
  * under which EX_REFUSED was 2), which reported exit 2 and left the file

@@ -87,7 +87,7 @@ typedef struct {
  * before it left, so an `insert` goes first in the image as that statement
  * finds it. `dylib insert A` then `dylib insert B` leaves B at ordinal 1 and
  * A at ordinal 2, and `rpath insert A` then `rpath insert B` has dyld search
- * B before A -- the reverse of `macho9 dylib FILE -insert A -insert B`, which
+ * B before A -- the reverse of `machotool dylib FILE -insert A -insert B`, which
  * places its whole list at once, in the order given.
  *
  * REPORT, to o->log. Most refusal lines end by naming both files and what
@@ -163,7 +163,7 @@ typedef struct {
  * grew header pad: ..." as mr_apply_image. mswift_retag_image (`swift-abi`)
  * prints nothing. On stderr: each core's own refusals, and the "matched
  * nothing" reports described under DIRECTIVES. NEVER printed by an edit
- * run, because they belong to the verbs and not the cores: `macho9
+ * run, because they belong to the verbs and not the cores: `machotool
  * dylib`/`rpath`/`lc`'s "Updated PATH (N bytes)", `minos`'s "Added
  * LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)", `retag-swift`'s
  * "PATH: retagged N class record(s)", and `declassify`'s "Wrote OUT (N
