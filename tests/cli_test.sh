@@ -2282,11 +2282,11 @@ nwi segment __DATA __DATA_NWI
 # an output, and nothing here treats a positional as a flag -- so without the
 # check it creates a regular file called "--allow-grow" and exits 0, doing
 # something the caller did not ask for. Every verb that takes an OUT gets the
-# same answer from the same place (mt_bad_out); these eight are the ones whose
+# same answer from the same place (bad_out); these eight are the ones whose
 # positionals are at fixed argv indices, and `edit`, whose parser scans for
 # them, is asserted in its own section below.
 # The operands after OUT are each verb's own, because the argc-exact verbs reach
-# their usage line before mt_bad_out if the count is wrong -- which would make
+# their usage line before bad_out if the count is wrong -- which would make
 # this pass for the wrong reason.
 for nwid_verb in dylib rpath lc segment minos retag-swift declassify grow; do
     case $nwid_verb in
@@ -2524,7 +2524,7 @@ otool -L "$T/edit_fixture_out" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
     || bad "edit" "the dylib replace did not land: $(otool -L "$T/edit_fixture_out")"
 
 # AN OUT THAT IS FILE IS REFUSED BEFORE THE SCRIPT IS EVEN READ. `edit` reaches
-# the same mt_bad_out every other OUT-taking verb does, and it reaches it before
+# the same bad_out every other OUT-taking verb does, and it reaches it before
 # it opens SCRIPT -- which is why SCRIPT here is a path that does not exist: the
 # answer must be the refusal about OUT, not a complaint about the script.
 rc=0
@@ -2570,7 +2570,7 @@ rc=0
     || bad "edit --output gone" "expected 2 and no output, got $rc: $(cat "$T/edit_output.err")"
 
 # AN OUT BEGINNING WITH '-' IS REFUSED, not created -- the same answer, from the
-# same place (mt_bad_out), as the eight fixed-arity verbs get above. A single
+# same place (bad_out), as the eight fixed-arity verbs get above. A single
 # dash, because every flag this verb takes has two and a double-dashed OUT is
 # caught as an unknown flag first.
 build_main "$T/edit_dashout"

@@ -658,7 +658,7 @@ rm -rf "$T/adir"
 
 # 5c. AN OUT WHOSE NAME BEGINS WITH A DASH is still a file name, as it was for
 #     the C tool's open(). `macho9 declassify` refuses such an OUT now
-#     (mt_bad_out, since `-flag`-looking positionals are the mistake its own
+#     (bad_out, since `-flag`-looking positionals are the mistake its own
 #     grammar change invites), and the wrapper is unaffected because the OUT it
 #     hands macho9 is the temp -- whose name starts with a dot. Pinned so that
 #     refusal cannot migrate down here, where it would break a caller the C tool

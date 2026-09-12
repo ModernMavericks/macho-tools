@@ -665,7 +665,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     int verbose = o ? o->verbose : 0;
 
     /* BEFORE ANYTHING IS READ. `out` is required, and it may not be `path` --
-     * the same two mistakes cli/macho9.c's mt_bad_out refuses for every verb
+     * the same two mistakes cli/machotool.c's bad_out refuses for every verb
      * that names an OUT, refused here as well because me_run is reachable
      * without going through that CLI. wa_write_new would refuse the second at
      * the write, but only after the whole rewrite; MR_FAIL, not MR_REFUSED,

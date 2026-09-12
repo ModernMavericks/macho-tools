@@ -556,7 +556,7 @@ static void test_a_failure_part_way_writes_nothing(void) {
 }
 
 /* OUT MAY NOT BE THE INPUT, and me_run answers that itself rather than leaving
- * it to the write: the CLI refuses it up front too (mt_bad_out, cli/macho9.c),
+ * it to the write: the CLI refuses it up front too (bad_out, cli/machotool.c),
  * but me_run is reachable from elsewhere and this is the property the whole
  * conversion is for. MR_FAIL, not MR_REFUSED: naming the same file twice is a
  * mistake about the command, not a considered verdict about the image. */
