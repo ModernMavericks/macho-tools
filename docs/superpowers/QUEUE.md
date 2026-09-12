@@ -15,6 +15,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 9 | `macho9` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | plan written; runs after 10 and 11 |
 | 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | **done**, pushed, `b76ddf1..9ae6835` |
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
+| 12 | An `insert_dylib` wrapper | — | — | not started; not yet designed |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -55,6 +56,20 @@ treats a comment that claims more than the code does as a defect. Sequencing a
 documentation pass *after* the review would mean the reviewer read the version
 that was not yet worth reading; sequencing it before would mean polishing prose
 about code the review is about to change.
+
+**The README is a named input to item 6**, raised by the repo owner
+2026-09-11: it is far too long, and its opening sentence does not parse.
+
+- **Length.** 360 lines, of which the `macho9 edit` manual (its file format,
+  statements, directives, worked example and limits) is about 200 — 55% of the
+  front door spent on one verb. That material is reference, not introduction;
+  it wants its own file, with the README keeping a short pointer.
+- **The opening sentence.** "Mach-O surgery for hosts too old to have any"
+  reads as *hosts too old to have any surgery*, which is not the claim. The
+  claim is that the tools that would normally do this work do not exist for,
+  or do not run on, 10.9. Say that plainly.
+- Also: the Layout section explains `compat/` at a length that belongs in
+  `compat/README.md`, which already exists and says it.
 
 One known input to that pass, raised by the repo owner while approving item 5's
 design: **the module prefixes** (`mi_`, `mr_`, `mg_`, `mo_`, `mseg_`, `mswift_`,
@@ -168,6 +183,26 @@ now the one place a bound on `max_end` would go. `edit`'s post-reassembly
 `mfat_parse` would likely catch the result; the verb path has no such re-parse.
 `src/edit.c`'s `char have[256]` slice list, printed by the "no such slice"
 refusals, truncates silently — unreachable with five arch names.
+
+## Item 12: an `insert_dylib` wrapper
+
+Unlike the six in `compat/`, this one would emulate a tool this repo never
+shipped. `Wowfunhappy/insert_dylib` (a fork of `Tyilo/insert_dylib`) is prior
+art we measured ourselves against and took the export-trie rebuild from —
+`docs/prior-art.md`, `src/trie.c`. Nothing in `tests/known-callers.sh`'s
+caller set invokes it, so this is convenience for people who already know that
+grammar, not compatibility debt.
+
+The capability is already here under our own grammar: `macho9 dylib FILE
+-append PATH` is insert_dylib's core act, `-insert` puts it at ordinal 1, and
+`lc -delete codesig` covers `--strip-codesig`. What a wrapper adds is its CLI
+shape — `insert_dylib dylib_path binary [new_binary]`, with `--inplace`,
+`--all-yes`, `--weak`, `--strip-codesig` — which is the part worth designing
+rather than guessing. Two things to settle first: which of its flags have an
+equivalent at all (`--weak` means `LC_LOAD_WEAK_DYLIB`, which the `dylib` verb
+does not emit today), and what the repo owner's actual use of the fork is —
+the answer decides whether this is a full wrapper or one worked example in the
+README. Runs after item 9, since it inherits the `FILE OUT` grammar.
 
 ## Outstanding owner actions
 
