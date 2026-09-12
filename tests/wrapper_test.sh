@@ -50,6 +50,19 @@ skip() { echo "SKIP $1: $2"; }
 fresh() { cp "$FIXTURE" "$T/f"; }
 sha()   { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
+# strip_vm FILE -- remove FILE's LC_VERSION_MIN_MACOSX, so add_version_min has
+# something to do to it. tests/fixture.macho is a real 10.9 binary and already
+# carries one, and a wrapper that installed nothing would pass an "it landed"
+# assertion just as well as one that installed correctly. The reader is
+# tests/strip_version_min.c, shared with tests/cli_test.sh, which needs the
+# same fixture for the same reason; built here on first use.
+strip_vm() {
+    [ -x "$T/strip_version_min" ] \
+        || "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c" \
+        || return 1
+    "$T/strip_version_min" "$1" >/dev/null
+}
+
 # firstline_is <file> <exact text> -- string equality, never a regex. The
 # usage lines below embed $BIN, a path this test does not choose, and a `grep`
 # pattern containing one would treat whatever punctuation the build directory
@@ -139,9 +152,16 @@ rc=$?
 # anything reading it, and every known caller redirects stdout to /dev/null.
 fresh
 run add_version_min f
-grep -q 'macho9 minos f 10.9' "$T/err" \
+grep -q 'macho9 minos f f.new 10.9' "$T/err" \
     && ok "teaching message: on stderr" \
     || bad "teaching message" "not on stderr: $(cat "$T/err")"
+# The teaching form is COMPLETE: macho9 never writes its input, so the
+# equivalent a reader is shown ends with the install step the wrapper does
+# for itself. Without it the block would teach a command that leaves FILE
+# untouched and a stray f.new beside it.
+has_line "$T/err" '    mv -f f.new f' \
+    && ok "teaching message: ... and it names the install step too" \
+    || bad "teaching message" "no 'mv -f f.new f' line: $(cat "$T/err")"
 grep -q 'macho9 minos' "$T/out" \
     && bad "teaching message" "leaked onto stdout: $(cat "$T/out")" \
     || ok "teaching message: not on stdout"
@@ -398,24 +418,63 @@ chmod 755 "$T/ro"; rm -rf "$T/ro"
 
 # ---- add_version_min ----------------------------------------------------
 #
-# The one tool with nothing to reshape: both front-ends call
-# mv_add_version_min, so stdout comes out of the same printf. Asserted by
-# comparing against `macho9 minos` directly.
+# Both front-ends call mv_add_version_min, so stdout comes out of the same
+# printf -- with ONE difference the wrapper makes on purpose: `macho9 minos`
+# ends by naming the file it wrote, and the C tool, which rewrote FILE in
+# place, never did. So the wrapper's stdout must be macho9's minus that final
+# "Wrote ..." line, and the bytes it installs over FILE must be macho9's OUT.
+# Asserted by running both and comparing, not by pinning a transcript.
 fresh
+strip_vm "$T/f"
+avm_in=$(sha "$T/f")
 run add_version_min f
 avmrc=$rc
 cp "$T/out" "$T/avm.out"
 avmsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/macho9" minos f 10.9 ) >"$T/m9.out" 2>/dev/null
-[ "$avmrc" -eq 0 ] && cmp -s "$T/avm.out" "$T/m9.out" && [ "$avmsha" = "$(sha "$T/f")" ] \
+strip_vm "$T/f"
+( cd "$T" && "$BIN/macho9" minos f m9out 10.9 ) >"$T/m9.out" 2>/dev/null
+sed '$d' "$T/m9.out" > "$T/m9.trimmed"
+[ "$avmrc" -eq 0 ] && cmp -s "$T/avm.out" "$T/m9.trimmed" && [ "$avmsha" = "$(sha "$T/m9out")" ] \
     && ok "add_version_min: identical to macho9 minos, stdout and bytes" \
     || bad "add_version_min" "exit $avmrc; stdout or bytes differ from macho9 minos'"
+[ "$avmsha" != "$avm_in" ] \
+    && ok "add_version_min: ... and it really changed the file it was given" \
+    || bad "add_version_min" "the fixture came out unchanged, so nothing above was proved"
+[ "$(sed -n '$p' "$T/m9.out" | cut -c1-6)" = 'Wrote ' ] \
+    && ok "add_version_min: the line it suppresses is macho9's own 'Wrote ...'" \
+    || bad "add_version_min" "macho9 minos did not end with a Wrote line: $(cat "$T/m9.out")"
 
 run add_version_min
 [ "$rc" -eq 1 ] && firstline_is "$T/err" "Usage: $BIN/add_version_min binary" \
     && ok "add_version_min: no argument is a usage error naming argv[0]" \
     || bad "add_version_min usage" "exit $rc, stderr: $(head -1 "$T/err")"
+
+# The wrappers keep editing FILE "in place" -- by writing a temp beside the
+# real target and mv-ing it over. A symlinked FILE updates its target and
+# stays a symlink; a hard-linked FILE is refused; a refusal leaves no temp
+# behind; mode and xattrs survive.
+cp "$FIXTURE" "$T/w_real"; strip_vm "$T/w_real"
+ln -s w_real "$T/w_link"
+( cd "$T" && "$BIN/add_version_min" w_link ) >/dev/null 2>"$T/w.err" \
+    && ok "wrapper: a symlinked FILE is edited" || bad "wrapper symlink" "$(cat "$T/w.err")"
+[ -L "$T/w_link" ] && "$BIN/macho9" info "$T/w_real" | grep -q LC_VERSION_MIN_MACOSX \
+    && ok "wrapper: ... through the link, which is still a link" || bad "wrapper symlink" "link replaced or target unchanged"
+
+cp "$FIXTURE" "$T/w_h1"; strip_vm "$T/w_h1"; ln "$T/w_h1" "$T/w_h2"
+h_before=$(shasum -a 256 < "$T/w_h1")
+rc=0; "$BIN/add_version_min" "$T/w_h1" >/dev/null 2>"$T/wh.err" || rc=$?
+[ "$rc" -eq 1 ] && [ "$(shasum -a 256 < "$T/w_h1")" = "$h_before" ] \
+    && ok "wrapper: a hard-linked FILE is refused (1), untouched" || bad "wrapper hard link" "rc $rc"
+grep -q "hard link" "$T/wh.err" && ok "wrapper: ... and says why" || bad "wrapper hard link" "$(cat "$T/wh.err")"
+ls -a "$T" | grep -q 'macho9-compat' && bad "wrapper" "a temp file was left behind" \
+    || ok "wrapper: no temp file left behind"
+
+cp "$FIXTURE" "$T/w_meta"; strip_vm "$T/w_meta"; chmod 0751 "$T/w_meta"
+xattr -w com.apple.quarantine "0081;00000000;test;" "$T/w_meta"
+"$BIN/add_version_min" "$T/w_meta" >/dev/null 2>&1
+[ "$(stat -f %Lp "$T/w_meta")" = 751 ] && xattr -p com.apple.quarantine "$T/w_meta" >/dev/null 2>&1 \
+    && ok "wrapper: mode and quarantine survive" || bad "wrapper metadata" "mode $(stat -f %Lp "$T/w_meta")"
 
 # ---- rename_segment -----------------------------------------------------
 #

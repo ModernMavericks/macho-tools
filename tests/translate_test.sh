@@ -276,7 +276,21 @@ segment rename __TEXT __B
 MACHO9_EDIT" -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
 
 # ---- the four fixed-arity tools -----------------------------------------
-ok avm     'macho9 minos f 10.9'             -- add_version_min f
+# macho9 never writes its input, so the teaching form names an output of its
+# own and ends with the install step -- two lines, and both of them pinned:
+# what a reader is shown has to be the complete equivalent of the old in-place
+# edit, not the half of it that rewrites nothing.
+ok avm     'macho9 minos f f.new 10.9
+mv -f f.new f'                               -- add_version_min f
+# MT_OUT is how a wrapper names the temp it is going to install: the command
+# writes exactly that, and the `mv` disappears because the wrapper does the
+# installing itself.
+mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" add_version_min f )
+if [ "$mt_out_got" = 'macho9 minos f /tmp/t.tmp 10.9' ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL avm-mt-out: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
+fi
 ok pm      'macho9 declassify in out'        -- patch_macho in out
 ok pm-same 'macho9 declassify f f'           -- patch_macho f f
 ok rs      'macho9 segment f __DATA __DATA2' -- rename_segment f __DATA __DATA2
@@ -307,7 +321,8 @@ fi
 
 # ---- MACHO9 names the program word --------------------------------------
 got=$( MACHO9=/opt/bin/macho9 /bin/sh "$TR" add_version_min f )
-if [ "$got" = '/opt/bin/macho9 minos f 10.9' ]; then
+if [ "$got" = '/opt/bin/macho9 minos f f.new 10.9
+mv -f f.new f' ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL macho9-env: got %s\n' "$got" >&2; fail=$((fail + 1))

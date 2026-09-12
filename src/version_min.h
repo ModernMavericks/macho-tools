@@ -12,24 +12,31 @@
  * and exec'ing add_version_min -- the same cycle mr_apply_file (src/rewrite.h)
  * breaks for `dylib`/`rpath`/`lc`. That is also what let add_version_min
  * become compat/add_version_min.sh, a /bin/sh wrapper that runs `macho9 minos
- * FILE 10.9`: the old name and the verb print exactly the same thing, because
- * there is only one implementation left to print it.
+ * FILE OUT 10.9` and installs OUT over FILE itself: the old name and the verb
+ * print exactly the same thing, because there is only one implementation left
+ * to print it.
  */
 #include "image.h"
 
 /*
- * Append LC_VERSION_MIN_MACOSX 10.9 to the thin 64-bit Mach-O at `path`,
- * writing the result back in place. Returns 0 on success -- including the
- * "already has one, nothing to do" case -- or MR_REFUSED/MR_FAIL with a
- * message already printed on stderr.
+ * Append LC_VERSION_MIN_MACOSX 10.9 to the thin 64-bit Mach-O at `path` and
+ * write the result as `out`. `path` is READ and never written; `out` is
+ * created afresh (wa_write_new, src/atomic_write.h), carrying `path`'s mode,
+ * owner and xattrs. `out` must not be `path` -- wa_write_new refuses that and
+ * this returns MR_FAIL without writing anything.
+ *
+ * Returns 0 on success -- including the "already has one, nothing to do"
+ * case, where `out` is still written, so a 0 exit always means `out` exists
+ * and is the answer -- or MR_REFUSED/MR_FAIL with a message already printed
+ * on stderr. A non-zero return writes no `out` at all.
  *
  * The new command goes in the header pad. If the pad cannot hold it, this
  * refuses -- unless `allow_grow` is set and the image can be grown (a 64-bit
  * PIE executable without chained fixups; see mg_ensure_pad in src/grow.h),
- * in which case the pad is enlarged and the file written back grows with it.
+ * in which case the pad is enlarged and `out` grows with it.
  * Fat containers are not handled: add_version_min never did.
  */
-int mv_add_version_min(const char *path, int allow_grow);
+int mv_add_version_min(const char *path, const char *out, int allow_grow);
 
 /*
  * mv_add_version_min's edit, without the file: append LC_VERSION_MIN_MACOSX

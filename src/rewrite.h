@@ -271,8 +271,9 @@ typedef struct {
  * that mi_open, mfat_parse or mfat_rewrite make one level down -- for the
  * file itself, or, in mfat_rewrite's case, for the tracking arrays, slice
  * copies and reassembly buffer that splitting a fat file needs first
- * (mv_add_version_min also returns it for its race guard -- see that
- * function's own comment). NEVER for a considered refusal -- a site that
+ * (mv_add_version_min also returns it when wa_write_new cannot produce its
+ * output -- see that function's own comment). NEVER for a considered
+ * refusal -- a site that
  * examined the bytes and declined, however it phrases that on stderr, is
  * MR_REFUSED, not this. And an allocation failure INSIDE mg_grow_header or
  * mg_plausible deliberately does not come here either: it is folded into

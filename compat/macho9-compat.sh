@@ -4,9 +4,11 @@
 #
 #   MW_DIR=... ; . "$MW_DIR/macho9-compat.sh"
 #
-# Each wrapper is then four or five lines of its own: translate this argv,
-# teach the equivalent on stderr, run it, and map the exit code and stdout
-# back to what the C tool it replaced would have produced.
+# Each wrapper is then a handful of lines of its own: translate this argv,
+# teach the equivalent on stderr, run it -- into a temp beside the caller's
+# file, since macho9 never writes the file it is given -- install that temp
+# over the file, and map the exit code and stdout back to what the C tool it
+# replaced would have produced.
 #
 # WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. Task 1 put the whole
 # old-grammar-to-macho9 translation in ONE file (compat/translate.sh) so that
@@ -121,7 +123,8 @@ MW_T=$(mktemp -d "${TMPDIR:-/tmp}/macho9-compat.XXXXXX") || {
 }
 # A single temporary a wrapper has made BESIDE the caller's file, rather than
 # inside MW_T -- so that whatever creates one does not also have to remember
-# every exit path. Empty when there is none, which is every path today.
+# every exit path. mw_prepare names it, macho9 writes it, mw_finish installs
+# or discards it; empty whenever there is none to remove.
 MW_TMPFILE=''
 mw_cleanup() {
     rm -rf "$MW_T"
@@ -135,6 +138,10 @@ trap 'mw_cleanup; exit 143' TERM
 MW_TOOL=''
 MW_CMDS=''
 MW_NCMDS=0
+# mw_prepare's answers: the file FILE really is, and whether mw_finish ended
+# up installing anything over it.
+MW_TARGET=''
+MW_CHANGED=0
 
 # ---- translate, and teach ------------------------------------------------
 #
@@ -163,9 +170,12 @@ mw_translate() {
     # COMMANDS, not lines. `macho9 edit FILE -` carries its statements in a
     # here-document, so one command can be six lines; a command is a line that
     # STARTS with the program word (compat/translate.sh's output contract says
-    # so, and mt_pre_word is where that word comes from). A statement line
-    # cannot be mistaken for one -- every statement begins with its kind.
-    MW_NCMDS=$(printf '%s\n' "$MW_CMDS" | awk -v p="$(mt_pre_word) " 'index($0, p) == 1 { n++ } END { print n + 0 }')
+    # so, and mt_pre_word is where that word comes from) -- or with `mv -f`,
+    # the install step mt_install_line appends to the teaching form, which is
+    # a command a reader would type too. A statement line cannot be mistaken
+    # for either -- every statement begins with its kind.
+    MW_NCMDS=$(printf '%s\n' "$MW_CMDS" | awk -v p="$(mt_pre_word) " \
+        'index($0, p) == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
     mw_teach
     return 0
 }
@@ -189,9 +199,11 @@ mw_teach() {
     # have to start where they start: `MACHO9_EDIT` with four spaces in front
     # of it does not end the here-document, so an indented block would teach a
     # command that hangs when it is pasted. Leading whitespace before the
-    # command itself is harmless, so the block still reads as a block.
+    # command itself is harmless, so the block still reads as a block. The
+    # same two-part test mw_translate counts with, for the same reason.
     printf '%s\n' "$MW_CMDS" \
-        | awk -v p="$(mt_pre_word) " '{ if (index($0, p) == 1) print "    " $0; else print }' >&2
+        | awk -v p="$(mt_pre_word) " \
+            '{ if (index($0, p) == 1 || index($0, "mv -f ") == 1) print "    " $0; else print }' >&2
     return 0
 }
 
@@ -248,5 +260,116 @@ mw_require_writable() {
         printf 'open: Permission denied\n' >&2
         return 1
     fi
+    return 0
+}
+
+# ---- the install path ----------------------------------------------------
+#
+# macho9 never writes the file it is given: every rewriting verb is now
+# `macho9 VERB FILE OUT ...`. The historical tools DID edit FILE in place, and
+# their callers still expect that, so a wrapper reproduces it in the only way
+# that is safe: write a temp beside the real target, then mv it over. The five
+# functions below are that sequence, shared rather than copied into each
+# wrapper:
+#
+#   mw_prepare FILE       -> MW_TARGET, MW_TMPFILE   (and the refusals)
+#   mw_retranslate TOOL ARG...                       -> MW_CMDS naming the temp
+#   mw_run_to_tmp                                    -> run it, reshape stdout
+#   mw_finish                                        -> install, or discard
+
+# mw_resolve PATH -- print the file PATH finally names once every symlink in
+# its last component is followed. 10.9's readlink has no -f, so this follows
+# one level at a time. The install lands on that file, so a FILE that is a
+# symlink stays one.
+mw_resolve() {
+    mw_p=$1
+    mw_hops=0
+    while [ -L "$mw_p" ]; do
+        mw_hops=$((mw_hops + 1))
+        [ "$mw_hops" -le 32 ] || { printf '%s: too many levels of symbolic links\n' "$1" >&2; return 1; }
+        mw_l=$(readlink "$mw_p") || return 1
+        case $mw_l in
+            /*) mw_p=$mw_l ;;
+            *)  case $mw_p in */*) mw_p=${mw_p%/*}/$mw_l ;; *) mw_p=$mw_l ;; esac ;;
+        esac
+    done
+    printf '%s\n' "$mw_p"
+}
+
+# mw_prepare FILE [new-ok] -- set MW_TARGET to the file FILE really is and
+# MW_TMPFILE to a fresh name beside it, for macho9 to write. Refuses what
+# cannot be replaced safely: a FILE this user could not have written (the C
+# tools opened it read-write, and mv would otherwise replace it anyway), and
+# a FILE with other hard links, which mv would leave on the old content.
+# With `new-ok`, a FILE that does not exist yet is fine (patch_macho's OUT).
+mw_prepare() {
+    if [ "${2:-}" = new-ok ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then
+        MW_TARGET=$1
+    else
+        mw_require_writable "$1" || return 1
+        MW_TARGET=$(mw_resolve "$1") || return 1
+        mw_links=$(stat -f %l "$MW_TARGET" 2>/dev/null) || mw_links=1
+        if [ "$mw_links" -gt 1 ]; then
+            printf '%s: %s has %d hard links; replacing it would leave the others with the old content. Break the link first, or run macho9 with an explicit output.\n' \
+                "$MW_TOOL" "$1" "$mw_links" >&2
+            return 1
+        fi
+    fi
+    case $MW_TARGET in
+        */*) mw_dirpart=${MW_TARGET%/*}; mw_basepart=${MW_TARGET##*/} ;;
+        *)   mw_dirpart=.;               mw_basepart=$MW_TARGET ;;
+    esac
+    [ -n "$mw_dirpart" ] || mw_dirpart=/
+    MW_TMPFILE="$mw_dirpart/.$mw_basepart.macho9-compat.$$"
+    rm -f -- "$MW_TMPFILE"
+    return 0
+}
+
+# mw_retranslate TOOL ARG... -- translate again, this time writing MW_TMPFILE.
+# The same argv translated a moment ago, with only the output named; a
+# difference means the translation depends on something it must not.
+mw_retranslate() {
+    MT_PROG0=$0
+    MW_CMDS=$(MT_OUT=$MW_TMPFILE mt_translate "$@")
+    mw_trc=$?
+    unset MT_PROG0
+    if [ "$mw_trc" -ne 0 ]; then
+        printf '%s: internal error: the translation is not stable under a change of output\n' "$MW_TOOL" >&2
+        return 1
+    fi
+    return 0
+}
+
+# mw_run_to_tmp -- run the translation (which writes MW_TMPFILE) with its
+# stdout captured, then pass every line through except a final "Wrote ..."
+# naming the temp file, which no C tool ever printed. Returns macho9's status.
+mw_run_to_tmp() {
+    mw_run >"$MW_T/out"
+    mw_rc=$?
+    if [ "$(sed -n '$p' "$MW_T/out" | cut -c1-6)" = 'Wrote ' ]; then
+        sed '$d' "$MW_T/out"
+    else
+        cat "$MW_T/out"
+    fi
+    return "$mw_rc"
+}
+
+# mw_finish -- after macho9 wrote MW_TMPFILE: if it differs from MW_TARGET,
+# mv it over (atomic: same directory), else discard it -- the C tools wrote
+# nothing when nothing changed. Sets MW_CHANGED. Returns 1 only if the mv
+# failed, leaving MW_TARGET as it was.
+mw_finish() {
+    MW_CHANGED=0
+    if [ -e "$MW_TARGET" ] && cmp -s -- "$MW_TMPFILE" "$MW_TARGET"; then
+        rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
+        return 0
+    fi
+    if ! mv -f -- "$MW_TMPFILE" "$MW_TARGET"; then
+        printf '%s: %s: the rewrite succeeded but installing it failed\n' "$MW_TOOL" "$MW_TARGET" >&2
+        rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
+        return 1
+    fi
+    MW_TMPFILE=''
+    MW_CHANGED=1
     return 0
 }

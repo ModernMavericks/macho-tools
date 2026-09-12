@@ -15,7 +15,7 @@ The six original entry points, kept for compatibility. All six are now
 |---|---|
 | `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT` |
 | `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
-| `add_version_min` | `add_version_min.sh` → `macho9 minos FILE 10.9` |
+| `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
 | `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE`, once per file |
 | `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE -` when more than one command's worth (two renames already are) |
@@ -100,10 +100,14 @@ for why it would be rare:
     `patch_macho` and `rename_segment`, which translate every nonzero
     macho9 exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
-    header has it) and is likewise unaffected by this. A CONSIDERED refusal
+    header has it) and is likewise unaffected by this. (Both still have
+    refusals of their OWN, made before macho9 runs and exiting 1: an absent
+    or unwritable `FILE`, and -- wherever the wrapper installs its result
+    over `FILE` -- a `FILE` carrying other hard links. Those are the
+    wrapper's, not a forwarded code.) A CONSIDERED refusal
     (the input examined and declined) still exits 1, matching the C tool by
     coincidence, not by construction; but a genuine operational failure
-    (open, fstat, read or write failing, `mv_add_version_min`'s race guard,
+    (open, fstat, read or write failing,
     or a checked allocation that `src/rewrite.c`'s drivers or
     `mi_open`/`mfat_parse` make -- `src/rewrite.h`'s `MR_FAIL` comment
     names them) now exits 2, where the C tool always exited a flat 1. One

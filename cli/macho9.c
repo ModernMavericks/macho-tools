@@ -11,7 +11,7 @@
  *   macho9 retag-swift FILE
  *   macho9 lc FILE [--fatal-warnings] -delete KIND
  *   macho9 grow FILE N
- *   macho9 minos FILE 10.9 [--allow-grow]
+ *   macho9 minos FILE OUT 10.9 [--allow-grow]
  *   macho9 info FILE
  *   macho9 verify FILE
  *   macho9 edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]
@@ -56,9 +56,10 @@
  * `declassify` is the last of them, and the same arrangement again:
  * patch_macho's chained-fixups conversion is src/declassify.h, and that tool
  * keeps only its `IN OUT` grammar, its own open+write of OUT, its messages
- * and its flat exit code. It is the one verb here that reads one file and
- * writes another rather than rewriting in place, so it writes OUT through
- * wa_write_atomic itself instead of going through mr_apply_file.
+ * and its flat exit code. It was the FIRST verb here to read one file and
+ * write another rather than rewriting in place, so it writes OUT through
+ * wa_write_atomic itself instead of going through mr_apply_file. `minos` has
+ * the same shape now (`minos FILE OUT 10.9`), through wa_write_new.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,8 +125,7 @@
  * (== EX_REFUSED, enforced below) for a considered refusal -- "not a 64-bit
  * Mach-O" in any of its forms, no room to grow, a rewrite's own cross-check
  * failing, and more -- and MR_FAIL (== EX_FAIL, enforced below) for
- * open/fstat/read/write/malloc itself failing (and mv_add_version_min's race
- * guard, a failed stat() or a changed inode). Forwarding either verbatim is
+ * open/fstat/read/write/malloc itself failing. Forwarding either verbatim is
  * exact, not an approximation, with one deliberate exception those two
  * drivers' own comments carry: an allocation failure INSIDE mg_grow_header
  * or mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every
@@ -372,7 +372,8 @@ static void usage(const char *prog) {
         "                                                    uuid | codesig | source-version |\n"
         "                                                    build-version | code-sign-drs\n"
         "       %s grow FILE N\n"
-        "       %s minos FILE 10.9 [--allow-grow]\n"
+        "       %s minos FILE OUT 10.9 [--allow-grow]\n"
+        "                                                    FILE is only read; OUT must not be FILE\n"
         "       %s info FILE\n"
         "       %s verify FILE\n"
         "       %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n"
@@ -586,12 +587,22 @@ static int cmd_grow(const char *path, const char *n_str) {
  * why this verb's grammar spells the floor literally rather than taking any
  * version: there is only one this build can honor, so refusing anything else
  * up front is a clearer failure than calling in and hoping. */
-static int cmd_minos(const char *path, const char *version, int allow_grow) {
+static int cmd_minos(const char *path, const char *out, const char *version, int allow_grow) {
+    /* Before the version check, and before any read: naming FILE as OUT is a
+     * mistake about what this tool does, not about this file's content, and
+     * saying so up front is the difference between "refused, nothing
+     * happened" and a refusal that arrives after the work. wa_write_new
+     * would refuse it anyway at the write; this is the same answer, earlier
+     * and in this verb's own words. */
+    if (wa_is_input(path, out)) {
+        fprintf(stderr, "macho9 minos: %s is %s; macho9 never writes its input\n", out, path);
+        return EX_FAIL;
+    }
     if (strcmp(version, "10.9") != 0) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
     }
-    return mv_add_version_min(path, allow_grow);
+    return mv_add_version_min(path, out, allow_grow);
 }
 
 /* ---- lc -delete: a thin shell over mr_apply_file's strip_cmds -----------
@@ -1256,12 +1267,12 @@ int main(int argc, char **argv) {
         return cmd_grow(argv[2], argv[3]);
     }
     if (strcmp(verb, "minos") == 0) {
-        int allow_grow = (argc == 5 && strcmp(argv[4], "--allow-grow") == 0);
-        if (argc != 4 && !allow_grow) {
-            fprintf(stderr, "usage: %s minos FILE 10.9 [--allow-grow]\n", argv[0]);
+        int allow_grow = (argc == 6 && strcmp(argv[5], "--allow-grow") == 0);
+        if (argc != 5 && !allow_grow) {
+            fprintf(stderr, "usage: %s minos FILE OUT 10.9 [--allow-grow]\n", argv[0]);
             return EX_FAIL;
         }
-        return cmd_minos(argv[2], argv[3], allow_grow);
+        return cmd_minos(argv[2], argv[3], argv[4], allow_grow);
     }
     if (strcmp(verb, "segment") == 0) {
         if (argc != 5) { fprintf(stderr, "usage: %s segment FILE OLD NEW\n", argv[0]); return EX_FAIL; }

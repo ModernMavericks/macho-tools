@@ -31,6 +31,9 @@ MACHO9="$BIN/macho9"
 # taking it on trust.
 
 CC="${CC:-clang}"
+# This script's own directory, for the fixture-builder C sources that live
+# beside it (tests/strip_version_min.c).
+HERE=$(cd "$(dirname "$0")" && pwd)
 FIXTURE_FLAGS="-mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/cli_test.$$"
 mkdir -p "$T"
@@ -182,7 +185,7 @@ build_main_without_build_version() {
 # byte inside the existing header pad (unused space between the end of the
 # load commands and the first section's file data -- computed here by an
 # independent read, not by calling into macho9/image.h, for the same
-# non-circularity reason strip_version_min.c below is self-contained) via a
+# non-circularity reason tests/strip_version_min.c is self-contained) via a
 # throwaway C program, and tries to run the result. If the kernel/dyld kills
 # THAT, this host enforces code-signing on any post-link modification,
 # unconditionally of what changed or which tool changed it -- an honest,
@@ -1078,7 +1081,7 @@ fi
 # fixture is deliberately NOT stripped of its version-min first: the helper
 # that does that is built further down, and this assertion is about reaching
 # the driver at all, not about which branch of it ran.)
-if "$T/alone/macho9" minos "$T/alone/fixture" 10.9 >"$T/alone_minos.out" 2>&1; then
+if "$T/alone/macho9" minos "$T/alone/fixture" "$T/alone/fixture.minos" 10.9 >"$T/alone_minos.out" 2>&1; then
     ok "alone: minos works with no add_version_min anywhere near macho9"
 else
     bad "alone: minos" "$(cat "$T/alone_minos.out")"
@@ -1088,8 +1091,8 @@ if grep -q "LC_VERSION_MIN_MACOSX" "$T/alone_minos.out"; then
 else
     bad "alone: minos output" "exited 0 but said nothing about LC_VERSION_MIN_MACOSX: $(cat "$T/alone_minos.out")"
 fi
-"$T/alone/macho9" info "$T/alone/fixture" | grep -q "LC_VERSION_MIN_MACOSX" \
-    && ok "alone: the fixture carries LC_VERSION_MIN_MACOSX afterward" \
+"$T/alone/macho9" info "$T/alone/fixture.minos" | grep -q "LC_VERSION_MIN_MACOSX" \
+    && ok "alone: the output carries LC_VERSION_MIN_MACOSX afterward" \
     || bad "alone: minos result" "no LC_VERSION_MIN_MACOSX in info output after minos"
 
 # ============================================================================
@@ -1271,67 +1274,11 @@ fi
 # tool under test to build that test's own fixture would be circular
 # regardless). The fixture is therefore test-tool-constructed, not
 # linker-constructed, for this one load command only.
-cat > "$T/strip_version_min.c" <<'EOF'
-/* Remove the FIRST LC_VERSION_MIN_MACOSX load command from a Mach-O file,
- * in place: memmove the load commands after it down over it, zero the
- * freed tail bytes (they become header pad), and fix up ncmds/sizeofcmds.
- *
- * The GOAL is a fixture that LACKS LC_VERSION_MIN_MACOSX, not "removed one".
- * A 2026 linker emits LC_BUILD_VERSION instead of LC_VERSION_MIN_MACOSX in
- * the first place (a 10.9-era linker emits the latter), so on a cross host
- * there is nothing to strip -- the goal is already met. That is SUCCESS,
- * not an error: exit 0 either way. Only a genuine failure to remove one
- * that IS present is exit 2. */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <mach-o/loader.h>
-
-int main(int argc, char **argv) {
-    if (argc != 2) { fprintf(stderr, "usage: %s FILE\n", argv[0]); return 2; }
-    int fd = open(argv[1], O_RDWR);
-    if (fd < 0) { perror("open"); return 2; }
-    struct stat st;
-    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
-    size_t size = (size_t)st.st_size;
-    uint8_t *buf = malloc(size);
-    if (!buf || read(fd, buf, size) != (ssize_t)size) {
-        fprintf(stderr, "read failed\n"); close(fd); return 2;
-    }
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
-
-    uint8_t *lcp = buf + sizeof(*hdr);
-    uint32_t found_off = 0, found_size = 0;
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_VERSION_MIN_MACOSX) {
-            found_off = (uint32_t)(lcp - buf);
-            found_size = lc->cmdsize;
-            break;
-        }
-        lcp += lc->cmdsize;
-    }
-    if (!found_size) { printf("no LC_VERSION_MIN_MACOSX present; nothing to strip (goal already met)\n"); return 0; }
-
-    uint32_t lc_end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
-    uint32_t after = found_off + found_size;
-    memmove(buf + found_off, buf + after, lc_end - after);
-    memset(buf + lc_end - found_size, 0, found_size);
-    hdr->ncmds -= 1;
-    hdr->sizeofcmds -= found_size;
-
-    lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, size) != (ssize_t)size) { perror("write"); return 2; }
-    close(fd);
-    return 0;
-}
-EOF
-"$CC" -O2 -o "$T/strip_version_min" "$T/strip_version_min.c"
+#
+# The reader itself is tests/strip_version_min.c, a file rather than a
+# here-document because tests/wrapper_test.sh needs exactly the same fixture
+# for exactly the same reason, and one copy of it is enough.
+"$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"
 
 build_main "$T/minos_fixture"
 # A BARE invocation here would let `set -e` kill the WHOLE script the
@@ -1363,22 +1310,48 @@ else
     ok "minos: fixture genuinely has no LC_VERSION_MIN_MACOSX before"
 fi
 
-"$MACHO9" minos "$T/minos_fixture" 10.9 >"$T/minos.out" || bad "minos: exit" "$(cat "$T/minos.out")"
-minos_info=$("$MACHO9" info "$T/minos_fixture")
+"$MACHO9" minos "$T/minos_fixture" "$T/minos_out" 10.9 >"$T/minos.out" \
+    || bad "minos: exit" "$(cat "$T/minos.out")"
+minos_info=$("$MACHO9" info "$T/minos_out")
 echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos: LC_VERSION_MIN_MACOSX present after" \
     || bad "minos: version-min" "not found in info output"
-# Running it again must not error (add_version_min's own "already present" path).
-if "$MACHO9" minos "$T/minos_fixture" 10.9 >/dev/null 2>&1; then
+# Running it again must not error (add_version_min's own "already present"
+# path) -- this time reading the output of the run above, which HAS the
+# command, so the second run really takes that branch.
+if "$MACHO9" minos "$T/minos_out" "$T/minos_out2" 10.9 >/dev/null 2>&1; then
     ok "minos: idempotent re-run does not error"
 else
     bad "minos: re-run" "errored on an already-minos'd file"
 fi
 # Any other version is refused up front -- this build can only target 10.9.
-if "$MACHO9" minos "$T/minos_fixture" 10.10 >/dev/null 2>&1; then
+if "$MACHO9" minos "$T/minos_fixture" "$T/minos_out3" 10.10 >/dev/null 2>&1; then
     bad "minos: wrong version" "10.10 should be refused"
 else
     ok "minos: non-10.9 version refused"
 fi
+
+# minos never writes its input: FILE OUT, and an OUT that is FILE is refused.
+build_main "$T/mo_in"; "$T/strip_version_min" "$T/mo_in" >/dev/null
+mo_before=$(sha "$T/mo_in"); mo_ino=$(stat -f %i "$T/mo_in")
+"$MACHO9" minos "$T/mo_in" "$T/mo_out" 10.9 >"$T/mo.out" 2>"$T/mo.err" \
+    && ok "minos FILE OUT: succeeds" || bad "minos FILE OUT" "$(cat "$T/mo.err")"
+[ "$(sha "$T/mo_in")" = "$mo_before" ] && [ "$(stat -f %i "$T/mo_in")" = "$mo_ino" ] \
+    && ok "minos FILE OUT: FILE is untouched" || bad "minos FILE OUT" "FILE changed"
+"$MACHO9" info "$T/mo_out" | grep -q LC_VERSION_MIN_MACOSX \
+    && ok "minos FILE OUT: OUT has the command" || bad "minos FILE OUT" "OUT lacks it"
+grep -q "^Wrote $T/mo_out (" "$T/mo.out" \
+    && ok "minos FILE OUT: says what it wrote" || bad "minos FILE OUT" "no Wrote line: $(cat "$T/mo.out")"
+rc=0; "$MACHO9" minos "$T/mo_in" "$T/mo_in" 10.9 >/dev/null 2>"$T/mo_same.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/mo_in")" = "$mo_before" ] \
+    && ok "minos: OUT that is FILE is refused (2), FILE untouched" || bad "minos OUT=FILE" "rc $rc"
+grep -q "never writes its input" "$T/mo_same.err" \
+    && ok "minos: ... refused up front, before any work" \
+    || bad "minos OUT=FILE" "not the up-front refusal: $(cat "$T/mo_same.err")"
+ln -s "$T/mo_in" "$T/mo_link"
+rc=0; "$MACHO9" minos "$T/mo_in" "$T/mo_link" 10.9 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos: OUT that is a symlink to FILE is refused (2)" || bad "minos OUT=link" "rc $rc"
+rc=0; "$MACHO9" minos "$T/mo_in" 10.9 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos: a missing OUT is a usage error (2)" || bad "minos no OUT" "rc $rc"
 
 # ============================================================================
 # lc -delete
@@ -3110,31 +3083,32 @@ grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
 cp "$T/vm_tight" "$T/vm_m"
 vm_m_before=$(sha "$T/vm_m")
 rc=0
-"$MACHO9" minos "$T/vm_m" 10.9 >/dev/null 2>"$T/vm_m_no.err" || rc=$?
+rm -f "$T/vm_m_out"
+"$MACHO9" minos "$T/vm_m" "$T/vm_m_out" 10.9 >/dev/null 2>"$T/vm_m_no.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "minos: without --allow-grow a short pad is refused (1)" \
     || bad "minos --allow-grow" "without the flag: expected 1, got $rc: $(cat "$T/vm_m_no.err")"
-[ "$(sha "$T/vm_m")" = "$vm_m_before" ] \
-    && ok "minos: ... and the refused run left the file unchanged" \
-    || bad "minos --allow-grow" "the refused run modified the file"
+[ "$(sha "$T/vm_m")" = "$vm_m_before" ] && [ ! -e "$T/vm_m_out" ] \
+    && ok "minos: ... and the refused run left FILE unchanged and wrote no OUT" \
+    || bad "minos --allow-grow" "the refused run modified FILE, or created OUT"
 grep -q "allow-grow" "$T/vm_m_no.err" \
     && ok "minos: ... and the refusal names allow-grow" \
     || bad "minos --allow-grow" "no allow-grow remedy in: $(cat "$T/vm_m_no.err")"
 rc=0
-"$MACHO9" minos "$T/vm_m" 10.9 --allow-grow >"$T/vm_m_yes.out" 2>"$T/vm_m_yes.err" || rc=$?
+"$MACHO9" minos "$T/vm_m" "$T/vm_m_out" 10.9 --allow-grow >"$T/vm_m_yes.out" 2>"$T/vm_m_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "minos: --allow-grow grows the header and adds the command" \
     || bad "minos --allow-grow" "with the flag: expected 0, got $rc: $(cat "$T/vm_m_yes.err")"
 vm_m_grows=$(grep -c "grew header pad" "$T/vm_m_yes.out" || true)
 [ "$vm_m_grows" -eq 1 ] \
     && ok "minos: --allow-grow: stdout has exactly one 'grew header pad' line" \
     || bad "minos --allow-grow" "expected 1 'grew header pad' line, saw $vm_m_grows: $(cat "$T/vm_m_yes.out")"
-"$MACHO9" info "$T/vm_m" | grep -q "LC_VERSION_MIN_MACOSX" \
+"$MACHO9" info "$T/vm_m_out" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "minos: --allow-grow: LC_VERSION_MIN_MACOSX is present" \
     || bad "minos --allow-grow" "no LC_VERSION_MIN_MACOSX after the grow"
-"$MACHO9" verify "$T/vm_m" >/dev/null 2>"$T/vm_m_verify.err" \
+"$MACHO9" verify "$T/vm_m_out" >/dev/null 2>"$T/vm_m_verify.err" \
     && ok "minos: --allow-grow: the grown file passes macho9 verify" \
     || bad "minos --allow-grow" "verify refused: $(cat "$T/vm_m_verify.err")"
 rc=0
-"$MACHO9" minos "$T/vm_m" 10.9 --bogus >/dev/null 2>&1 || rc=$?
+"$MACHO9" minos "$T/vm_m" "$T/vm_m_out" 10.9 --bogus >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "minos: an unknown flag is a usage error (2)" \
     || bad "minos" "an unknown flag: expected 2, got $rc"
 

@@ -145,6 +145,29 @@ m9() {
     compare "macho9 $verb $SRC $*"
 }
 
+# macho9 VERB f o ARGS... -- for a verb that READS f and writes a named
+# output rather than rewriting f. What gets compared is `o`, plus the two
+# sides agreeing that they left `f` alone.
+m9out() {
+    verb="$1"; shift
+    total=$((total + 1))
+    cp "$SRC" "$T/A/f"; cp "$SRC" "$T/B/f"
+    rm -f "$T/A/o" "$T/B/o"
+    ( cd "$T/A" && "$REF/macho9" "$verb" f o "$@" ) >"$T/a.out" 2>"$T/a.err"; arc=$?
+    ( cd "$T/B" && "$NEW/macho9" "$verb" f o "$@" ) >"$T/b.out" 2>"$T/b.err"; brc=$?
+    bad=""
+    [ "$arc" != "$brc" ] && bad="$bad exit($arc/$brc)"
+    cmp -s "$T/a.out" "$T/b.out" || bad="$bad stdout"
+    cmp -s "$T/a.err" "$T/b.err" || bad="$bad stderr"
+    cmp -s "$SRC" "$T/A/f" && cmp -s "$SRC" "$T/B/f" || bad="$bad input-modified"
+    if [ "$arc" -eq 0 ] || [ "$brc" -eq 0 ]; then
+        cmp -s "$T/A/o" "$T/B/o" || bad="$bad bytes"
+        cmp -s "$SRC" "$T/A/o" || modified=$((modified + 1))
+    fi
+    record "macho9 $verb $SRC o $*" "$bad"
+    return 0
+}
+
 # TOOL f ARGS...
 tool() {
     tl="$1"; shift
@@ -236,7 +259,7 @@ while IFS= read -r SRC; do
     m9 rpath -replace /usr/lib /tmp/macho9diff2
     m9 lc -delete uuid
     m9 lc -delete codesig -delete uuid
-    m9 minos 10.9
+    m9out minos 10.9
     tool change_dylib -change "$first" "@loader_path/renamed.dylib"
     tool change_dylib -strip-lc uuid -add "@loader_path/libspare.dylib"
     tool change_dylib -grow -change "$first" "$longpath"
