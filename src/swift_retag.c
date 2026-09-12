@@ -22,7 +22,6 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/stat.h>
 #include <mach-o/loader.h>
 
 #include "swift_retag.h"
@@ -165,28 +164,30 @@ int mswift_retag_image(mi_image *im) {
     return changed;
 }
 
-int mswift_retag_file(const char *path, const char *out) {
+int mswift_retag_file(const char *path, const char *out, size_t *out_size) {
     /* Opened only to report an unreadable `path` immediately, before any
      * analysis, in the words this function has always used for that; mi_open
      * (O_RDONLY too) does the actual read and validation. Nothing is ever
      * written through this descriptor -- `path` is an input now -- so it is
-     * closed again at once and the result goes to `out`. */
+     * closed again at once and the result goes to `out`. No fstat here: with
+     * the in-place write gone, nothing downstream needs anything an fstat
+     * would report, and a valid fd from a just-succeeded open() failing one
+     * is not a case worth a branch of its own -- mi_open's own read fails
+     * right below for the same underlying reason, with its own message. */
     int fd = open(path, O_RDONLY);
     if (fd < 0) { perror(path); return MSWIFT_ERROR; }
-    struct stat st0;
-    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return MSWIFT_ERROR; }
     close(fd);
 
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        /* The open()/fstat() above only proved this path opens, not that
-         * mi_open's own independent open, read of the whole file, or the
-         * malloc it reads into will succeed too -- any of those, or an
-         * actual TOCTOU race, land here. MSWIFT_ERROR's contract
-         * (swift_retag.h) is "already reported", which cmd_retag_swift
-         * relies on to stay silent for this code -- so, unlike
-         * MSWIFT_NOT_MACHO just below, this prints before returning. */
+        /* The open() above only proved this path opens, not that mi_open's
+         * own independent open, read of the whole file, or the malloc it
+         * reads into will succeed too -- any of those, or an actual TOCTOU
+         * race, land here. MSWIFT_ERROR's contract (swift_retag.h) is
+         * "already reported", which cmd_retag_swift relies on to stay
+         * silent for this code -- so, unlike MSWIFT_NOT_MACHO just below,
+         * this prints before returning. */
         fprintf(stderr, "%s: cannot open or read\n", path);
         return MSWIFT_ERROR;
     }
@@ -216,5 +217,6 @@ int mswift_retag_file(const char *path, const char *out) {
     int wr = wa_write_new(path, out, buf, fsize);
     if (wr != 0) { free(buf); return MSWIFT_ERROR; }   /* WA_IS_INPUT: checked earlier by cmd_retag_swift */
     free(buf);
+    *out_size = fsize;
     return changed;
 }

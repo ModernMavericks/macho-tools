@@ -956,7 +956,8 @@ static int cmd_retag_swift(const char *path, const char *out) {
         fprintf(stderr, "macho9 retag-swift: %s is %s; macho9 never writes its input\n", out, path);
         return EX_FAIL;
     }
-    int n = mswift_retag_file(path, out);
+    size_t out_size = 0;
+    int n = mswift_retag_file(path, out, &out_size);
     if (n == MSWIFT_NOT_MACHO) {
         fprintf(stderr, "macho9 retag-swift: %s: not a readable 64-bit Mach-O. "
                         "This verb is thin-only, like retag_swift_classes, so that "
@@ -977,11 +978,7 @@ static int cmd_retag_swift(const char *path, const char *out) {
         return EX_FAIL;
     }
     printf("%s: retagged %d class record(s)\n", path, n);
-    struct stat outst;
-    if (stat(out, &outst) == 0)
-        printf("Wrote %s (%lld bytes)\n", out, (long long)outst.st_size);
-    else
-        printf("Wrote %s\n", out);
+    printf("Wrote %s (%zu bytes)\n", out, out_size);
     return 0;
 }
 

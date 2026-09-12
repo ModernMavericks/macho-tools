@@ -37,22 +37,52 @@
 #       unblocks them.
 #   macho9 2 (EX_FAIL)     -> had_error, and the loop keeps going. That covers
 #       MSWIFT_ERROR, which is what retag_swift_classes counted as an error
-#       too.
+#       too -- an unreadable argument (including a DIRECTORY: mw_prepare's
+#       hard-link check only looks at regular files, so a directory falls
+#       through it and reaches macho9 itself, which refuses with its own
+#       words, `d: cannot open or read`, from mi_open's read failing on one)
+#       -- and, new with this task's install step, a write that macho9 itself
+#       cannot make: a WRITABLE argument inside a NON-writable directory.
+#       mw_prepare's own checks pass (the argument itself is fine), but the
+#       temp macho9 writes beside it needs the DIRECTORY writable, which the
+#       old tool never needed -- it wrote through the already-open descriptor,
+#       never creating a second name. Measured (`chmod 555 ro`, arguments
+#       `a ro/b`): `a` is retagged and printed; `ro/b` is not -- macho9 fails
+#       the write with `mkstemp: Permission denied` on stderr, exits EX_FAIL,
+#       and this wrapper's had_error path takes it from there, the same as any
+#       other macho9 failure. compat/add_version_min.sh's own header names the
+#       identical shape for its one file (there it surfaces as that wrapper's
+#       raw, forwarded exit 2; here it is folded into had_error's flat 1, since
+#       this wrapper never forwards one argument's exit code as the whole
+#       run's), and compat/change_dylib.sh's records it too.
 #   macho9 0               -> count it, then install: mw_finish installs the
 #       temp over the argument, or discards it when the bytes did not change,
 #       same as add_version_min.sh.
 #
-# This wrapper's OWN pre-checks (mw_prepare, run once per argument) are a
-# fourth source of per-file failure the old tool never had: an argument that
-# cannot be prepared for install -- absent, unwritable, or a regular file
-# carrying other hard links -- is reported on stderr in this wrapper's own
-# words (macho9-compat.sh's mw_prepare) and counted as had_error, and the loop
+# This wrapper's OWN pre-checks (mw_prepare, run once per argument, BEFORE
+# macho9 ever runs) are a fourth source of per-file failure the old tool never
+# had, in this wrapper's own words rather than macho9's: an absent argument
+# (`open: No such file or directory`), an unwritable one (`open: Permission
+# denied`), or a regular file carrying other hard links (`... has N hard
+# links; ...`) -- each reported on stderr, counted as had_error, and the loop
 # moves on to the next argument. The old tool wrote through the open file
 # descriptor directly, so a hard-linked argument was retagged like any other;
 # this wrapper installs via mv instead (macho9-compat.sh's "the install path"
 # has the reasoning), so a hard-linked argument is refused rather than
 # retagged, the same trade add_version_min.sh's own header names for its one
 # file.
+#
+# UNLIKE add_version_min.sh, these first two are a WORDING divergence too, not
+# just an earlier-than-macho9 one. add_version_min.c's own open() failure
+# printed literally "open: ..." (its perror's argument was the string "open",
+# not the path), so mw_require_writable's identical words happen to match the
+# old tool's own by construction. retag_swift_classes.c's open() failure used
+# perror(path) instead -- "<path>: No such file or directory" -- which is
+# still what mswift_retag_file itself prints when macho9 actually reaches the
+# open() (tests/compat-matrix.tsv's rows for an absent argument recorded both
+# sides matching on that wording, before this task). mw_require_writable now
+# intercepts first and says "open: ..." instead, so an absent or unwritable
+# argument no longer matches the old tool's wording, only its exit code.
 #
 # The final exit is `had_error ? 1 : 0`, as it always was.
 #
@@ -97,21 +127,16 @@ mw_total=0
 mw_had_error=0
 for mw_f in "$@"; do
     mw_prepare "$mw_f" || { mw_had_error=1; continue; }
-    # Retranslate THIS ONE argument, naming the temp mw_prepare just chose --
-    # not mw_retranslate, which re-emits the WHOLE original argv; this tool's
-    # translation is already one line per argument, and only one of those
-    # lines is being re-run right now.
-    MT_PROG0=$0
-    mw_line=$(MT_OUT=$MW_TMPFILE mt_translate retag_swift_classes "$mw_f")
-    mw_trc=$?
-    unset MT_PROG0
-    if [ "$mw_trc" -ne 0 ]; then
-        printf '%s: internal error: the translation is not stable under a change of output\n' "$MW_TOOL" >&2
+    # mw_retranslate's signature is TOOL ARG..., so retranslating THIS ONE
+    # argument -- naming the temp mw_prepare just chose -- is the same call
+    # mw_translate itself made above, with $mw_f standing in for the whole
+    # original argv.
+    mw_retranslate retag_swift_classes "$mw_f" || {
         mw_had_error=1
         rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
         continue
-    fi
-    eval "$mw_line" </dev/null >"$MW_T/out" 2>"$MW_T/err"
+    }
+    eval "$MW_CMDS" </dev/null >"$MW_T/out" 2>"$MW_T/err"
     mw_rc=$?
     case $mw_rc in
     0)

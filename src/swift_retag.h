@@ -72,16 +72,22 @@
  * Returns the number of class records retagged (0 if there were none to do,
  * in which case `out` is still written -- a non-negative return always means
  * `out` is the answer), or one of the MSWIFT_* codes above. Nothing is
- * written when the return is negative.
+ * written when the return is negative. On a non-negative return, `*out_size`
+ * is set to `out`'s size in bytes -- this function already has it in hand
+ * (im.size, unchanged by the retag: only tag bits move, see
+ * mswift_retag_image below), so a caller reporting "Wrote OUT (N bytes)"
+ * has no reason to stat() `out` back out for a number already computed here.
+ * Untouched on a negative return.
  */
-int mswift_retag_file(const char *path, const char *out);
+int mswift_retag_file(const char *path, const char *out, size_t *out_size);
 
 /*
  * mswift_retag_file's retag, without the file: the same walk over the image
  * `im` views (from mi_open or mi_wrap), rewriting tag bits in place in its
- * buffer -- no open, no race guard, no write. mswift_retag_file is this plus
- * those; src/edit.c calls it for `swift-abi set legacy` against the image it
- * writes once, itself, after the last statement.
+ * buffer -- no open, no write. mswift_retag_file is this plus those (and,
+ * once, a race guard that went with the in-place write it no longer does);
+ * src/edit.c calls it for `swift-abi set legacy` against the image it writes
+ * once, itself, after the last statement.
  *
  * Returns the number of class records retagged, 0 or more; it has no failure
  * of its own and prints nothing. Only tag bits in __DATA's (or

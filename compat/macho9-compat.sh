@@ -269,7 +269,8 @@ mw_require_writable() {
 #
 # macho9's rewriting verbs are being converted, one at a time, so that none of
 # them writes the file it is given: each becomes `macho9 VERB FILE OUT ...`.
-# `minos` is the first one converted; the rest follow. The historical tools DID
+# `minos` was the first one converted and `retag-swift` is the second; the
+# rest follow. The historical tools DID
 # edit FILE in place, and their callers still expect that, so a wrapper whose
 # verb has moved reproduces it in the only way that is safe: write a temp
 # beside the real target, then mv it over. The five functions below are that
@@ -316,8 +317,11 @@ mw_prepare() {
         # this gate `add_version_min somedir` would be refused as a hard-link
         # problem, with a remedy -- break the link -- that means nothing. A
         # directory is not something this check has an opinion about at all:
-        # it falls through to macho9, whose open says `Is a directory`, which
-        # is what the C tool's own open(O_RDWR) said.
+        # it falls through to macho9. Measured (both `macho9 minos d out 10.9`
+        # and `macho9 retag-swift d out`): `d: cannot open or read` -- open()
+        # O_RDONLY succeeds on a directory, so the failure is mi_open's own
+        # read, not an open() rejecting it the way the C tools' open(O_RDWR)
+        # did.
         mw_links=1
         if [ -f "$MW_TARGET" ]; then
             mw_links=$(stat -f %l "$MW_TARGET" 2>/dev/null) || mw_links=1

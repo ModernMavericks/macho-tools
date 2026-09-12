@@ -70,6 +70,23 @@ strip_vm() {
     return 0
 }
 
+# mkswift_fixture FILE -- write a fresh Mach-O with two Swift class records
+# (both on the stable-ABI tag) to FILE, so retag_swift_classes has something
+# real to retag. tests/fixture.macho (what `fresh` copies) has ZERO Swift
+# class records, so every retag_swift_classes assertion that only ever used
+# `fresh` could not tell "retagged for real" from "installed nothing at all"
+# -- both print "total: 0". The program is tests/mkswift.c, shared with
+# tests/cli_test.sh, which needs the identical fixture for the identical
+# reason; built here on first use.
+mkswift_fixture() {
+    [ -x "$T/mkswift" ] \
+        || "$CC" -O2 -o "$T/mkswift" "$HERE/mkswift.c" 2>"$T/mkswift.out" \
+        || { bad "mkswift_fixture" "cannot build $HERE/mkswift.c: $(cat "$T/mkswift.out")"; return 1; }
+    "$T/mkswift" make "$1" >"$T/mkswift.out" 2>&1 \
+        || { bad "mkswift_fixture" "$1: $(cat "$T/mkswift.out")"; return 1; }
+    return 0
+}
+
 # firstline_is <file> <exact text> -- string equality, never a regex. The
 # usage lines below embed $BIN, a path this test does not choose, and a `grep`
 # pattern containing one would treat whatever punctuation the build directory
@@ -710,6 +727,119 @@ run retag_swift_classes
 [ "$rc" -eq 1 ] && firstline_is "$T/err" "Usage: $BIN/retag_swift_classes binary [binary ...]" \
     && ok "retag_swift_classes: no argument is a usage error naming argv[0]" \
     || bad "retag_swift_classes usage" "exit $rc, stderr: $(head -1 "$T/err")"
+
+# EVERY assertion above ran on `f` (tests/fixture.macho), which has ZERO Swift
+# class records -- so "total: 0" is the only total ever asserted, the
+# per-file line is only ever asserted ABSENT, and no assertion above ever
+# observed an INSTALL happen at all. A wrapper whose mw_finish discarded
+# every temp instead of installing it -- printing every line above
+# correctly, having modified not one binary -- would pass every one of them
+# unchanged. mkswift_fixture (tests/mkswift.c, shared with cli_test.sh) gives
+# this suite a binary with real Swift class records, closing that gap.
+
+# A nonzero-count binary really gets retagged: bytes change, the per-file
+# line is printed with the real count, and it sums into total.
+mkswift_fixture "$T/rsc1"
+rsc1_before=$(sha "$T/rsc1")
+run retag_swift_classes rsc1
+[ "$rc" -eq 0 ] && grep -qxF 'rsc1: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'total: 2 class record(s) retagged' "$T/out" \
+    && ok "retag_swift_classes: a nonzero-count binary prints its own line and the right total" \
+    || bad "retag_swift_classes nonzero" "exit $rc, stdout: $(cat "$T/out")"
+[ "$(sha "$T/rsc1")" != "$rsc1_before" ] \
+    && ok "retag_swift_classes: ... and its bytes really changed (this was not a discarded no-op)" \
+    || bad "retag_swift_classes nonzero" "rsc1's bytes did not change"
+
+# A mixed run good/hard-linked/good: the hard-linked argument is refused (the
+# new divergence this task's install step introduces -- the C tool wrote
+# through the open fd regardless of hard links; this wrapper installs via mv,
+# which cannot update every name for an inode at once), the loop keeps going,
+# exit is 1, stdout is the two good binaries' lines plus the REDUCED total,
+# and the hard-linked target -- and its link, same inode -- are untouched.
+mkswift_fixture "$T/rsc_g1"
+mkswift_fixture "$T/rsc_h1"; ln "$T/rsc_h1" "$T/rsc_h2"
+mkswift_fixture "$T/rsc_g2"
+rsc_h1_before=$(sha "$T/rsc_h1"); rsc_h1_ino=$(stat -f %i "$T/rsc_h1")
+run retag_swift_classes rsc_g1 rsc_h1 rsc_g2
+[ "$rc" -eq 1 ] && grep -qxF 'rsc_g1: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'rsc_g2: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'total: 4 class record(s) retagged' "$T/out" \
+    && ! grep -q 'rsc_h1' "$T/out" \
+    && ok "retag_swift_classes: good/hardlinked/good -- exit 1, the two good lines, and the reduced total" \
+    || bad "retag_swift_classes hardlink mix" "exit $rc, stdout: $(cat "$T/out")"
+grep -q 'hard link' "$T/err" \
+    && ok "retag_swift_classes: ... and says why the hard-linked one was skipped" \
+    || bad "retag_swift_classes hardlink mix" "no hard-link explanation on stderr: $(cat "$T/err")"
+[ "$(sha "$T/rsc_h1")" = "$rsc_h1_before" ] && [ "$(stat -f %i "$T/rsc_h1")" = "$rsc_h1_ino" ] \
+    && [ "$(sha "$T/rsc_h2")" = "$rsc_h1_before" ] \
+    && ok "retag_swift_classes: ... the hard-linked target AND its link are untouched" \
+    || bad "retag_swift_classes hardlink mix" "rsc_h1 or rsc_h2 changed"
+
+# A mixed run good/unwritable/good: same shape, a different wrapper-level
+# refusal (mw_require_writable, same words change_dylib's own guard uses).
+mkswift_fixture "$T/rsc_g3"
+mkswift_fixture "$T/rsc_u"; chmod 444 "$T/rsc_u"
+mkswift_fixture "$T/rsc_g4"
+rsc_u_before=$(sha "$T/rsc_u")
+run retag_swift_classes rsc_g3 rsc_u rsc_g4
+chmod 644 "$T/rsc_u"
+[ "$rc" -eq 1 ] && grep -qxF 'rsc_g3: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'rsc_g4: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'total: 4 class record(s) retagged' "$T/out" \
+    && ! grep -q 'rsc_u' "$T/out" \
+    && ok "retag_swift_classes: good/unwritable/good -- exit 1, the two good lines, and the reduced total" \
+    || bad "retag_swift_classes unwritable mix" "exit $rc, stdout: $(cat "$T/out")"
+[ "$(sha "$T/rsc_u")" = "$rsc_u_before" ] \
+    && ok "retag_swift_classes: ... the unwritable one is untouched" \
+    || bad "retag_swift_classes unwritable mix" "rsc_u changed"
+
+# No `.*.macho9-compat.$$` temp survives either mid-loop refusal above.
+ls -a "$T" | grep -q 'macho9-compat' && bad "retag_swift_classes" "a temp file was left behind" \
+    || ok "retag_swift_classes: no temp file left behind after a mid-loop refusal"
+
+# A 0-count binary AMONG nonzero ones: mw_finish discards its temp rather
+# than installing an identical copy, so its INODE (not just its bytes, which
+# cannot tell the two apart) is unchanged -- while the good binaries around
+# it still count. `f` (tests/fixture.macho) has zero Swift class records.
+fresh
+mkswift_fixture "$T/rsc_g5"
+mkswift_fixture "$T/rsc_g6"
+f_ino=$(stat -f %i "$T/f"); f_before=$(sha "$T/f")
+run retag_swift_classes rsc_g5 f rsc_g6
+[ "$rc" -eq 0 ] && grep -qxF 'total: 4 class record(s) retagged' "$T/out" \
+    && ! grep -q '^f: retagged' "$T/out" \
+    && ok "retag_swift_classes: a 0-count binary among nonzero ones prints no line of its own, and the total excludes it" \
+    || bad "retag_swift_classes 0-count mix" "exit $rc, stdout: $(cat "$T/out")"
+[ "$(stat -f %i "$T/f")" = "$f_ino" ] && [ "$(sha "$T/f")" = "$f_before" ] \
+    && ok "retag_swift_classes: ... and its INODE is unchanged (discarded, not reinstalled)" \
+    || bad "retag_swift_classes 0-count mix" "f's inode or bytes changed on a 0-count run"
+
+# A symlinked argument stays a symlink; its target is what actually changes.
+mkswift_fixture "$T/rsc_real"
+ln -s rsc_real "$T/rsc_link"
+rsc_real_before=$(sha "$T/rsc_real")
+run retag_swift_classes rsc_link
+[ "$rc" -eq 0 ] && grep -qxF 'rsc_link: retagged 2 class record(s)' "$T/out" \
+    && ok "retag_swift_classes: a symlinked argument is retagged through the link" \
+    || bad "retag_swift_classes symlink" "exit $rc, stdout: $(cat "$T/out")"
+[ -L "$T/rsc_link" ] \
+    && ok "retag_swift_classes: ... which is still a symlink afterward" \
+    || bad "retag_swift_classes symlink" "rsc_link is no longer a symlink"
+[ "$(sha "$T/rsc_real")" != "$rsc_real_before" ] \
+    && ok "retag_swift_classes: ... and its target is what actually got the new bytes" \
+    || bad "retag_swift_classes symlink" "rsc_real's bytes did not change"
+
+# MEASURED against the mutation this suite exists to catch: with
+# macho9-compat.sh's mw_finish changed to discard every temp unconditionally
+# (install NOTHING, as if nothing ever differed), stdout is untouched --
+# rsc1 still prints "rsc1: retagged 2 class record(s)" and "total: 2 ..." --
+# so the two assertions above that check ONLY stdout or an untouched-file's
+# bytes would still pass. What actually fails: "... its bytes really changed"
+# (rsc1) and "... its target is what actually got the new bytes" (rsc_real),
+# because those are the two that check a byte or an inode that was supposed
+# to MOVE, not stay put. Not left staged here as a live test, because that
+# would mean shipping a second, deliberately-broken copy of mw_finish just to
+# exercise it.
 
 # ---- fix_macho ----------------------------------------------------------
 #

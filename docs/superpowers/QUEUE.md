@@ -114,10 +114,8 @@ against `src/edit.c`, the buffer-level seams item 2 exposed (`mr_apply_image`,
 
 **For item 6** (pre-existing, found along the way): `src/rewrite.c`'s three
 unchecked `calloc`s (two in `mr_process_thin`, one in `mr_process_fat`) crash
-rather than refuse on allocation failure; `src/swift_retag.h`'s "only
-MSWIFT_ERROR is a failure of the tool itself" is false since `MSWIFT_RACED`
-also exits 2; about 87 older comments across the tree still name plan
-artifacts ("Task N", briefs, rounds) — all predate item 2.
+rather than refuse on allocation failure; about 87 older comments across the
+tree still name plan artifacts ("Task N", briefs, rounds) — all predate item 2.
 In `md_declassify_buf` (`src/declassify.c`), the first-section walk and the
 `__LINKEDIT` extension go through `segs[]` pointers taken before the loop that
 `memmove`s the removed load commands out, and never refreshed: in a crafted

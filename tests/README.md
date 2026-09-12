@@ -161,11 +161,11 @@ reproducing the failure in new shapes:
   doesn't already provide, write a tiny throwaway C program that reads the
   Mach-O structure directly (`ordinal_of.c`, `has_lc.c`, `has_bytes.c`,
   `mk2fat_overlap.c`, and others in `change_dylib_test.sh`;
-  `tests/strip_version_min.c`, shared by `cli_test.sh` and `wrapper_test.sh`,
-  is the same idiom pointed the other way — it writes the structure, to build
-  a fixture, rather than reading it). It asks the same question on a 10.9 host
-  and a 2020s one because it depends only on the file format, not on any
-  tool's text formatting.
+  `tests/strip_version_min.c` and `tests/mkswift.c`, both shared by
+  `cli_test.sh` and `wrapper_test.sh`, are the same idiom pointed the other
+  way — they write the structure, to build a fixture, rather than reading it).
+  It asks the same question on a 10.9 host and a 2020s one because it depends
+  only on the file format, not on any tool's text formatting.
 
 - **A 2026 linker emits `LC_BUILD_VERSION` where a 2014 one emits
   `LC_VERSION_MIN_MACOSX`.** A fixture built to exercise "a binary that has
