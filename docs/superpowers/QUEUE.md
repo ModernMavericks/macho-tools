@@ -426,6 +426,37 @@ This is a different product from `machotool` — a runtime library plus a launch
 wrapper, not a file transformer — so it gets its own spec, and its verification
 cannot be "hash the output file".
 
+## Carried out of item 3
+
+**The multi-family wrappers leak the compat temp's name on stderr.** Since the
+report became unconditional, a multi-family `change_dylib` or `fix_macho` run —
+the invocations that translate to one `machotool edit` — ends its stderr with a
+line naming the hidden temp:
+
+    ./.mf.machotool-compat.37920: written (8,504 bytes)
+
+That is the same path `mw_run_to_tmp` already filters out of *stdout*, and
+hiding it is the entire reason the wrapper's install mechanism exists. Measured
+cosmetic: nothing gates wrapper stderr byte-for-byte and all 182 wrapper
+assertions pass with the line present. Single-family runs are unaffected —
+they reach `machotool dylib`, which produces no report at all.
+
+**Where the fix belongs, and why not the obvious one.** In the wrapper, not in
+`edit`: `edit` naming its `OUT` is correct behaviour, since `OUT` is what the
+caller of `machotool edit` asked for — the wrapper is the party that chose a
+hidden temp as `OUT`. Extend `mw_run_to_tmp` so the one predicate that already
+knows `$MW_TMPFILE` filters both streams, rather than teaching a second place
+the temp's name. Do **not** suppress the edit run's stderr wholesale: real
+diagnostics share that stream, and one was caught in the same capture
+(`machotool: no load command of kind build-version to delete`, from
+`fix_macho`), which a caller should see.
+
+It needs a stream swap (`3>&1 1>&2 2>&3`) around the `awk` in the most
+depended-on wrapper, plus a new `wrapper_test` assertion pinning the temp's
+absence from stderr — a new construct and a new gate, which is why it was not
+bought with the last of item 3's verification budget. `tests/characterize.sh`'s
+own console output shows the same line, and is a convenient reproduction.
+
 ## Outstanding owner actions
 
 - Review the four specs above (items 2–5).
