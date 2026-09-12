@@ -1,8 +1,14 @@
 # Release notes
 
-One file per release, named `<full-version>.md`, e.g. `1.0.0.md`.
-Its contents become the Sparkle appcast `<description>` and the GitHub Release body.
-The publish job fails if the notes for the version being published are missing or empty.
+One file per release, named for the tag, e.g. `1.0.0.md`. Its contents become the
+GitHub Release body. (In repos that ship an updater they also become the Sparkle
+appcast `<description>`; this repo has no appcast yet.)
+
+**The file is optional.** A release with no matching file still gets a generated
+body — title, "What changed", footer — and a committed file adds its prose
+verbatim. What the publish job does refuse is an artifact whose
+`RELEASE_NOTES.md` is missing or empty, and `release.yml` generates that on
+every run, so the build fails first if it ever could not.
 
 ## Why there is no `build/version.sh`
 
