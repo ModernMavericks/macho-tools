@@ -1,6 +1,6 @@
 # `machotool`, and the `target` statement
 
-**Status:** design, agreed 2026-09-10.
+**Status:** design, agreed 2026-09-10. Name reconsidered and kept 2026-09-12.
 
 **Sequenced after** `docs/superpowers/specs/2026-09-10-edit-scripts-design.md`. That
 design establishes the edit-script language; this one renames the tool that runs
@@ -13,6 +13,25 @@ becomes a parameter — `target 10.9` — an OS baked into the binary's name
 contradicts the design. Doing the rename separately would mean shipping a name
 that is wrong on arrival, or delaying the profile until someone gets around to
 renaming.
+
+## The name was reconsidered once, and kept
+
+Before item 3 started, the repo owner asked to weigh Mavericks-themed names —
+`shipyard`, `porthole` and that vein — against `machotool`. Candidates came from
+two directions: the surf break the OS is named for (`shaper`, after the trade
+that shapes a blank into a board; `stringer`; `bombora`) and the shipyard
+(`drydock`, which sharpened once this toolkit stopped editing in place, since a
+drydock is precisely where you take a vessel out of service to reach what you
+otherwise cannot; `careen`; `shipwright`).
+
+**`machotool` won, 2026-09-12.** What the themed names cost is the thing the
+name is for: `machotool` says *Mach-O* to someone who has never heard of this
+project, and every themed candidate trades that for character. Two of the
+suggested names are also taken — Shipyard is a Docker management UI, Porthole is
+Pi-hole's dashboard — which is a hazard the whole vein shares.
+
+Recorded so the question is settled rather than reopened. Nothing in this
+document changed as a result.
 
 ## The rename
 
