@@ -35,31 +35,40 @@ ROOT=$(cd "$HERE/.." && pwd)
 FIXTURE="$HERE/fixture.macho"
 CC="${CC:-clang}"
 
-for t in machotool patch_macho change_dylib add_version_min rename_segment retag_swift_classes fix_macho; do
-    [ -x "$BIN/$t" ] || { echo "wrapper_test: $BIN/$t not found or not executable" >&2; exit 1; }
-done
-
-T=$(mktemp -d "${TMPDIR:-/tmp}/macho-wrapper-test.XXXXXX") || exit 1
-trap 'rm -rf "$T"' EXIT INT TERM
-
 pass=0; fail=0
 ok()   { echo "PASS $1"; pass=$((pass + 1)); }
 bad()  { echo "FAIL $1: $2" >&2; fail=$((fail + 1)); }
 skip() { echo "SKIP $1: $2"; }
 
-# ---- the six names the rename must not reach ----------------------------
+# ---- the six names the rename must not reach, which is also the preflight --
 #
-# A TRIPWIRE, not a test of anything new: it passed before the machotool ->
+# A TRIPWIRE, not a test of anything new: it passed before the macho9 ->
 # machotool rename began and it has to keep passing after it. These six names
 # are a shipped interface -- mavericksforever.com/claude/install.sh fetches
 # three of them by name -- and the whole point of the compat layer is that a
 # caller who learned it in 2024 still works. The binary, the library, the two
-# files the wrappers source and the taught text all change name; these do not.
+# files the wrappers source and the taught text all changed name; these did
+# not.
+#
+# IT IS THE PREFLIGHT, deliberately, and not a second loop after one. When it
+# was added below an existing `[ -x ] || exit 1` loop over the same six names
+# in the same directory, a missing wrapper killed the run up there and this
+# loop's bad() branch could never fire -- six assertions that could only pass.
+# One check, in one place, that names what is missing.
 for w in patch_macho change_dylib add_version_min fix_macho rename_segment retag_swift_classes; do
     [ -x "$BIN/$w" ] \
         && ok "wrapper $w still exists under its historical name" \
         || bad "wrapper names" "$w is missing from $BIN after the rename"
 done
+# machotool is not one of the six -- it is the binary they wrap, and its name
+# is the one this rename DID change -- so it keeps the bare existence check.
+[ -x "$BIN/machotool" ] || { echo "wrapper_test: $BIN/machotool not found or not executable" >&2; exit 1; }
+# Nothing below can say anything useful with a wrapper missing, so stop here
+# rather than emit a hundred confusing failures after the real one.
+[ "$fail" -eq 0 ] || { echo "wrapper_test: $pass passed, $fail failed" >&2; exit 1; }
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/macho-wrapper-test.XXXXXX") || exit 1
+trap 'rm -rf "$T"' EXIT INT TERM
 
 fresh() { cp "$FIXTURE" "$T/f"; }
 sha()   { shasum -a 256 < "$1" | cut -d' ' -f1; }
@@ -1321,10 +1330,18 @@ run fix_macho f -strip_build_version
     && ok "fix_macho: -strip_build_version with nothing to strip exits 0, having written nothing" \
     || bad "fix_macho -strip_build_version" "exit $rc (want 0), file changed=$([ "$(sha "$T/f")" = "$before" ] && echo no || echo YES)"
 # `macho9:`, not `machotool:`, and deliberately so: the rename renamed the
-# BINARY and the taught text, and left every byte the binary EMITS alone --
-# tests/EXPECTED and tests/known-callers.sh's digests pin that output, so
-# moving it is a defect rather than a follow-up. Hence the taught line below
-# says `machotool` and the diagnostic above it says `macho9`.
+# BINARY and the taught text and left every byte the binary EMITS alone, to be
+# moved by a later change together with the assertions that read it. Hence the
+# taught line below says `machotool` and the diagnostic above it says `macho9`.
+#
+# NOTHING DIGESTS THIS. tests/EXPECTED and tests/known-callers.sh's sha256s
+# hash converted FILE BYTES, with every tool's stdout and stderr sent to
+# /dev/null, so renaming every emitted string would move neither. What pins
+# these strings is four greps, and they are the whole list: this assertion,
+# the `matched nothing` one below it, tests/cli_test.sh's `^macho9 edit: `
+# prefix check, and -- the one that is not a test -- compat/rename_segment.sh's
+# `^macho9 segment: renamed=N` parser, which is production code a caller
+# depends on.
 has_line "$T/err" 'macho9: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
@@ -1636,8 +1653,19 @@ rm -f "$T/-dashy"
 # run on its own, even though the wrapper's own real run (its temp is always
 # dot-prefixed, mw_prepare) went through fine. Pin it end to end: run the
 # wrapper for real in one directory, pull the taught block back out of its
-# stderr and eval it verbatim in a second, identically-seeded directory, and
+# stderr and run it verbatim in a second, identically-seeded directory, and
 # compare the two results byte-for-byte.
+#
+# A GENUINELY FRESH ENVIRONMENT, via `env -i` into a new /bin/sh, not an
+# `eval` in a subshell that inherits this script's. What is being claimed is
+# that a reader can paste the block somewhere else and have it work, so the
+# test must not lend it anything of ours -- and `env -i PATH=...` is the only
+# form that proves the taught program word resolves to the binary shipped
+# beside the wrapper rather than to something this process happened to have.
+# It is also the contract that used to need a `macho9` symlink beside
+# `machotool` to hold, so it is the check that the symlink's deletion rested
+# on. /usr/bin and /bin are on the PATH for `mv`, which the install line the
+# block ends with needs.
 fresh
 mkdir "$T/wrap" "$T/taught"
 cp "$FIXTURE" "$T/wrap/-dashy"
@@ -1646,7 +1674,7 @@ cp "$FIXTURE" "$T/taught/-dashy"
     >/dev/null 2>"$T/err"
 rc=$?
 taught=$(awk '/^    /{sub(/^    /, ""); print}' "$T/err")
-( cd "$T/taught" && PATH="$BIN:$PATH" eval "$taught" ) >/dev/null 2>"$T/err2"
+( cd "$T/taught" && env -i PATH="$BIN:/usr/bin:/bin" /bin/sh -c "$taught" ) >/dev/null 2>"$T/err2"
 rc2=$?
 [ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && [ -n "$taught" ] \
     && cmp -s "$T/wrap/-dashy" "$T/taught/-dashy" \

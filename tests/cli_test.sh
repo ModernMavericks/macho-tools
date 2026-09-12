@@ -2656,6 +2656,15 @@ grep -q "line 2" "$T/editbad.err" && ok "edit: names the offending line" \
 [ "$(sha "$T/edit_bad")" = "$bad_before" ] && [ ! -e "$T/edit_bad_out" ] \
     && ok "edit: a parse error left FILE untouched and wrote no OUT" \
     || bad "edit parse error" "the file was modified, or an OUT appeared, despite a parse error"
+# `macho9 edit: `, not `machotool edit: `, and deliberately so: the machotool
+# rename renamed the BINARY and left every byte it emits alone (src/edit.c's
+# me_say format strings), for a later change to move together with everything
+# that reads them. No digest protects those strings -- tests/EXPECTED and
+# tests/known-callers.sh's sha256s hash converted file bytes with the tools'
+# output sent to /dev/null -- so this grep is one of the four readers that
+# would actually break, alongside tests/wrapper_test.sh's two unmatched-report
+# assertions and compat/rename_segment.sh's `^macho9 segment: renamed=N`
+# parser, which is production code rather than a test.
 grep -q "^macho9 edit: " "$T/editbad.err" \
     && ok "edit: parse error is prefixed like every other verb's diagnostics" \
     || bad "edit parse error" "no 'macho9 edit: ' prefix: $(cat "$T/editbad.err")"

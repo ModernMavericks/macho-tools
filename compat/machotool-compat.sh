@@ -96,10 +96,12 @@ MW_DIR=$(cd "$MW_DIR" 2>/dev/null && pwd) || {
 # the emitted lines the same way, for the same reason.
 #
 # The taught text is a pinned contract -- tests/known-callers.sh greps stderr
-# for it, and tests/wrapper_test.sh pastes a taught block into a FRESH shell
-# with nothing but PATH set and checks it still runs there -- so the word
-# compat/translate.sh emits and the binary this finds have to be the same
-# word. Both are `machotool`; the tool answered to `macho9` until the rename.
+# for it, and tests/wrapper_test.sh pulls a taught block back out of a real
+# run's stderr and runs it under `env -i PATH=...` in a new /bin/sh, checking
+# it produces the same bytes the wrapper did -- so the word compat/
+# translate.sh emits and the binary this finds have to be the same word. Both
+# are `machotool`; the tool answered to `macho9` until the rename, and that
+# `env -i` check is what lets it stop answering to it.
 if [ -x "$MW_DIR/machotool" ]; then
     PATH="$MW_DIR:$PATH"
     export PATH

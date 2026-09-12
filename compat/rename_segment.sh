@@ -36,11 +36,13 @@
 #          macho9 segment: renamed=<N>
 #
 #      -- still spelled `macho9`, because the machotool rename renamed the
-#      BINARY and left every byte it emits alone: tests/EXPECTED and
-#      tests/known-callers.sh's digests pin that output, so the tool answers
-#      to one name and prints another until something deliberately moves
-#      those references. The sed below matches what is printed, not what the
-#      file is called.
+#      BINARY and left every byte it emits alone, for a later change to move
+#      together with everything that reads them. So the tool answers to one
+#      name and prints another, and the sed below matches what is PRINTED,
+#      not what the file is called. No digest protects this: tests/EXPECTED
+#      and tests/known-callers.sh's sha256s hash converted file bytes with
+#      the tools' output sent to /dev/null. This parser is what breaks, and
+#      it is the only one of the four readers that is not a test.
 #
 #      on success -- one line, key=value, in the shape --capabilities already
 #      established, and advertised as `verb segment reports=renamed` so this

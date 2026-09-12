@@ -155,17 +155,19 @@
 #     macho9: /usr/lib/libFoo.dylib matched nothing        (a -change)
 #     macho9: no load command of kind build-version to delete
 #
-# quoted verbatim, `macho9` and all: the rename renamed the BINARY, and left
-# every byte it emits alone, because tests/EXPECTED and tests/known-callers.sh
-# pin that output. So the tool answers to `machotool` and still prints
-# `macho9:`, and these two lines are what a caller really sees.
-#
 # on STDERR, per operation, naming the operation that matched nothing. That is
 # strictly more than "No changes needed: F" said, which could not distinguish
 # which of several operations missed. `machotool --fatal-warnings` would turn that
 # report into a refusal; THIS WRAPPER MUST NOT PASS IT. fix_macho exited 0 when
 # an operation matched nothing, that is compat surface, and
 # tests/known-callers.sh and tests/wrapper_test.sh are the gates.
+#
+# Those two lines are quoted verbatim, `macho9:` and all, because that is what
+# a caller really sees: the machotool rename renamed the BINARY and left every
+# byte it emits alone, for a later change to move together with everything
+# that reads them. Neither tests/EXPECTED nor tests/known-callers.sh's sha256s
+# have an opinion -- both hash converted file bytes with the tools' output
+# sent to /dev/null. What reads these two lines is tests/wrapper_test.sh.
 #
 # ---- two more differences, which are NOT on the adopted list -------------
 #
