@@ -287,7 +287,7 @@ typedef struct {
  * Apply `ops` to the Mach-O at `path` and write the result as the NEW file
  * `out`. `path` is only ever read -- it is opened O_RDONLY and never written,
  * whatever happens -- so the "in place" this function used to do is now the
- * caller's business (compat/macho9-compat.sh's install path does it with a
+ * caller's business (compat/machotool-compat.sh's install path does it with a
  * temp and an mv). Handles both a thin 64-bit Mach-O and a classic
  * (32-bit-offset fat_arch) fat container, whose slices are each rewritten and
  * then reassembled; a 64-bit fat container (fat_arch_64) is refused

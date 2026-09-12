@@ -23,7 +23,7 @@
 #      libavxemu.dylib as an ordinary dependency.
 #   3. mavericks-magic-trackpad2's recorded, exact Bash permission entries --
 #      a slightly different shape (two patch_macho runs, and three -change
-#      flags with NO -strip-lc, so change_dylib translates to ONE macho9
+#      flags with NO -strip-lc, so change_dylib translates to ONE machotool
 #      command rather than two).
 #
 # The other callers Task 0 found are this repo's own suites, and they are
@@ -114,19 +114,19 @@ got=$(sha "$T/t")
 # The teaching message is the whole point of phase one, and it must be on
 # STDERR -- stdout is redirected to /dev/null by this very caller, so a
 # message on stdout would vanish. One assertion per tool: the equivalent
-# macho9 command line is in that tool's stderr.
-grep -q 'macho9 declassify ' "$T/e1" \
-    && ok "install.sh: patch_macho taught its macho9 equivalent on stderr" \
-    || bad "install.sh: patch_macho stderr" "no macho9 equivalent: $(cat "$T/e1")"
-grep -q 'macho9 minos ' "$T/e2" \
-    && ok "install.sh: add_version_min taught its macho9 equivalent on stderr" \
-    || bad "install.sh: add_version_min stderr" "no macho9 equivalent: $(cat "$T/e2")"
-# This one invocation mixes families, so its equivalent is one `macho9 edit`
+# machotool command line is in that tool's stderr.
+grep -q 'machotool declassify ' "$T/e1" \
+    && ok "install.sh: patch_macho taught its machotool equivalent on stderr" \
+    || bad "install.sh: patch_macho stderr" "no machotool equivalent: $(cat "$T/e1")"
+grep -q 'machotool minos ' "$T/e2" \
+    && ok "install.sh: add_version_min taught its machotool equivalent on stderr" \
+    || bad "install.sh: add_version_min stderr" "no machotool equivalent: $(cat "$T/e2")"
+# This one invocation mixes families, so its equivalent is one `machotool edit`
 # with the operations as statements -- the command, and both kinds of
 # statement it carries.
-grep -q 'macho9 edit ' "$T/e3" && grep -q 'load-command delete uuid' "$T/e3" \
+grep -q 'machotool edit ' "$T/e3" && grep -q 'load-command delete uuid' "$T/e3" \
     && grep -q 'dylib replace' "$T/e3" \
-    && ok "install.sh: change_dylib taught its macho9 equivalent on stderr" \
+    && ok "install.sh: change_dylib taught its machotool equivalent on stderr" \
     || bad "install.sh: change_dylib stderr" "missing an equivalent: $(cat "$T/e3")"
 
 # IDEMPOTENCY. install.sh's wrapper decides whether to run the pipeline at all
@@ -140,7 +140,7 @@ rc=0
     || bad "install.sh: patch_macho idempotency" "exit $rc, or the output differs from the input"
 
 # ...and it says so with md_declassify's own line and NOTHING else. The C tool
-# never named the file it wrote on this path; `macho9 declassify` does, and
+# never named the file it wrote on this path; `machotool declassify` does, and
 # compat/patch_macho.sh drops that line again. This is the one stdout
 # difference the wrappers actively close, so it gets its own assertion.
 grep -q '^Already patched' "$T/o2" \
@@ -175,7 +175,7 @@ got=$(sha "$T/b1" 2>/dev/null || echo none)
 #
 # Two patch_macho runs from the same input, then add_version_min, then a
 # change_dylib with THREE -change flags and no -strip-lc -- which translates
-# to a SINGLE macho9 command, so this replay covers the wrapper's non-sequence
+# to a SINGLE machotool command, so this replay covers the wrapper's non-sequence
 # path where caller 1 covers the sequence path.
 TRACKPAD_SHA=df2b12fe08ada595b71063ee6c6ab6821c3266e4f68579bb4a14698e466b34cd
 TRACKPAD_C1_SHA=b355358e586e4828a2dbafb349f1220f1985e074e1fdc223dc0d4fe6a23f878f
@@ -203,10 +203,10 @@ got1=$(sha "$T/c1" 2>/dev/null || echo none)
 #
 # `-strip-lc uuid -delete <a dylib something still binds to>` is that case,
 # and tests/compat-sweep.sh measured it as a regression when it is run as a
-# raw sequence: the C tool refused ATOMICALLY, while `macho9 lc` followed by
-# `macho9 dylib` refused only AFTER the first command had already rewritten
+# raw sequence: the C tool refused ATOMICALLY, while `machotool lc` followed by
+# `machotool dylib` refused only AFTER the first command had already rewritten
 # the file (the matrix marks those rows "both-refuse+partial"). A mixed-family
-# invocation is one `macho9 edit` now, which reads the image once, applies
+# invocation is one `machotool edit` now, which reads the image once, applies
 # every statement to it in memory and writes once at the end -- so a refusal
 # at any statement writes nothing. That is what this asserts, rather than
 # only describing it.
@@ -214,9 +214,9 @@ cp "$FIXTURE" "$T/atom"
 before=$(sha "$T/atom")
 # Every name in the caller's directory, so "and it left nothing behind" is a
 # question about the directory rather than about one temp-file spelling. The
-# wrapper used to make a `.NAME.macho9-compat.PID` copy and a grep for that
+# wrapper used to make a `.NAME.machotool-compat.PID` copy and a grep for that
 # name was the check; nothing produces it now, so a grep for it can no longer
-# fail. macho9's own temp is `TARGET.XXXXXX`, and a refusal that left one
+# fail. machotool's own temp is `TARGET.XXXXXX`, and a refusal that left one
 # would show up here as surely as anything else.
 # Created first, so the redirection below does not itself count as something
 # the run left behind.
@@ -270,7 +270,7 @@ got=$(sha "$T/dir with space/t" 2>/dev/null || echo none)
     || bad "install.sh spaced path" "exit $rc, sha256 $got, want $INSTALLSH_SHA"
 # The whole pipeline creates exactly ONE file in that directory -- `t`, the
 # converted copy it was asked for -- and the assertion is that difference, not
-# the absence of one particular temp-file spelling: a grep for `macho9-compat`
+# the absence of one particular temp-file spelling: a grep for `machotool-compat`
 # names something no code produces any more, so it could no longer fail. The
 # two listings are sorted the same way and compared whole, for the reason the
 # atomicity block above gives.

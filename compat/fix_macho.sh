@@ -1,5 +1,5 @@
 #!/bin/sh
-# fix_macho -- a /bin/sh wrapper around macho9's `lc`, `dylib` and `segment`.
+# fix_macho -- a /bin/sh wrapper around machotool's `lc`, `dylib` and `segment`.
 #
 #   fix_macho <file> [-change old new] [-strip_build_version]
 #             [-rename_seg old new] ...
@@ -14,13 +14,13 @@
 # GRAMMAR. compat/translate.sh holds the whole mapping and the reasoning; in
 # brief, one verb per family --
 #
-#     -strip_build_version  macho9 lc      FILE OUT -delete build-version
-#     -change O N           macho9 dylib   FILE OUT -replace O N
-#     -rename_seg O N       macho9 segment FILE OUT O N    (one line per pair)
+#     -strip_build_version  machotool lc      FILE OUT -delete build-version
+#     -change O N           machotool dylib   FILE OUT -replace O N
+#     -rename_seg O N       machotool segment FILE OUT O N    (one line per pair)
 #
 # -- when the invocation is ONE command's worth. Anything more than that --
-# which includes two -rename_seg pairs, since `macho9 segment` takes one --
-# becomes a single `macho9 edit FILE OUT -` with the operations as statements on
+# which includes two -rename_seg pairs, since `machotool segment` takes one --
+# becomes a single `machotool edit FILE OUT -` with the operations as statements on
 # stdin, ordered load-command, dylib, segment, because deleting a load command
 # hands header pad back and the dylib rewrite consumes it. A rename changes no
 # sizes, so it can only go last. `argc < 3`, a trailing `-change`/`-rename_seg`
@@ -36,7 +36,7 @@
 # C file grew an FM_ROOM check before it retired; mt_room in
 # compat/translate.sh is where that check lives now, printing the same "too
 # many -change (max 32)" / "too many -rename_seg (max 16)" and refusing before
-# anything runs. The -rename_seg cap in particular exists NOWHERE ELSE: macho9
+# anything runs. The -rename_seg cap in particular exists NOWHERE ELSE: machotool
 # sees one rename at a time either way -- its `segment` verb takes one pair,
 # and an edit script's `segment rename` statement is one pair -- so it has no
 # cap of its own to hit.
@@ -53,12 +53,12 @@
 #   1. A REPLACEMENT PATH LONGER THAN THE EXISTING COMMAND now SUCCEEDS.
 #      fix_macho wrote the new path into the existing LC_LOAD_DYLIB and
 #      refused if it did not fit ("new path '...' too long (320 > 32)", exit 1,
-#      file untouched). `macho9 dylib -replace` rebuilds the load-command
+#      file untouched). `machotool dylib -replace` rebuilds the load-command
 #      table and fits the longer path into existing header pad, exit 0.
 #      WHY ADOPTING IT IS RIGHT: the limit was an artifact of a rewriter that
 #      never learned to resize a command, not a safety property. Nothing in
 #      docs/PROPOSAL.md records a reason for it, and the previous plan states
-#      the rule outright -- "macho9 does NOT have to inherit the old tools'
+#      the rule outright -- "machotool does NOT have to inherit the old tools'
 #      artificial limits". Note the translation still emits no --allow-grow:
 #      this uses pad the image already has, and does not enlarge the header.
 #
@@ -75,7 +75,7 @@
 #
 #   3. THE WRITE-BACK IS ATOMIC. fix_macho lseek'd to 0 and wrote the whole
 #      file back over itself, so a crash, a full disk or a kill mid-write left
-#      a corrupt binary. macho9 never writes the file at all now: it writes a
+#      a corrupt binary. machotool never writes the file at all now: it writes a
 #      temp beside it (wa_write_new, src/atomic_write.h -- mkstemp + rename,
 #      carrying FILE's mode, owner and xattrs) and this wrapper installs that
 #      temp with one mv, in the same directory. So the caller's file is either
@@ -83,7 +83,7 @@
 #      WHY ADOPTING IT IS RIGHT: these tools exist to make binaries loadable;
 #      a half-written one is the failure they are supposed to prevent.
 #      NO CAVEAT ANY MORE. An invocation worth more than one command is one
-#      `macho9 edit FILE OUT -`, and me_run (src/edit.c) reads the
+#      `machotool edit FILE OUT -`, and me_run (src/edit.c) reads the
 #      image once, applies every statement to it in memory, verifies, and
 #      writes once -- so a refusal at any statement leaves the temp unwritten
 #      and FILE exactly as it was, with no second write to be caught between.
@@ -133,9 +133,9 @@
 #      the reason -- which is exactly the invisible edit this whole plan
 #      exists to make visible.
 #      WHY ADOPTING IT IS RIGHT: (a) install_name_tool spells identity `-id`
-#      and its `-change` never touches LC_ID_DYLIB -- macho9 matches the
+#      and its `-change` never touches LC_ID_DYLIB -- machotool matches the
 #      tool everyone already knows; (b) fix_macho.c's own comment stated the
-#      contract macho9 now enforces, so this is the C being fixed, not the C
+#      contract machotool now enforces, so this is the C being fixed, not the C
 #      being contradicted; (c) silently rewriting a dylib's own install name
 #      from an operation the caller aimed at a DEPENDENCY is precisely the
 #      invisible edit this whole plan exists to make visible.
@@ -148,16 +148,21 @@
 # "Processing thin Mach-O:" / "Processing arch N at offset M:" / "  Changed: X
 # -> Y" / "  Removed LC_BUILD_VERSION (N bytes)" / "  Renamed segment 'A' ->
 # 'B'" / "File updated: F" / "No changes needed: F". None of it survives; what
-# a caller sees now is macho9's own reporting, plus -- for the one line that
+# a caller sees now is machotool's own reporting, plus -- for the one line that
 # carried information a caller could act on -- the unmatched report this
 # plan's Task 1 added:
 #
 #     macho9: /usr/lib/libFoo.dylib matched nothing        (a -change)
 #     macho9: no load command of kind build-version to delete
 #
+# quoted verbatim, `macho9` and all: the rename renamed the BINARY, and left
+# every byte it emits alone, because tests/EXPECTED and tests/known-callers.sh
+# pin that output. So the tool answers to `machotool` and still prints
+# `macho9:`, and these two lines are what a caller really sees.
+#
 # on STDERR, per operation, naming the operation that matched nothing. That is
 # strictly more than "No changes needed: F" said, which could not distinguish
-# which of several operations missed. `macho9 --fatal-warnings` would turn that
+# which of several operations missed. `machotool --fatal-warnings` would turn that
 # report into a refusal; THIS WRAPPER MUST NOT PASS IT. fix_macho exited 0 when
 # an operation matched nothing, that is compat surface, and
 # tests/known-callers.sh and tests/wrapper_test.sh are the gates.
@@ -178,13 +183,13 @@
 #     fix_macho never built an ordinal map and rewrote such an image happily.
 #     compat/rename_segment.sh's header has the measurement (on
 #     /usr/lib/libxcselect.dylib) and the note that the smallest fix is a
-#     change to macho9, not to a wrapper.
+#     change to machotool, not to a wrapper.
 #
 # ---- exit codes ----------------------------------------------------------
 #
-# 0 and 1, the only two fix_macho had -- so every nonzero from macho9 is
+# 0 and 1, the only two fix_macho had -- so every nonzero from machotool is
 # mapped to 1. It is the same mapping compat/rename_segment.sh and
-# compat/patch_macho.sh make and for the same reason: macho9's own EX_FAIL
+# compat/patch_macho.sh make and for the same reason: machotool's own EX_FAIL
 # is 2, a value no fix_macho caller has ever seen, and forwarding it would
 # invent a third outcome for a grammar that has two. (EX_REFUSED, 1, is not
 # the problem -- it already coincides with fix_macho's own flat failure
@@ -201,21 +206,21 @@
 #
 # ---- the in-place edit ---------------------------------------------------
 #
-# fix_macho rewrote the file it was given; `macho9 dylib`/`lc`/`segment` do
+# fix_macho rewrote the file it was given; `machotool dylib`/`lc`/`segment` do
 # not. So this wrapper takes the shared install path -- mw_prepare names a
 # temp beside the file FILE really is, mw_retranslate re-emits the command
 # with that temp as its output, mw_run_to_tmp runs it and drops the "Wrote
 # <temp>" line no C tool ever printed, and mw_finish mv's the temp over the
-# target or discards it when the bytes did not change. macho9-compat.sh's "the
-# install path" section has the reasoning for each step. `macho9 edit`, which
+# target or discards it when the bytes did not change. machotool-compat.sh's "the
+# install path" section has the reasoning for each step. `machotool edit`, which
 # every invocation worth more than one command becomes, takes that temp as its
 # OUT positional like every other verb here, so both shapes install
 # identically.
 #
 # THE WRITABILITY CHECK comes with it, inside mw_prepare. fix_macho opened the
 # file O_RDWR before it looked at it, so an absent or unwritable file failed
-# immediately, with no analysis and no write. No macho9 command reproduces that
-# any more -- a verb that writes an output opens FILE O_RDONLY, and `macho9
+# immediately, with no analysis and no write. No machotool command reproduces that
+# any more -- a verb that writes an output opens FILE O_RDONLY, and `machotool
 # edit` finds out it cannot write only when it writes, at the END of the run,
 # with a different message -- so mw_require_writable is the only thing that
 # does. `test -w` is not open(O_RDWR) -- it consults the real uid and does not
@@ -230,22 +235,22 @@
 # mw_prepare has the message and the remedy. And creating a temp beside FILE
 # needs the DIRECTORY writable, where the C tool needed only FILE itself to be,
 # so a writable binary in a read-only directory now fails (`mkstemp:
-# Permission denied`, from macho9's own write of the temp) with FILE untouched.
+# Permission denied`, from machotool's own write of the temp) with FILE untouched.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
-MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
+MW_DIR=${MACHOTOOL_COMPAT_DIR:-$(dirname "$MW_SELF")}
 # Checked here, before sourcing, so a missing support file gets this message
 # rather than the shell's own "No such file or directory" from the `.` below.
 # The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
 # $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
-# one holding macho9 -- which is why MACHO9_COMPAT_DIR exists.
-[ -r "$MW_DIR/macho9-compat.sh" ] || {
-    printf '%s: cannot find macho9-compat.sh in %s -- macho9 and its two support\n' "$0" "$MW_DIR" >&2
+# one holding machotool -- which is why MACHOTOOL_COMPAT_DIR exists.
+[ -r "$MW_DIR/machotool-compat.sh" ] || {
+    printf '%s: cannot find machotool-compat.sh in %s -- machotool and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
-    printf '%s: SYMLINK directory, so set MACHO9_COMPAT_DIR to where they really are\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set MACHOTOOL_COMPAT_DIR to where they really are\n' "$0" >&2
     exit 1
 }
-. "$MW_DIR/macho9-compat.sh"
+. "$MW_DIR/machotool-compat.sh"
 
 mw_translate fix_macho "$@" || exit $?
 
@@ -257,7 +262,7 @@ mw_retranslate fix_macho "$@" || exit 1
 mw_run_to_tmp
 mw_frc=$?
 # Every nonzero becomes 1: see "exit codes" above. Named mw_frc rather than
-# reusing mw_rc, which macho9-compat.sh owns.
+# reusing mw_rc, which machotool-compat.sh owns.
 [ "$mw_frc" -eq 0 ] || exit 1
 mw_finish || exit 1
 # The line this wrapper has always ended a changed run with, printed by

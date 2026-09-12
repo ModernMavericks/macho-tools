@@ -106,16 +106,10 @@ jobs:
 
       # machotool and the two files the wrappers source belong in the artifact
       # too, and are not optional: ALL SIX historical names are now /bin/sh
-      # wrappers that look for macho9, macho9-compat.sh and
-      # macho9-translate.sh in their own directory, so an artifact without
+      # wrappers that look for machotool, machotool-compat.sh and
+      # machotool-translate.sh in their own directory, so an artifact without
       # them is six names that cannot run. (The binary itself was missing from
       # this list even before that, when it was still a standalone CLI.)
-      #
-      # build-cross/macho9 is a symlink to build-cross/machotool now, not a
-      # second binary -- CMake stages it there for the same reason
-      # compat/macho9-compat.sh still looks for that name (see CMakeLists.txt
-      # and compat/macho9-compat.sh's own comments). It belongs in the
-      # artifact for the identical reason macho9-compat.sh does.
       #
       # The paths below are unchanged by fix_macho becoming a wrapper: this
       # list names FILES in build-cross/, not CMake targets, and CMake stages
@@ -126,9 +120,8 @@ jobs:
           name: macho-tools
           path: |
             build-cross/machotool
-            build-cross/macho9
-            build-cross/macho9-compat.sh
-            build-cross/macho9-translate.sh
+            build-cross/machotool-compat.sh
+            build-cross/machotool-translate.sh
             build-cross/patch_macho
             build-cross/change_dylib
             build-cross/add_version_min

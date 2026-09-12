@@ -1258,7 +1258,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
      * function's business to refuse. (It used to open O_RDWR precisely so that
      * an unwritable file failed before any analysis. Reproducing that refusal
      * for the historical tools, which really did edit their argument, is the
-     * compat wrappers' job now: mw_prepare, compat/macho9-compat.sh.) The fd
+     * compat wrappers' job now: mw_prepare, compat/machotool-compat.sh.) The fd
      * is not used for the THIN read either: only to learn the size and to peek
      * the magic, since a fat file's magic isn't MH_MAGIC_64 and mi_open (thin
      * only) would refuse it outright. This is the one place that has to tell

@@ -60,7 +60,7 @@ sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 # in. So they keep asking their own question, of a file this helper puts the
 # result back into: run the verb with a temp beside FILE as OUT, then mv the
 # temp over FILE, which is precisely the two steps the compat wrappers take
-# (compat/macho9-compat.sh's install path). The verb's stdout and exit status
+# (compat/machotool-compat.sh's install path). The verb's stdout and exit status
 # are passed through unchanged, less the "Wrote <temp>" line, which names a
 # path no assertion here asked about.
 #
@@ -76,7 +76,7 @@ mtip() {
     "$MACHOTOOL" "$mtip_verb" "$mtip_file" "$mtip_tmp" "$@" >"$T/mtip.out" || mtip_rc=$?
     # Through the environment, not `awk -v`: that escape-processes what it
     # assigns, so a $T containing a backslash would leave the line unsuppressed.
-    # compat/macho9-compat.sh's mw_run_to_tmp, which this mirrors, has the
+    # compat/machotool-compat.sh's mw_run_to_tmp, which this mirrors, has the
     # measurement.
     MTIP_PREFIX="Wrote $mtip_tmp (" awk 'index($0, ENVIRON["MTIP_PREFIX"]) != 1' "$T/mtip.out"
     if [ "$mtip_rc" -eq 0 ]; then

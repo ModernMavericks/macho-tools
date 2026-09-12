@@ -1,5 +1,5 @@
 #!/bin/sh
-# rename_segment -- a /bin/sh wrapper around `macho9 segment FILE OUT OLD NEW`.
+# rename_segment -- a /bin/sh wrapper around `machotool segment FILE OUT OLD NEW`.
 #
 #   rename_segment binary OLDNAME NEWNAME
 #
@@ -7,7 +7,7 @@
 # grammar, a thin-only mi_open + lseek/write driver, its exit 2 when nothing
 # matched, and its one message, over its own mi_each_lc loop calling
 # mseg_rename_lc (src/segname.h) on every matching command -- the same
-# per-command function `macho9 segment` calls, once per command, from inside
+# per-command function `machotool segment` calls, once per command, from inside
 # mr_apply_file's own load-command walk. (rename_segment.c's own image-wide
 # loop, mseg_rename_image, was deleted along with rename_segment.c itself:
 # nothing else ever called it.) The rename itself is therefore the same code
@@ -17,12 +17,12 @@
 # __DATA, and Xcode 10+ linkers put them in __DATA_CONST) is written down in
 # src/segname.h's header, which outlives the C front-end this replaces.
 #
-# GRAMMAR. `rename_segment FILE OLD NEW` -> `macho9 segment FILE OUT OLD NEW`.
+# GRAMMAR. `rename_segment FILE OLD NEW` -> `machotool segment FILE OUT OLD NEW`.
 # `argc != 4` and a NEW longer than the 16 bytes a segname field holds are
 # both refused before any I/O, by compat/translate.sh, in rename_segment's own
 # words.
 #
-# cli/macho9.c's cmd_segment lists FIVE DELIBERATE DIVERGENCES a wrapper has
+# cli/machotool.c's cmd_segment lists FIVE DELIBERATE DIVERGENCES a wrapper has
 # to account for, plus a note on a sixth that used to be on that list and no
 # longer is (mg_plausible, below). The first of the five -- that the verb reads
 # FILE and writes OUT rather than rewriting FILE -- is closed by "the in-place
@@ -31,34 +31,41 @@
 #   1. EXIT 2 WHEN NOTHING MATCHED, and 2. THE ONE-LINE MESSAGE. Both need the
 #      same number: how many LC_SEGMENT_64s the rename actually matched.
 #      rename_segment got it from mseg_rename_image's return value; this
-#      wrapper gets it from `macho9 segment`, which prints
+#      wrapper gets it from `machotool segment`, which prints
 #
 #          macho9 segment: renamed=<N>
 #
+#      -- still spelled `macho9`, because the machotool rename renamed the
+#      BINARY and left every byte it emits alone: tests/EXPECTED and
+#      tests/known-callers.sh's digests pin that output, so the tool answers
+#      to one name and prints another until something deliberately moves
+#      those references. The sed below matches what is printed, not what the
+#      file is called.
+#
 #      on success -- one line, key=value, in the shape --capabilities already
 #      established, and advertised as `verb segment reports=renamed` so this
-#      wrapper can check the build provides it rather than assume. macho9's own
+#      wrapper can check the build provides it rather than assume. machotool's own
 #      stdout is otherwise SUPPRESSED and this wrapper prints rename_segment's
 #      single line with that count, byte-identical to the C tool's.
 #
-#      IT IS NOT DERIVED FROM `macho9 info`. An earlier version of this wrapper
+#      IT IS NOT DERIVED FROM `machotool info`. An earlier version of this wrapper
 #      counted "  segname=NAME ..." lines out of that dump with awk, and it was
 #      wrong twice over, both cases reachable and both measured: mseg_rename_lc
 #      matches with strncmp over the 16-byte segname field, so an OLD LONGER
 #      than 16 bytes whose first 16 match is a match the field-splitting count
 #      missed, and a segname CONTAINING WHITESPACE (legal, and producible with
-#      `macho9 segment f out __TEXT 'A B'`) split across awk fields and missed too.
+#      `machotool segment f out __TEXT 'A B'`) split across awk fields and missed too.
 #      Both made this wrapper exit 2, leaving the file untouched, where the C
 #      tool renamed and exited 0. tests/wrapper_test.sh pins both.
 #
 #      That was tests/README.md's second lesson -- never parse human-readable
-#      output as an oracle -- applied to `macho9 info` instead of to `otool`.
+#      output as an oracle -- applied to `machotool info` instead of to `otool`.
 #      The count now comes from the code that did the matching.
 #   3. THIN ONLY. rename_segment ran mi_open, which fails on a fat container,
-#      and printed "%s: not a readable 64-bit Mach-O" (exit 1). `macho9
+#      and printed "%s: not a readable 64-bit Mach-O" (exit 1). `machotool
 #      segment` goes through mr_apply_file, which HANDLES fat containers --
 #      so it would rename inside a fat file that rename_segment refused
-#      outright. `macho9 info` is thin-only in exactly rename_segment's sense
+#      outright. `machotool info` is thin-only in exactly rename_segment's sense
 #      (it is a bare mi_open), so gating on its EXIT STATUS reproduces the
 #      old refusal. Its output is not read: the exit status is the whole
 #      signal, which is the difference between using a machine-readable
@@ -82,8 +89,8 @@
 #      tests/differential.sh's corpus that carries one:
 #
 #        compat/rename_segment.c (pre-wrapper)  renamed it, exit 0
-#        macho9 segment                         refuses, exit 1
-#        macho9 lc -delete uuid                 refuses too, with the SAME message
+#        machotool segment                         refuses, exit 1
+#        machotool lc -delete uuid                 refuses too, with the SAME message
 #        change_dylib (pre-wrapper)             refuses too, with the SAME message
 #
 #      The last two lines are the point: this is NOT rename-specific and NOT
@@ -97,7 +104,7 @@
 #      offsets -- but a different call site, so it does not fall out of
 #      that fix. The smallest fix would be to skip building the ordinal map
 #      when nothing in the operation set can renumber, which is a change to
-#      macho9, not to this wrapper. Reported rather than made.
+#      machotool, not to this wrapper. Reported rather than made.
 #
 # mg_plausible USED TO BE a fifth divergence and no longer is: mr_apply_file
 # used to run it before writing, on every operation, and refuse if it failed;
@@ -114,27 +121,27 @@
 # including every one compat/change_dylib.sh can reach.
 #
 # EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else -- the three
-# rename_segment had. Every nonzero from `macho9 segment` is mapped to 1
+# rename_segment had. Every nonzero from `machotool segment` is mapped to 1
 # rather than read directly, on purpose: "nothing matched" here is decided
-# from the match COUNT (`mw_n -eq 0`, below), never from macho9's own exit
+# from the match COUNT (`mw_n -eq 0`, below), never from machotool's own exit
 # code, so a coincidence between the two numberings is never load-bearing.
-# That is just as well -- macho9's own EX_REFUSED is 1, the SAME number this
+# That is just as well -- machotool's own EX_REFUSED is 1, the SAME number this
 # wrapper uses for "everything else", not for "nothing matched" (its 2); this
 # wrapper's mapping does not depend on which way that coincidence runs.
 #
-# THE IN-PLACE EDIT. rename_segment rewrote the binary it was given; `macho9
+# THE IN-PLACE EDIT. rename_segment rewrote the binary it was given; `machotool
 # segment FILE OUT OLD NEW` does not write the file it is given. So this
 # wrapper takes the shared install path around its existing flow: mw_prepare
 # names a temp beside the file FILE really is, mw_retranslate re-emits the
 # command with that temp as OUT, and mw_finish mv's the temp over the target
 # -- but only once the count says something was renamed, since the old grammar
 # reported "nothing matched" as exit 2 with the file untouched.
-# macho9-compat.sh's "the install path" section has the reasoning for each
+# machotool-compat.sh's "the install path" section has the reasoning for each
 # step.
 #
 # THE WRITABILITY CHECK comes with mw_prepare. rename_segment opened the file
 # O_RDWR before it looked at it, so an unwritable (or absent) file failed
-# immediately, with no analysis and no write. `macho9 segment` opens FILE
+# immediately, with no analysis and no write. `machotool segment` opens FILE
 # O_RDONLY now and has no opinion about whether FILE is writable, and the
 # install by mv needs only the DIRECTORY writable -- so without this check the
 # wrapper would rewrite files the C tool refused. `test -w` is not
@@ -150,19 +157,19 @@
 # writable binary in a read-only directory now fails with FILE untouched.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
-MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
+MW_DIR=${MACHOTOOL_COMPAT_DIR:-$(dirname "$MW_SELF")}
 # Checked here, before sourcing, so a missing support file gets this message
 # rather than the shell's own "No such file or directory" from the `.` below.
 # The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
 # $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
-# one holding macho9 -- which is why MACHO9_COMPAT_DIR exists.
-[ -r "$MW_DIR/macho9-compat.sh" ] || {
-    printf '%s: cannot find macho9-compat.sh in %s -- macho9 and its two support\n' "$0" "$MW_DIR" >&2
+# one holding machotool -- which is why MACHOTOOL_COMPAT_DIR exists.
+[ -r "$MW_DIR/machotool-compat.sh" ] || {
+    printf '%s: cannot find machotool-compat.sh in %s -- machotool and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
-    printf '%s: SYMLINK directory, so set MACHO9_COMPAT_DIR to where they really are\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set MACHOTOOL_COMPAT_DIR to where they really are\n' "$0" >&2
     exit 1
 }
-. "$MW_DIR/macho9-compat.sh"
+. "$MW_DIR/machotool-compat.sh"
 
 mw_translate rename_segment "$@" || exit $?
 
@@ -172,12 +179,12 @@ mw_new=$3
 
 mw_prepare "$mw_file" || exit 1
 
-# THIN ONLY: `macho9 info` is a bare mi_open, which is the gate
+# THIN ONLY: `machotool info` is a bare mi_open, which is the gate
 # rename_segment itself had. Only the exit status is used; the output is
 # discarded, deliberately (see the FOURTH DIVERGENCE note above). Before the
-# retranslate, so a fat FILE is refused without macho9 ever being asked to
+# retranslate, so a fat FILE is refused without machotool ever being asked to
 # write a temp for it.
-if ! macho9 info "$mw_file" >/dev/null 2>&1; then
+if ! machotool info "$mw_file" >/dev/null 2>&1; then
     printf '%s: not a readable 64-bit Mach-O\n' "$mw_file" >&2
     exit 1
 fi
@@ -187,22 +194,24 @@ mw_retranslate rename_segment "$@" || exit 1
 mw_run >"$MW_T/segout" 2>&1 || { cat "$MW_T/segout" >&2; exit 1; }
 
 # The match count, from the verb that did the matching. Anchored on the whole
-# line, so nothing else macho9 prints can be mistaken for it.
+# line, so nothing else machotool prints can be mistaken for it. `macho9`, not
+# `machotool`: this matches the line the binary PRINTS, which the rename left
+# untouched on purpose (see divergence 1 in the header).
 mw_n=$(sed -n 's/^macho9 segment: renamed=\([0-9][0-9]*\)$/\1/p' "$MW_T/segout")
 if [ -z "$mw_n" ]; then
-    # The rename succeeded but this build's `macho9 segment` did not report the
+    # The rename succeeded but this build's `machotool segment` did not report the
     # count, so there is no honest way to tell "renamed 0" (exit 2) from
     # "renamed some" (exit 0, with the number in the message). Fail loudly
-    # rather than guess: `macho9 --capabilities` advertises the signal as
+    # rather than guess: `machotool --capabilities` advertises the signal as
     # `verb segment reports=renamed`, and a build without it is a mismatched
     # install, not a file this tool should report on.
-    printf '%s: %s: this macho9 did not report a rename count' "$MW_TOOL" "$mw_file" >&2
+    printf '%s: %s: this machotool did not report a rename count' "$MW_TOOL" "$mw_file" >&2
     printf ' (--capabilities should say "verb segment reports=renamed")\n' >&2
     cat "$MW_T/segout" >&2
     exit 1
 fi
 
-# NOTHING MATCHED: the old grammar's exit 2, and nothing is installed. macho9
+# NOTHING MATCHED: the old grammar's exit 2, and nothing is installed. machotool
 # wrote the temp anyway -- a 0 exit means its output is the answer, even when
 # that answer is a copy -- so the temp is exactly the bytes FILE already has
 # and mw_finish would discard it. Not calling mw_finish at all says that more

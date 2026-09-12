@@ -1,8 +1,8 @@
 #!/bin/sh
-# compat/macho9-compat.sh -- the machinery the historical tools' /bin/sh
+# compat/machotool-compat.sh -- the machinery the historical tools' /bin/sh
 # wrappers share. Sourced, never run:
 #
-#   MW_DIR=... ; . "$MW_DIR/macho9-compat.sh"
+#   MW_DIR=... ; . "$MW_DIR/machotool-compat.sh"
 #
 # Each wrapper is then a handful of lines of its own: translate this argv,
 # teach the equivalent on stderr, run it, and map the exit code and stdout
@@ -12,45 +12,45 @@
 # install that temp over the file. ALL SIX take those two steps now, including
 # patch_macho.sh, whose grammar has always named its own output: the temp goes
 # beside that output and is installed onto it, which is also how `patch_macho
-# IN IN` keeps working now that macho9 refuses an OUT that is its input. See
+# IN IN` keeps working now that machotool refuses an OUT that is its input. See
 # "the install path" below.
 #
 # WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. Task 1 put the whole
-# old-grammar-to-macho9 translation in ONE file (compat/translate.sh) so that
+# old-grammar-to-machotool translation in ONE file (compat/translate.sh) so that
 # "the translation that was tested is literally the translation that ships".
 # The same argument applies to everything AROUND the translation -- finding
-# macho9, printing the teaching message, running what was translated, and the
+# machotool, printing the teaching message, running what was translated, and the
 # pre-checks a wrapper has to make for itself because the command it is about
 # to run would report them differently. Those are one implementation here, not
 # six.
 #
 # ---- what lives WHERE, and why -------------------------------------------
 #
-#   compat/translate.sh      argv -> macho9 command line(s). Pure text; runs
+#   compat/translate.sh      argv -> machotool command line(s). Pure text; runs
 #                            nothing. Pinned by tests/translate_test.sh.
-#   compat/macho9-compat.sh  this file: run those command lines safely.
+#   compat/machotool-compat.sh  this file: run those command lines safely.
 #   compat/<tool>.sh         one per tool: only what that tool's observable
-#                            behaviour needs that macho9's does not already
+#                            behaviour needs that machotool's does not already
 #                            give -- its exit-code mapping and its stdout.
 #
 # Every behavioural difference each wrapper has to close is documented at its
 # site: the divergence list at the top of compat/translate.sh, and the
-# "DELIBERATE DIVERGENCES FROM <tool>" blocks in cli/macho9.c's cmd_segment,
+# "DELIBERATE DIVERGENCES FROM <tool>" blocks in cli/machotool.c's cmd_segment,
 # cmd_retag_swift and cmd_declassify.
 #
-# ---- how a wrapper finds macho9 and its two support files ----------------
+# ---- how a wrapper finds machotool and its two support files ----------------
 #
-# All four files -- macho9, macho9-translate.sh, macho9-compat.sh and the
+# All four files -- machotool, machotool-translate.sh, machotool-compat.sh and the
 # wrapper itself -- are installed FLAT, in the same bin directory, and a
 # wrapper looks for the other three next to itself ($0's directory, resolved
-# through PATH when $0 has no slash). $MACHO9_COMPAT_DIR overrides that, which
+# through PATH when $0 has no slash). $MACHOTOOL_COMPAT_DIR overrides that, which
 # is how a build tree or a test harness points at an uninstalled set.
 #
 # Flat, rather than a libexec/ subdirectory, because of the shape of the one
 # production caller: mavericksforever.com/claude/install.sh downloads the
 # tools BY NAME into a single directory. A layout that needed a subdirectory
 # would need that script changed; a flat one needs only the extra file names.
-# (It needs those either way -- a wrapper cannot work without macho9 present,
+# (It needs those either way -- a wrapper cannot work without machotool present,
 # which is a packaging consequence of this whole plan, not of this layout.)
 #
 # ---- POSIX sh only -------------------------------------------------------
@@ -83,63 +83,58 @@ MW_DIR=$(cd "$MW_DIR" 2>/dev/null && pwd) || {
     printf '%s: cannot resolve my own directory\n' "$0" >&2
     exit 1
 }
-[ -r "$MW_DIR/macho9-translate.sh" ] || {
-    printf '%s: cannot find macho9-translate.sh in %s -- macho9 and its two\n' "$0" "$MW_DIR" >&2
-    printf '%s: support files must be installed together (or set MACHO9_COMPAT_DIR)\n' "$0" >&2
+[ -r "$MW_DIR/machotool-translate.sh" ] || {
+    printf '%s: cannot find machotool-translate.sh in %s -- machotool and its two\n' "$0" "$MW_DIR" >&2
+    printf '%s: support files must be installed together (or set MACHOTOOL_COMPAT_DIR)\n' "$0" >&2
     exit 1
 }
 
 # PATH, not an absolute program word: the command lines translate.sh emits are
-# the ones a human is being taught to type, so they must say `macho9` and mean
-# the macho9 that ships alongside this wrapper. Prepending the wrapper's own
+# the ones a human is being taught to type, so they must say `machotool` and mean
+# the machotool that ships alongside this wrapper. Prepending the wrapper's own
 # directory is what makes those two the same thing. tests/compat-sweep.sh runs
 # the emitted lines the same way, for the same reason.
 #
-# THE BUILT BINARY IS NOW NAMED machotool, NOT macho9 -- but compat/
-# translate.sh still emits `macho9 ...` command lines on purpose: that IS the
-# teaching text tests/known-callers.sh and tests/wrapper_test.sh pin, byte for
-# byte (a caller reads "macho9 declassify ..." on stderr, and
-# tests/wrapper_test.sh pastes that exact block into a FRESH shell to prove it
-# still runs there, with nothing but PATH set). So `macho9` has to keep
-# meaning something real on PATH: CMakeLists.txt's wrapper-staging block and
-# install rule stage a `macho9` alias beside `machotool` for exactly that
-# reason, and this check is unchanged because that alias is what it still
-# finds.
-if [ -x "$MW_DIR/macho9" ]; then
+# The taught text is a pinned contract -- tests/known-callers.sh greps stderr
+# for it, and tests/wrapper_test.sh pastes a taught block into a FRESH shell
+# with nothing but PATH set and checks it still runs there -- so the word
+# compat/translate.sh emits and the binary this finds have to be the same
+# word. Both are `machotool`; the tool answered to `macho9` until the rename.
+if [ -x "$MW_DIR/machotool" ]; then
     PATH="$MW_DIR:$PATH"
     export PATH
-elif command -v macho9 >/dev/null 2>&1; then
-    # NOT the same hard failure as a missing macho9-translate.sh above,
-    # because a caller may legitimately have installed macho9 elsewhere on
-    # PATH -- but it is NOT the macho9 the header comment above promises
+elif command -v machotool >/dev/null 2>&1; then
+    # NOT the same hard failure as a missing machotool-translate.sh above,
+    # because a caller may legitimately have installed machotool elsewhere on
+    # PATH -- but it is NOT the machotool the header comment above promises
     # ("the one that ships alongside this wrapper"), so a version mismatch
     # here would be silent without this line. Warn and proceed rather than
     # refuse: refusing would break that legitimate case outright.
-    printf '%s: WARNING: macho9 is not next to me in %s; using whatever\n' "$0" "$MW_DIR" >&2
-    printf '%s: "macho9" resolves to on PATH instead, which may not be the\n' "$0" >&2
-    printf '%s: same build. MACHO9_COMPAT_DIR must name a directory that\n' "$0" >&2
-    printf '%s: already has macho9-compat.sh and macho9-translate.sh in it\n' "$0" >&2
+    printf '%s: WARNING: machotool is not next to me in %s; using whatever\n' "$0" "$MW_DIR" >&2
+    printf '%s: "machotool" resolves to on PATH instead, which may not be the\n' "$0" >&2
+    printf '%s: same build. MACHOTOOL_COMPAT_DIR must name a directory that\n' "$0" >&2
+    printf '%s: already has machotool-compat.sh and machotool-translate.sh in it\n' "$0" >&2
     printf '%s: (this one does), so silencing this means putting or linking\n' "$0" >&2
-    printf '%s: the macho9 you want right there, not just anywhere on PATH\n' "$0" >&2
+    printf '%s: the machotool you want right there, not just anywhere on PATH\n' "$0" >&2
 else
-    printf '%s: macho9 is not next to me in %s and not on PATH; this tool is a\n' "$0" "$MW_DIR" >&2
+    printf '%s: machotool is not next to me in %s and not on PATH; this tool is a\n' "$0" "$MW_DIR" >&2
     printf '%s: wrapper around it and cannot do anything without it\n' "$0" >&2
     exit 1
 fi
 
 MT_SOURCED=1
 export MT_SOURCED
-. "$MW_DIR/macho9-translate.sh"
+. "$MW_DIR/machotool-translate.sh"
 
-# A scratch directory for the wrappers that have to capture macho9's output in
+# A scratch directory for the wrappers that have to capture machotool's output in
 # order to reshape it. Created once, removed on every exit path.
-MW_T=$(mktemp -d "${TMPDIR:-/tmp}/macho9-compat.XXXXXX") || {
+MW_T=$(mktemp -d "${TMPDIR:-/tmp}/machotool-compat.XXXXXX") || {
     printf '%s: cannot create a temporary directory\n' "$0" >&2
     exit 1
 }
 # A single temporary a wrapper has made BESIDE the caller's file, rather than
 # inside MW_T -- so that whatever creates one does not also have to remember
-# every exit path. mw_prepare names it, macho9 writes it, mw_finish installs
+# every exit path. mw_prepare names it, machotool writes it, mw_finish installs
 # or discards it; empty whenever there is none to remove.
 MW_TMPFILE=''
 mw_cleanup() {
@@ -170,7 +165,7 @@ MW_CHANGED=0
 #   0  translated (MW_NCMDS may be 0 -- the old invocation was a no-op)
 #   1  the OLD TOOL would have refused this argv; translate.sh has already
 #      printed the old tool's own message, so there is nothing to add
-#   2  no macho9 command line means what this argv meant; same
+#   2  no machotool command line means what this argv meant; same
 #
 # MT_PROG0 is $0 rather than the tool's name, because every usage line these
 # tools print names argv[0] -- so `/some/where/change_dylib` with bad
@@ -183,7 +178,7 @@ mw_translate() {
     mw_trc=$?
     unset MT_PROG0
     [ "$mw_trc" -eq 0 ] || return "$mw_trc"
-    # COMMANDS, not lines. `macho9 edit FILE OUT -` carries its statements in a
+    # COMMANDS, not lines. `machotool edit FILE OUT -` carries its statements in a
     # here-document, so one command can be six lines; a command is a line that
     # STARTS with the program word (compat/translate.sh's output contract says
     # so, and mt_pre_word is where that word comes from) -- or with `mv -f`,
@@ -193,7 +188,7 @@ mw_translate() {
     #
     # Through the environment, not `awk -v`, for the reason mw_run_to_tmp's own
     # comment gives at length: `-v` escape-processes what it assigns, so a
-    # $MACHO9 containing a backslash would make awk look for a word the emitted
+    # $MACHOTOOL containing a backslash would make awk look for a word the emitted
     # lines do not start with, and every command would go uncounted.
     MW_NCMDS=$(printf '%s\n' "$MW_CMDS" \
         | MW_PRE="$(mt_pre_word) " awk \
@@ -207,18 +202,18 @@ mw_translate() {
 # what the C tool printed for anything reading it.
 mw_teach() {
     if [ "$MW_NCMDS" -eq 0 ]; then
-        printf '%s: deprecated -- macho9 does this now. This invocation asks for nothing macho9 would have to do.\n' \
+        printf '%s: deprecated -- machotool does this now. This invocation asks for nothing machotool would have to do.\n' \
             "$MW_TOOL" >&2
         return 0
     fi
     if [ "$MW_NCMDS" -eq 1 ]; then
-        printf '%s: deprecated -- macho9 does this now. The equivalent command is:\n' "$MW_TOOL" >&2
+        printf '%s: deprecated -- machotool does this now. The equivalent command is:\n' "$MW_TOOL" >&2
     else
-        printf '%s: deprecated -- macho9 does this now. The equivalent commands, in this order, are:\n' \
+        printf '%s: deprecated -- machotool does this now. The equivalent commands, in this order, are:\n' \
             "$MW_TOOL" >&2
     fi
     # Indent the COMMAND lines only. A here-document's body and its terminator
-    # have to start where they start: `MACHO9_EDIT` with four spaces in front
+    # have to start where they start: `MACHOTOOL_EDIT` with four spaces in front
     # of it does not end the here-document, so an indented block would teach a
     # command that hangs when it is pasted. Leading whitespace before the
     # command itself is harmless, so the block still reads as a block. The
@@ -234,8 +229,8 @@ mw_teach() {
 # mw_run -- run the translation, and return its exit code.
 #
 # THIS NO LONGER LOOPS, and that is the whole point of the change that removed
-# the loop: an old invocation that would have been a sequence of macho9
-# commands is now ONE `macho9 edit FILE OUT -` with the operations as statements
+# the loop: an old invocation that would have been a sequence of machotool
+# commands is now ONE `machotool edit FILE OUT -` with the operations as statements
 # on stdin, so a translation is at most one command and there is no sequence
 # left to step through. (compat/retag_swift_classes.sh is the one
 # translation that is still several commands -- one per binary -- and it has
@@ -243,7 +238,7 @@ mw_teach() {
 # and its own stdout, and one code for the whole script is not that.)
 #
 # The whole translation is eval'd as ONE script rather than line by line,
-# because a here-document only reaches `macho9`'s stdin if the shell running
+# because a here-document only reaches `machotool`'s stdin if the shell running
 # the command also reads the lines that follow it. `</dev/null` is the default
 # stdin for the script, so a command with no redirection of its own -- every
 # verb line -- still cannot eat anything; the `edit` line's own here-document
@@ -260,13 +255,13 @@ mw_run() {
 # perror("open"): `open: No such file or directory` or `open: Permission
 # denied` -- no program name, on stderr, exit 1.
 #
-# NO macho9 COMMAND REPRODUCES IT ANY MORE, and that is the point of the
+# NO machotool COMMAND REPRODUCES IT ANY MORE, and that is the point of the
 # conversion rather than a gap in it: a verb that writes an output opens FILE
 # O_RDONLY, so it has no opinion about whether FILE is writable -- it never
 # writes FILE. (`dylib`/`rpath`/`lc`/`segment` used to give this refusal for
-# free, from mr_apply_file's own O_RDWR; now, like `macho9 edit`, they read
+# free, from mr_apply_file's own O_RDWR; now, like `machotool edit`, they read
 # FILE O_RDONLY and only discover an unwritable OUT when they write it.) And
-# rename_segment gates on `macho9 info`, which is O_RDONLY too. So preserving
+# rename_segment gates on `machotool info`, which is O_RDONLY too. So preserving
 # the historical refusal is permanently this layer's job, which is why
 # mw_prepare calls this before anything runs.
 #
@@ -287,7 +282,7 @@ mw_require_writable() {
 
 # ---- the install path ----------------------------------------------------
 #
-# NO macho9 VERB WRITES THE FILE IT IS GIVEN: each is `macho9 VERB FILE OUT
+# NO machotool VERB WRITES THE FILE IT IS GIVEN: each is `machotool VERB FILE OUT
 # ...`, and each refuses an OUT that is FILE. They were converted one at a time
 # -- `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
 # `segment` together, then `grow`, and last `edit`, whose OUT was a `--output`
@@ -323,7 +318,7 @@ mw_resolve() {
 }
 
 # mw_prepare FILE [new-ok] -- set MW_TARGET to the file FILE really is and
-# MW_TMPFILE to a fresh name beside it, for macho9 to write. Refuses what
+# MW_TMPFILE to a fresh name beside it, for machotool to write. Refuses what
 # cannot be replaced safely: a FILE this user could not have written (the C
 # tools opened it read-write, and mv would otherwise replace it anyway), and
 # a FILE with other hard links, which mv would leave on the old content.
@@ -339,8 +334,8 @@ mw_prepare() {
         # this gate `add_version_min somedir` would be refused as a hard-link
         # problem, with a remedy -- break the link -- that means nothing. A
         # directory is not something this check has an opinion about at all:
-        # it falls through to macho9. Measured (both `macho9 minos d out 10.9`
-        # and `macho9 retag-swift d out`): `d: cannot open or read` -- open()
+        # it falls through to machotool. Measured (both `machotool minos d out 10.9`
+        # and `machotool retag-swift d out`): `d: cannot open or read` -- open()
         # O_RDONLY succeeds on a directory, so the failure is mi_open's own
         # read, not an open() rejecting it the way the C tools' open(O_RDWR)
         # did.
@@ -349,7 +344,7 @@ mw_prepare() {
             mw_links=$(stat -f %l "$MW_TARGET" 2>/dev/null) || mw_links=1
         fi
         if [ "$mw_links" -gt 1 ]; then
-            printf '%s: %s has %d hard links; replacing it would leave the others with the old content. Break the link first, or run macho9 with an explicit output.\n' \
+            printf '%s: %s has %d hard links; replacing it would leave the others with the old content. Break the link first, or run machotool with an explicit output.\n' \
                 "$MW_TOOL" "$1" "$mw_links" >&2
             return 1
         fi
@@ -359,7 +354,7 @@ mw_prepare() {
         *)   mw_dirpart=.;               mw_basepart=$MW_TARGET ;;
     esac
     [ -n "$mw_dirpart" ] || mw_dirpart=/
-    MW_TMPFILE="$mw_dirpart/.$mw_basepart.macho9-compat.$$"
+    MW_TMPFILE="$mw_dirpart/.$mw_basepart.machotool-compat.$$"
     rm -f -- "$MW_TMPFILE"
     return 0
 }
@@ -384,11 +379,11 @@ mw_retranslate() {
 # mw_run_to_tmp -- run the translation (which writes MW_TMPFILE) with its
 # stdout captured, then pass every line through except the "Wrote <temp> (N
 # bytes)" one, which no C tool ever printed and which names a file no caller
-# has heard of. Returns macho9's status.
+# has heard of. Returns machotool's status.
 #
 # Matched on the whole "Wrote <temp> (" prefix rather than on "Wrote " alone,
-# and anywhere in the output rather than only on the last line: `macho9
-# segment` follows its write with `macho9 segment: renamed=N`, so for a
+# and anywhere in the output rather than only on the last line: `machotool
+# segment` follows its write with `machotool segment: renamed=N`, so for a
 # fix_macho -rename_seg the temp-naming line is not the last one. A line naming
 # anything else still comes through -- that is somebody's contract, not this
 # function's to edit.
@@ -398,7 +393,7 @@ mw_retranslate() {
 # processing a string literal gets, so a path containing a backslash arrives at
 # awk as something else and the line this function exists to suppress leaks
 # through. Measured, before this was ENVIRON: `change_dylib 'back\slash/f'`
-# printed `Wrote back\slash/.f.macho9-compat.NNNNN (8528 bytes)` on stdout.
+# printed `Wrote back\slash/.f.machotool-compat.NNNNN (8528 bytes)` on stdout.
 # ENVIRON's values are taken verbatim (POSIX awk, and 10.9's), so the prefix awk
 # compares is the real temp path. The whole point of a temp beside the caller's
 # file is that its name is the caller's to choose, backslashes included -- so
@@ -412,7 +407,7 @@ mw_run_to_tmp() {
     return "$mw_rc"
 }
 
-# mw_finish -- after macho9 wrote MW_TMPFILE: if it differs from MW_TARGET,
+# mw_finish -- after machotool wrote MW_TMPFILE: if it differs from MW_TARGET,
 # mv it over (atomic: same directory), else discard it -- the C tools wrote
 # nothing when nothing changed. Sets MW_CHANGED. Returns 1 only if the mv
 # failed, leaving MW_TARGET as it was.
