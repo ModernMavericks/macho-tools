@@ -64,7 +64,7 @@ BIN="${1:?usage: known-callers.sh <bindir>}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIXTURE="$HERE/fixture.macho"
 
-for t in macho9 patch_macho add_version_min change_dylib; do
+for t in machotool patch_macho add_version_min change_dylib; do
     [ -x "$BIN/$t" ] || { echo "known-callers: $BIN/$t not found or not executable" >&2; exit 1; }
 done
 [ -r "$FIXTURE" ] || { echo "known-callers: $FIXTURE missing" >&2; exit 1; }

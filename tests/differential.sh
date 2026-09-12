@@ -67,7 +67,7 @@ MAX="${MACHO_DIFF_MAX:-300}"
 SCAN="${MACHO_DIFF_SCAN:-8000}"
 
 for d in "$REF" "$NEW"; do
-    for t in macho9 change_dylib add_version_min rename_segment retag_swift_classes patch_macho; do
+    for t in machotool change_dylib add_version_min rename_segment retag_swift_classes patch_macho; do
         [ -x "$d/$t" ] || { echo "differential: $d/$t not found or not executable" >&2; exit 1; }
     done
 done
@@ -144,13 +144,13 @@ record() {
 # (dylib, rpath, lc, segment); all four take FILE OUT, so it had no callers
 # left and is gone. `grow` has since taken FILE OUT too, leaving `edit` as the
 # only verb that would need it back -- and `edit` is not in this sweep.
-m9out() {
+mtout() {
     verb="$1"; shift
     total=$((total + 1))
     cp "$SRC" "$T/A/f"; cp "$SRC" "$T/B/f"
     rm -f "$T/A/o" "$T/B/o"
-    ( cd "$T/A" && "$REF/macho9" "$verb" f o "$@" ) >"$T/a.out" 2>"$T/a.err"; arc=$?
-    ( cd "$T/B" && "$NEW/macho9" "$verb" f o "$@" ) >"$T/b.out" 2>"$T/b.err"; brc=$?
+    ( cd "$T/A" && "$REF/machotool" "$verb" f o "$@" ) >"$T/a.out" 2>"$T/a.err"; arc=$?
+    ( cd "$T/B" && "$NEW/machotool" "$verb" f o "$@" ) >"$T/b.out" 2>"$T/b.err"; brc=$?
     bad=""
     [ "$arc" != "$brc" ] && bad="$bad exit($arc/$brc)"
     cmp -s "$T/a.out" "$T/b.out" || bad="$bad stdout"
@@ -221,7 +221,7 @@ conv() {
         cmp -s "$T/A/o" "$T/B/o" || bad="$bad bytes"
         cmp -s "$SRC" "$T/A/o" || modified=$((modified + 1))
     fi
-    ( cd "$T/B" && "$NEW/macho9" declassify f o9 ) >"$T/b9.out" 2>"$T/b9.err"; b9rc=$?
+    ( cd "$T/B" && "$NEW/machotool" declassify f o9 ) >"$T/b9.out" 2>"$T/b9.err"; b9rc=$?
     if [ "$brc" -eq 0 ]; then
         [ "$b9rc" -eq 0 ] && cmp -s "$T/B/o" "$T/B/o9" || bad="$bad declassify($b9rc)"
     else
@@ -242,20 +242,20 @@ while IFS= read -r SRC; do
     # The -replace/-delete/-reexport target has to be a dependency this file
     # really has, or those cases all collapse into "nothing matched". Read it
     # out of `macho9 info`'s stable output -- never otool's.
-    first=$("$REF/macho9" info "$T/probe" 2>/dev/null | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
+    first=$("$REF/machotool" info "$T/probe" 2>/dev/null | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
     [ -n "$first" ] || first="/usr/lib/libSystem.B.dylib"
 
-    m9out dylib -replace "$first" "@loader_path/renamed.dylib"
-    m9out dylib -append "@loader_path/libspare.dylib"
-    m9out dylib -insert "@loader_path/libspare.dylib"
-    m9out dylib -delete "$first"
-    m9out dylib -reexport "$first"
-    m9out dylib --allow-grow -replace "$first" "$longpath"
-    m9out rpath -append /tmp/macho9diff
-    m9out rpath -replace /usr/lib /tmp/macho9diff2
-    m9out lc -delete uuid
-    m9out lc -delete codesig -delete uuid
-    m9out minos 10.9
+    mtout dylib -replace "$first" "@loader_path/renamed.dylib"
+    mtout dylib -append "@loader_path/libspare.dylib"
+    mtout dylib -insert "@loader_path/libspare.dylib"
+    mtout dylib -delete "$first"
+    mtout dylib -reexport "$first"
+    mtout dylib --allow-grow -replace "$first" "$longpath"
+    mtout rpath -append /tmp/macho9diff
+    mtout rpath -replace /usr/lib /tmp/macho9diff2
+    mtout lc -delete uuid
+    mtout lc -delete codesig -delete uuid
+    mtout minos 10.9
     tool change_dylib -change "$first" "@loader_path/renamed.dylib"
     tool change_dylib -strip-lc uuid -add "@loader_path/libspare.dylib"
     tool change_dylib -grow -change "$first" "$longpath"

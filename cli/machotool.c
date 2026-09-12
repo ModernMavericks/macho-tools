@@ -68,7 +68,7 @@
  * used to allow. `edit` converted last, and with it went the last way this
  * binary had of writing the file it was given: its `--output` flag became the
  * OUT positional, and `--dry-run` went with it, a scratch OUT being the same
- * run. So NO verb here writes its input. m9_bad_out holds the refusals every
+ * run. So NO verb here writes its input. mt_bad_out holds the refusals every
  * one of them makes about OUT before it reads anything.
  */
 #include <stdio.h>
@@ -198,7 +198,7 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * spelling, so the message names the verb the caller typed.
  *
  * Returns 1 when it printed a refusal (the caller returns EX_FAIL), else 0. */
-static int m9_bad_out(const char *verb, const char *path, const char *out) {
+static int mt_bad_out(const char *verb, const char *path, const char *out) {
     if (out[0] == '-') {
         fprintf(stderr, "macho9 %s: OUT is '%s', which begins with '-'; OUT is the "
                         "positional right after FILE, not a flag. Write './%s' if a "
@@ -571,15 +571,15 @@ static int cmd_info(const char *path) {
  *
  * FILE IS ONLY READ. This verb used to grow the file it was given, in place;
  * now it reads FILE and writes the grown image to OUT, refusing an OUT that is
- * FILE (m9_bad_out) before anything is read. The write goes through
+ * FILE (mt_bad_out) before anything is read. The write goes through
  * wa_write_new (src/atomic_write.h): a mkstemp()+rename() in OUT's directory,
  * with FILE's mode, owner and xattrs, so OUT is either what it was or the
  * whole grown image, and a symlink at OUT is followed to its target rather
  * than replaced. A caller that wants the old in-place behaviour does what the
  * compat wrappers do -- name a temp beside FILE as OUT, then mv it over. */
 static int cmd_grow(const char *path, const char *out, const char *n_str) {
-    /* Before the N check, and before any read -- see m9_bad_out. */
-    if (m9_bad_out("grow", path, out)) return EX_FAIL;
+    /* Before the N check, and before any read -- see mt_bad_out. */
+    if (mt_bad_out("grow", path, out)) return EX_FAIL;
     char *end;
     unsigned long n = strtoul(n_str, &end, 10);
     if (*end != '\0' || n == 0 || n > UINT32_MAX) {
@@ -635,7 +635,7 @@ static int cmd_grow(const char *path, const char *out, const char *n_str) {
 
     if (wa_write_new(path, out, buf, fsize) != 0) {
         /* wa_write_new already reported which syscall failed (WA_IS_INPUT is
-         * unreachable: m9_bad_out answered it above, and it would have said so
+         * unreachable: mt_bad_out answered it above, and it would have said so
          * too). An operational failure, not a refusal: nothing about the input
          * was wrong. */
         fprintf(stderr, "macho9 grow: %s not written\n", out);
@@ -655,8 +655,8 @@ static int cmd_grow(const char *path, const char *out, const char *n_str) {
  * version: there is only one this build can honor, so refusing anything else
  * up front is a clearer failure than calling in and hoping. */
 static int cmd_minos(const char *path, const char *out, const char *version, int allow_grow) {
-    /* Before the version check, and before any read -- see m9_bad_out. */
-    if (m9_bad_out("minos", path, out)) return EX_FAIL;
+    /* Before the version check, and before any read -- see mt_bad_out. */
+    if (mt_bad_out("minos", path, out)) return EX_FAIL;
     if (strcmp(version, "10.9") != 0) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
@@ -681,7 +681,7 @@ static int cmd_lc(int argc, char **argv) {
     /* argv[0]=macho9 argv[1]="lc" argv[2]=FILE argv[3]=OUT argv[4..]=ops */
     const char *path = argv[2];
     const char *out = argv[3];
-    if (m9_bad_out("lc", path, out)) return EX_FAIL;
+    if (mt_bad_out("lc", path, out)) return EX_FAIL;
     uint32_t strip[MR_MAX_STRIP];
     int nstrip = 0;
     int fatal_warnings = 0;
@@ -766,7 +766,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     /* argv[0]=macho9 argv[1]=verb argv[2]=FILE argv[3]=OUT argv[4..]=ops */
     const char *path = argv[2];
     const char *out = argv[3];
-    if (m9_bad_out(is_rpath ? "rpath" : "dylib", path, out)) return EX_FAIL;
+    if (mt_bad_out(is_rpath ? "rpath" : "dylib", path, out)) return EX_FAIL;
     /* Fixed-size, capped exactly where change_dylib's own parser caps (see
      * MR_MAX_OPS in src/rewrite.h) so the two front-ends refuse the same
      * inputs -- but in this grammar's vocabulary, since the wrapper contract
@@ -956,10 +956,10 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  * that CAN move an offset still meets the gate exactly as before. */
 static int cmd_segment(const char *path, const char *out,
                        const char *oldname, const char *newname) {
-    /* Before the name-length check, and before any read -- see m9_bad_out. Both
+    /* Before the name-length check, and before any read -- see mt_bad_out. Both
      * checks refuse before any I/O; this one first, because an unusable OUT is
      * a mistake about the tool rather than about what was asked of it. */
-    if (m9_bad_out("segment", path, out)) return EX_FAIL;
+    if (mt_bad_out("segment", path, out)) return EX_FAIL;
     if (!mseg_name_fits(newname)) {
         fprintf(stderr, "macho9 segment: new segment name '%s' is longer than the %d bytes "
                         "a segname field holds\n", newname, MSEG_NAME_MAX);
@@ -1022,8 +1022,8 @@ static int cmd_segment(const char *path, const char *out,
  * failure, which is the same "two places deciding one thing" drift the
  * shared module exists to prevent. */
 static int cmd_retag_swift(const char *path, const char *out) {
-    /* Before any read -- see m9_bad_out. */
-    if (m9_bad_out("retag-swift", path, out)) return EX_FAIL;
+    /* Before any read -- see mt_bad_out. */
+    if (mt_bad_out("retag-swift", path, out)) return EX_FAIL;
     size_t out_size = 0;
     int n = mswift_retag_file(path, out, &out_size);
     if (n == MSWIFT_NOT_MACHO) {
@@ -1110,7 +1110,7 @@ static int cmd_retag_swift(const char *path, const char *out) {
  *     front-end can name the file in its own words.
  *   - OUT MAY NOT BE IN. patch_macho allowed it -- same inode, so its hard
  *     links and xattrs survived an in-place conversion -- and this verb refuses
- *     it (EX_FAIL, m9_bad_out) before reading anything. The wrapper reproduces
+ *     it (EX_FAIL, mt_bad_out) before reading anything. The wrapper reproduces
  *     the old behaviour the way it reproduces every other tool's in-place edit:
  *     a temp beside OUT as this verb's OUT, then mv.
  *
@@ -1119,8 +1119,8 @@ static int cmd_retag_swift(const char *path, const char *out) {
  * added later must not silently become either a success or the wrong kind of
  * failure. */
 static int cmd_declassify(const char *in, const char *out) {
-    /* Before any read -- see m9_bad_out. */
-    if (m9_bad_out("declassify", in, out)) return EX_FAIL;
+    /* Before any read -- see mt_bad_out. */
+    if (mt_bad_out("declassify", in, out)) return EX_FAIL;
     uint8_t *buf = NULL;
     size_t len = 0;
     int rc = md_declassify(in, &buf, &len);
@@ -1153,7 +1153,7 @@ static int cmd_declassify(const char *in, const char *out) {
 
     if (wa_write_new(in, out, buf, len) != 0) {
         /* wa_write_new already reported which syscall failed (WA_IS_INPUT is
-         * unreachable: m9_bad_out answered it above, and it would have said so
+         * unreachable: mt_bad_out answered it above, and it would have said so
          * too). This is an operational failure, not a refusal: nothing about
          * the input was wrong. */
         free(buf);
@@ -1179,11 +1179,11 @@ static int cmd_declassify(const char *in, const char *out) {
  * it is not "a positional may start with '-'" in general, and "-" is not
  * always stdin: it is stdin only where it lands as SCRIPT (checked below), a
  * literal filename "-" where it lands as FILE (`edit - o s.edits` opens a file
- * named "-"), and an OUT that m9_bad_out refuses. A SCRIPT or FILE whose real
+ * named "-"), and an OUT that mt_bad_out refuses. A SCRIPT or FILE whose real
  * name starts with '-' has no escape here (no "--"); reference it through a
  * path that doesn't, e.g. "./-name" (README's edit section says so too).
  *
- * OUT IS CHECKED BEFORE THE SCRIPT IS READ -- m9_bad_out, the same refusal
+ * OUT IS CHECKED BEFORE THE SCRIPT IS READ -- mt_bad_out, the same refusal
  * every other OUT-taking verb gets for a single-dash OUT (a `--`-prefixed one
  * is caught as an unknown flag first), before any input is opened. ms_parse then
  * runs, and can fail, before anything is written -- see edit.h's own header
@@ -1269,8 +1269,8 @@ static int cmd_edit(int argc, char **argv) {
     }
     if (npos != 3) return cmd_edit_usage(prog);
 
-    /* Before the script is read, and before FILE is opened -- see m9_bad_out. */
-    if (m9_bad_out("edit", file, out)) return EX_FAIL;
+    /* Before the script is read, and before FILE is opened -- see mt_bad_out. */
+    if (mt_bad_out("edit", file, out)) return EX_FAIL;
 
     FILE *f;
     if (strcmp(script_path, "-") == 0) {

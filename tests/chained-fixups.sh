@@ -163,8 +163,8 @@ echo "chained-fixups: converted to LC_DYLD_INFO_ONLY"
 # the strongest available evidence that the move changed nothing. Done here,
 # before the rest of the pipeline edits "$T/out", and on the same real
 # host-linker fixture rather than a hand-built one.
-if [ -x "$BIN/macho9" ]; then
-    "$BIN/macho9" declassify "$T/in" "$T/out.m9" >/dev/null
+if [ -x "$BIN/machotool" ]; then
+    "$BIN/machotool" declassify "$T/in" "$T/out.m9" >/dev/null
     if cmp -s "$T/out" "$T/out.m9"; then
         echo "chained-fixups: macho9 declassify is byte-identical to patch_macho"
     else
@@ -182,7 +182,7 @@ if [ -x "$BIN/macho9" ]; then
     # Idempotency, which install.sh's wrapper leans on: a second pass over an
     # already-converted binary passes it through unchanged rather than failing
     # on the fixups that are no longer there.
-    "$BIN/macho9" declassify "$T/out.m9" "$T/out.m9.again" >/dev/null
+    "$BIN/machotool" declassify "$T/out.m9" "$T/out.m9.again" >/dev/null
     if cmp -s "$T/out.m9" "$T/out.m9.again"; then
         echo "chained-fixups: a converted binary passes through unchanged"
     else
@@ -190,7 +190,7 @@ if [ -x "$BIN/macho9" ]; then
         exit 1
     fi
 else
-    echo "chained-fixups: no macho9 in $BIN — skipping the declassify comparison"
+    echo "chained-fixups: no machotool in $BIN — skipping the declassify comparison"
 fi
 
 # The rest of the pipeline must accept what patch_macho produced. Before this,

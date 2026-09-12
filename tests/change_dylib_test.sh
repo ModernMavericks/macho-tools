@@ -12,7 +12,7 @@
 #   sh tests/change_dylib_test.sh               standalone (needs only clang + otool)
 #   sh tests/change_dylib_test.sh <bindir>       via ctest: uses the change_dylib
 #                                                 and fix_macho wrappers CMake
-#                                                 already staged next to macho9
+#                                                 already staged next to machotool
 set -e
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
@@ -29,7 +29,7 @@ CC="${CC:-clang}"
 # either host, so the test asks the same question everywhere.
 #
 # Note this applies only to the fixtures. change_dylib/fix_macho themselves
-# (below) are /bin/sh wrappers around macho9, which is a host tool, built for
+# (below) are /bin/sh wrappers around machotool, which is a host tool, built for
 # (or already built on) the host.
 FIXTURE_FLAGS="-mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/change_dylib_test.$$"
@@ -42,9 +42,9 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # not one they compile themselves. Compile from source ONLY as the standalone
 # fallback (`sh tests/change_dylib_test.sh`, no arguments, clang + otool only).
 #
-# The standalone build used to hand-enumerate macho9core's source list right
+# The standalone build used to hand-enumerate machotoolcore's source list right
 # here -- a SECOND place deciding what the library contains, independent of
-# CMakeLists.txt's own `add_library(macho9core ...)` list (still a hand
+# CMakeLists.txt's own `add_library(machotoolcore ...)` list (still a hand
 # enumeration itself, CMakeLists.txt:57), which had already needed
 # hand-updating five times (uleb, image, ordinals, fat, trie, lc_kinds,
 # atomic_write, linkedit, grow) as the toolkit grew. Two places independently
@@ -58,12 +58,12 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # stops being possible), but it is NOT the same list CMakeLists.txt compiles
 # -- it is a superset by construction, since CMakeLists.txt's own list is
 # still hand-enumerated. A future src/something_else.c deliberately kept OUT
-# of macho9core would still be silently pulled into this standalone build.
-# A real fix (glob macho9core's own sources in CMakeLists.txt too, or have
+# of machotoolcore would still be silently pulled into this standalone build.
+# A real fix (glob machotoolcore's own sources in CMakeLists.txt too, or have
 # this script read that list back out of CMake) is a follow-up, not this
 # round -- the glob here only trades the demonstrated failure mode (a file
-# added to macho9core and forgotten here) for a theoretical one (a file
-# deliberately excluded from macho9core that this glob doesn't know to
+# added to machotoolcore and forgotten here) for a theoretical one (a file
+# deliberately excluded from machotoolcore that this glob doesn't know to
 # exclude), which has never happened in this repo's history.
 #
 # A bindir argument, once given, MUST be honored or the run must fail loudly
@@ -76,18 +76,19 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # requirement, exactly like the other four suites' `BIN="${1:?usage...}"`.
 #
 # STANDALONE, AFTER TASK 2: change_dylib is no longer a C program to compile.
-# It is compat/change_dylib.sh, a wrapper that needs macho9 and the two files
-# it sources sitting next to it -- so the standalone branch builds macho9 and
-# then assembles that layout in $T, under the installed names, exactly as
-# CMakeLists.txt stages it next to macho9 in a build tree.
+# It is compat/change_dylib.sh, a wrapper that needs machotool and the two
+# files it sources sitting next to it -- so the standalone branch builds
+# machotool and then assembles that layout in $T, under the installed names,
+# exactly as CMakeLists.txt stages it next to machotool in a build tree.
 #
 # fix_macho joined it: compat/fix_macho.c is gone, and there is nothing left
-# in compat/ to compile at all. macho9 is the only binary this branch builds
-# now, which is the whole retirement plan's headline seen from inside a test.
+# in compat/ to compile at all. machotool is the only binary this branch
+# builds now, which is the whole retirement plan's headline seen from inside
+# a test.
 if [ $# -eq 0 ]; then
     echo "change_dylib_test: no bindir given -- compiling standalone from source"
     mkdir -p "$T/bin"
-    "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/macho9" "$ROOT_DIR/cli/macho9.c" "$SRC_DIR"/*.c
+    "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/machotool" "$ROOT_DIR/cli/machotool.c" "$SRC_DIR"/*.c
     "$CC" -O2 -o "$T/bin/makefat" "$SCRIPT_DIR/makefat.c"
     "$CC" -O2 -o "$T/bin/fatcheck" "$SCRIPT_DIR/fatcheck.c"
     cp "$COMPAT_DIR/change_dylib.sh" "$T/bin/change_dylib"
@@ -98,7 +99,7 @@ if [ $# -eq 0 ]; then
     BIN="$T/bin"
     CHANGE_DYLIB="$T/bin/change_dylib"
     FIX_MACHO="$T/bin/fix_macho"
-    MACHO9="$T/bin/macho9"
+    MACHOTOOL="$T/bin/machotool"
 else
     BIN="$1"
     if [ ! -x "$BIN/change_dylib" ] || [ ! -x "$BIN/fix_macho" ]; then
@@ -112,7 +113,7 @@ else
     echo "change_dylib_test: using the CMake-built binaries in $BIN"
     CHANGE_DYLIB="$BIN/change_dylib"
     FIX_MACHO="$BIN/fix_macho"
-    MACHO9="$BIN/macho9"
+    MACHOTOOL="$BIN/machotool"
 fi
 fails=0
 ok()   { echo "PASS $1"; }
@@ -229,7 +230,7 @@ EOF
 
 # makefat/fatcheck: build and inspect a fat (universal) Mach-O without
 # depending on system lipo. See tests/makefat.c and tests/fatcheck.c -- CMake
-# builds both beside macho9, and $BIN is that directory.
+# builds both beside machotool, and $BIN is that directory.
 
 # --- fixtures: three dylibs, and a main that calls into two of them ----------
 cat > "$T/a.c" <<'EOF'
@@ -1687,10 +1688,10 @@ one_grows=$(grep -c "grew header pad" "$T/g_one.out")
 # Growing twice is a SIZE question, not a correctness one -- both results
 # still have to be images macho9 itself accepts, and both have to actually
 # carry what was asked for.
-"$MACHO9" verify "$T/g_two" >/dev/null 2>"$T/g_two_verify.err" \
+"$MACHOTOOL" verify "$T/g_two" >/dev/null 2>"$T/g_two_verify.err" \
     && ok "mixed-family double grow: the two-pass route's result still verifies" \
     || bad "mixed-family double grow" "the two-pass route's result failed macho9 verify: $(cat "$T/g_two_verify.err")"
-"$MACHO9" verify "$T/g_one" >/dev/null 2>"$T/g_one_verify.err" \
+"$MACHOTOOL" verify "$T/g_one" >/dev/null 2>"$T/g_one_verify.err" \
     && ok "mixed-family double grow: the one-call route's result still verifies" \
     || bad "mixed-family double grow" "the one-call route's result failed macho9 verify: $(cat "$T/g_one_verify.err")"
 "$T/has_bytes" "$T/g_two" "$GROW_RPATH" && "$T/has_bytes" "$T/g_two" "$GROW_DYLIB" \

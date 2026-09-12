@@ -34,7 +34,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 TR="$ROOT/compat/translate.sh"
 [ -r "$TR" ] || { echo "translate_test: $TR missing" >&2; exit 1; }
-[ -x "$BIN/macho9" ] || { echo "translate_test: $BIN/macho9 missing" >&2; exit 1; }
+[ -x "$BIN/machotool" ] || { echo "translate_test: $BIN/machotool missing" >&2; exit 1; }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/macho-translate-test.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -548,7 +548,7 @@ fi
 # in lockstep. Use it rather than assuming: every verb this translator can
 # emit must be advertised, every -OP it can emit must be in that verb's ops=,
 # and every KIND must be in lc's kinds=.
-"$BIN/macho9" --capabilities > "$T/caps" 2>/dev/null
+"$BIN/machotool" --capabilities > "$T/caps" 2>/dev/null
 capcheck() {   # capcheck <verb> <attr-prefix> <value>...
     v=$1; attr=$2; shift 2
     line=$(grep "^verb $v" "$T/caps")

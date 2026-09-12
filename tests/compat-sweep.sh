@@ -171,8 +171,8 @@ NEWBIN="${MACHO_SWEEP_NEW_BIN:-$BIN}"
 for t in change_dylib add_version_min rename_segment retag_swift_classes patch_macho fix_macho; do
     [ -x "$BIN/$t" ] || { echo "compat-sweep: $BIN/$t not found or not executable" >&2; exit 1; }
 done
-[ -x "$NEWBIN/macho9" ] || { echo "compat-sweep: $NEWBIN/macho9 not found or not executable" >&2; exit 1; }
-[ -x "$BIN/macho9" ] || { echo "compat-sweep: $BIN/macho9 not found or not executable (needed to prepare the base image)" >&2; exit 1; }
+[ -x "$NEWBIN/machotool" ] || { echo "compat-sweep: $NEWBIN/machotool not found or not executable" >&2; exit 1; }
+[ -x "$BIN/machotool" ] || { echo "compat-sweep: $BIN/machotool not found or not executable (needed to prepare the base image)" >&2; exit 1; }
 [ -r "$ROOT/compat/translate.sh" ] || { echo "compat-sweep: compat/translate.sh missing" >&2; exit 1; }
 
 # Source the translator instead of exec'ing it per combination: same code
@@ -210,8 +210,8 @@ mkdir -p "$T/A" "$T/B"
 cp "$ROOT/tests/fixture.macho" "$T/base" || exit 1
 RP_OLD='@loader_path/../lib'
 DY_OLD='@loader_path/spare0.dylib'
-( cd "$T" && "$BIN/macho9" rpath base -append "$RP_OLD" \
-           && "$BIN/macho9" dylib base -append "$DY_OLD" ) >/dev/null 2>&1 || {
+( cd "$T" && "$BIN/machotool" rpath base -append "$RP_OLD" \
+           && "$BIN/machotool" dylib base -append "$DY_OLD" ) >/dev/null 2>&1 || {
     echo "compat-sweep: could not prepare the base image" >&2; exit 1; }
 
 # A non-Mach-O and an absent path, for the arity cases.
@@ -633,7 +633,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#              and fix_macho followed; these"
     echo "#              rows are only a record of the C binaries if that bindir"
     echo "#              is a build of commit 91b30b3 -- see this script's header)"
-    echo "# new side:   $NEWBIN/macho9"
+    echo "# new side:   $NEWBIN/machotool"
     echo "#             (the macho9 the TRANSLATED side ran; the two directories"
     echo "#              differ whenever the C tools and the macho9 under test"
     echo "#              come from different commits, which after Task 2 is the"

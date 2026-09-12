@@ -94,6 +94,17 @@ MW_DIR=$(cd "$MW_DIR" 2>/dev/null && pwd) || {
 # the macho9 that ships alongside this wrapper. Prepending the wrapper's own
 # directory is what makes those two the same thing. tests/compat-sweep.sh runs
 # the emitted lines the same way, for the same reason.
+#
+# THE BUILT BINARY IS NOW NAMED machotool, NOT macho9 -- but compat/
+# translate.sh still emits `macho9 ...` command lines on purpose: that IS the
+# teaching text tests/known-callers.sh and tests/wrapper_test.sh pin, byte for
+# byte (a caller reads "macho9 declassify ..." on stderr, and
+# tests/wrapper_test.sh pastes that exact block into a FRESH shell to prove it
+# still runs there, with nothing but PATH set). So `macho9` has to keep
+# meaning something real on PATH: CMakeLists.txt's wrapper-staging block and
+# install rule stage a `macho9` alias beside `machotool` for exactly that
+# reason, and this check is unchanged because that alias is what it still
+# finds.
 if [ -x "$MW_DIR/macho9" ]; then
     PATH="$MW_DIR:$PATH"
     export PATH

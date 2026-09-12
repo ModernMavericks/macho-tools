@@ -35,7 +35,7 @@ ROOT=$(cd "$HERE/.." && pwd)
 FIXTURE="$HERE/fixture.macho"
 CC="${CC:-clang}"
 
-for t in macho9 patch_macho change_dylib add_version_min rename_segment retag_swift_classes fix_macho; do
+for t in machotool patch_macho change_dylib add_version_min rename_segment retag_swift_classes fix_macho; do
     [ -x "$BIN/$t" ] || { echo "wrapper_test: $BIN/$t not found or not executable" >&2; exit 1; }
 done
 
@@ -230,7 +230,7 @@ cdrc=$rc
 cp "$T/out" "$T/cd.out"
 cdsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/macho9" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
+( cd "$T" && "$BIN/machotool" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
     '@loader_path/../S.dylib' ) >"$T/m9.out" 2>/dev/null
 m9sha=$(sha "$T/f.m9out")
 sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
@@ -310,7 +310,7 @@ rm -rf "$T/bs"
 fresh
 run change_dylib f -insert /A -insert /B -strip-lc uuid
 cdins_rc=$rc
-cdins=$( ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null )
+cdins=$( ( cd "$T" && "$BIN/machotool" info f ) 2>/dev/null )
 [ "$cdins_rc" -eq 0 ] \
     && printf '%s\n' "$cdins" | grep -qxF '  ordinal=1 path=/A' \
     && printf '%s\n' "$cdins" | grep -qxF '  ordinal=2 path=/B' \
@@ -658,7 +658,7 @@ rm -rf "$T/adir"
 
 # 5c. AN OUT WHOSE NAME BEGINS WITH A DASH is still a file name, as it was for
 #     the C tool's open(). `macho9 declassify` refuses such an OUT now
-#     (m9_bad_out, since `-flag`-looking positionals are the mistake its own
+#     (mt_bad_out, since `-flag`-looking positionals are the mistake its own
 #     grammar change invites), and the wrapper is unaffected because the OUT it
 #     hands macho9 is the temp -- whose name starts with a dot. Pinned so that
 #     refusal cannot migrate down here, where it would break a caller the C tool
@@ -733,7 +733,7 @@ grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T
 # not the input copied through. That cli_test assertion was the ONLY thing in the
 # repo that noticed a wrapper installing the unconverted bytes, which is a lot to
 # rest on one front-end-parity check.
-( cd "$T" && "$BIN/macho9" declassify cf cf.m9 ) >/dev/null 2>&1
+( cd "$T" && "$BIN/machotool" declassify cf cf.m9 ) >/dev/null 2>&1
 cmp -s "$T/cfout" "$T/cf.m9" \
     && ok "patch_macho: the bytes installed at OUT are macho9's converted output" \
     || bad "patch_macho converting bytes" "OUT differs from macho9 declassify's output"
@@ -750,7 +750,7 @@ rm -rf "$T/csdir"; mkdir "$T/csdir"
 mkchained_fixture "$T/csdir/cs"
 # What the conversion of THIS file is, from the other front-end, so the
 # comparison below does not lean on two mkchained runs producing equal bytes.
-( cd "$T/csdir" && "$BIN/macho9" declassify cs cs.want ) >/dev/null 2>&1
+( cd "$T/csdir" && "$BIN/machotool" declassify cs cs.want ) >/dev/null 2>&1
 chmod 640 "$T/csdir/cs"
 cs_ino=$(ino_of "$T/csdir/cs")
 cs_rc=0
@@ -832,7 +832,7 @@ cp "$T/out" "$T/avm.out"
 avmsha=$(sha "$T/f")
 fresh
 strip_vm "$T/f"
-( cd "$T" && "$BIN/macho9" minos f m9out 10.9 ) >"$T/m9.out" 2>/dev/null
+( cd "$T" && "$BIN/machotool" minos f m9out 10.9 ) >"$T/m9.out" 2>/dev/null
 sed '$d' "$T/m9.out" > "$T/m9.trimmed"
 [ "$avmrc" -eq 0 ] && cmp -s "$T/avm.out" "$T/m9.trimmed" && [ "$avmsha" = "$(sha "$T/m9out")" ] \
     && ok "add_version_min: identical to macho9 minos, stdout and bytes" \
@@ -857,7 +857,7 @@ cp "$FIXTURE" "$T/w_real"; strip_vm "$T/w_real"
 ln -s w_real "$T/w_link"
 ( cd "$T" && "$BIN/add_version_min" w_link ) >/dev/null 2>"$T/w.err" \
     && ok "wrapper: a symlinked FILE is edited" || bad "wrapper symlink" "$(cat "$T/w.err")"
-[ -L "$T/w_link" ] && "$BIN/macho9" info "$T/w_real" | grep -q LC_VERSION_MIN_MACOSX \
+[ -L "$T/w_link" ] && "$BIN/machotool" info "$T/w_real" | grep -q LC_VERSION_MIN_MACOSX \
     && ok "wrapper: ... through the link, which is still a link" || bad "wrapper symlink" "link replaced or target unchanged"
 
 # mw_finish DISCARDS a temp whose bytes already match the target rather than
@@ -979,7 +979,7 @@ run rename_segment f __DATA __DATA
 # fixture-preparation runs installs its own result, the same way the wrappers
 # under test do.
 fresh
-( cd "$T" && "$BIN/macho9" segment f f.seg __DATA 1234567890123456 \
+( cd "$T" && "$BIN/machotool" segment f f.seg __DATA 1234567890123456 \
     && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 12345678901234567 __X
@@ -989,7 +989,7 @@ run rename_segment f 12345678901234567 __X
     || bad "rename_segment 17-byte OLD" "exit $rc, stdout: $(cat "$T/out")"
 
 fresh
-( cd "$T" && "$BIN/macho9" segment f f.seg __DATA 'A B' && mv -f f.seg f ) >/dev/null 2>&1
+( cd "$T" && "$BIN/machotool" segment f f.seg __DATA 'A B' && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 'A B' __Y
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) A B -> __Y' "$T/out" \
@@ -1001,15 +1001,15 @@ run rename_segment f 'A B' __Y
 # segment name the image carries TWICE (which is what this tool produces --
 # see src/segname.h on __DATA_CONST -> __DATA leaving two __DATAs).
 fresh
-( cd "$T" && "$BIN/macho9" segment f f.seg __TEXT __DUP && mv -f f.seg f ) >/dev/null 2>&1
-( cd "$T" && "$BIN/macho9" segment f f.seg __DATA __DUP && mv -f f.seg f ) >/dev/null 2>&1
+( cd "$T" && "$BIN/machotool" segment f f.seg __TEXT __DUP && mv -f f.seg f ) >/dev/null 2>&1
+( cd "$T" && "$BIN/machotool" segment f f.seg __DATA __DUP && mv -f f.seg f ) >/dev/null 2>&1
 run rename_segment f __DUP __ONE
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 2 segment(s) __DUP -> __ONE' "$T/out" \
     && ok "rename_segment: reports the real match count, not 1" \
     || bad "rename_segment count" "exit $rc, stdout: $(cat "$T/out")"
 
 # ...and the signal that count comes from is one this build advertises.
-"$BIN/macho9" --capabilities 2>/dev/null | grep -q '^verb segment .*reports=renamed' \
+"$BIN/machotool" --capabilities 2>/dev/null | grep -q '^verb segment .*reports=renamed' \
     && ok "capabilities: this build advertises segment reports=renamed" \
     || bad "capabilities" "segment does not advertise reports=renamed, which the wrapper needs"
 
@@ -1057,7 +1057,7 @@ fi
 "$T/mkimplausible" "$T/imp"
 
 # The fixture is refused for an ordinary operation, so the pass below is narrow.
-( cd "$T" && "$BIN/macho9" lc imp imp.lc -delete uuid ) >/dev/null 2>"$T/imperr"
+( cd "$T" && "$BIN/machotool" lc imp imp.lc -delete uuid ) >/dev/null 2>"$T/imperr"
 [ $? -ne 0 ] && grep -q 'no known function' "$T/imperr" \
     && ok "rename_segment: the fixture really is one the gate rejects for other operations" \
     || bad "rename_segment mg_plausible" "lc -delete uuid was not refused: $(cat "$T/imperr")"
@@ -1271,7 +1271,7 @@ fmrc=$rc
 cp "$T/out" "$T/fm.out"
 fmsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/macho9" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
+( cd "$T" && "$BIN/machotool" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
     '@loader_path/../S.dylib' ) >"$T/m9.out" 2>/dev/null
 # The same one-line reshape the change_dylib block above explains.
 sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
@@ -1285,7 +1285,7 @@ fresh
 before=$(sha "$T/f")
 run fix_macho f -rename_seg __DATA __DATA_F1
 [ "$rc" -eq 0 ] && [ "$(sha "$T/f")" != "$before" ] \
-    && ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null | grep -q '__DATA_F1' \
+    && ( cd "$T" && "$BIN/machotool" info f ) 2>/dev/null | grep -q '__DATA_F1' \
     && ok "fix_macho: -rename_seg renames the segment" \
     || bad "fix_macho -rename_seg" "exit $rc: $(cat "$T/err")"
 
@@ -1379,7 +1379,7 @@ fi
 # the old one still happening.
 fresh
 run fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
-fm_names=$( ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null )
+fm_names=$( ( cd "$T" && "$BIN/machotool" info f ) 2>/dev/null )
 if [ "$rc" -eq 0 ] \
     && printf '%s\n' "$fm_names" | grep -q 'segname=__Y' \
     && ! printf '%s\n' "$fm_names" | grep -q 'segname=__X'; then
@@ -1669,7 +1669,7 @@ rm -f "$T/two words"
 # wrappers: every verb a wrapper can reach must be one this macho9 advertises.
 # Hardcoding that agreement is how the ops=/kinds= lists in cli/macho9.c
 # drifted from their own parsers once already.
-"$BIN/macho9" --capabilities > "$T/caps" 2>/dev/null
+"$BIN/machotool" --capabilities > "$T/caps" 2>/dev/null
 for v in declassify minos segment retag-swift lc dylib rpath; do
     grep -q "^verb $v" "$T/caps" \
         && ok "capabilities: this build advertises $v" \

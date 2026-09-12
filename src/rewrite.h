@@ -342,7 +342,7 @@ typedef struct {
  *
  * PRECONDITION, unenforced here: `out` must not name `path`. cli/macho9.c
  * refuses that up front, in each verb's own words, before any file is read
- * (see m9_bad_out there); this function does not check again, because
+ * (see mt_bad_out there); this function does not check again, because
  * wa_write_new does -- so an unchecked caller gets MR_FAIL and an unwritten
  * input rather than a silently rewritten one, just later and in
  * atomic_write.c's wording.

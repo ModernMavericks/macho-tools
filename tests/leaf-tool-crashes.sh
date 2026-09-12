@@ -58,7 +58,7 @@ BIN="${1:?usage: leaf-tool-crashes.sh <bindir>}"
 [ -x "$BIN/add_version_min" ] || { echo "leaf-tool-crashes: $BIN/add_version_min not found" >&2; exit 1; }
 [ -x "$BIN/retag_swift_classes" ] || { echo "leaf-tool-crashes: $BIN/retag_swift_classes not found" >&2; exit 1; }
 [ -x "$BIN/patch_macho" ] || { echo "leaf-tool-crashes: $BIN/patch_macho not found" >&2; exit 1; }
-[ -x "$BIN/macho9" ] || { echo "leaf-tool-crashes: $BIN/macho9 not found" >&2; exit 1; }
+[ -x "$BIN/machotool" ] || { echo "leaf-tool-crashes: $BIN/machotool not found" >&2; exit 1; }
 
 CC="${CC:-clang}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -274,10 +274,10 @@ for grow in "" --allow-grow; do
         before=$(sha_of "$T/dy.macho")
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/dy.macho" "$T/dy.out.macho" \
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/machotool" dylib "$T/dy.macho" "$T/dy.out.macho" \
                 -append /x $grow >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         else
-            "$BIN/macho9" dylib "$T/dy.macho" "$T/dy.out.macho" -append /x $grow \
+            "$BIN/machotool" dylib "$T/dy.macho" "$T/dy.out.macho" -append /x $grow \
                 >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then
@@ -334,10 +334,10 @@ sectionless_case() {
         rm -f "$T/sl.out.macho"
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" "$verb" "$@" \
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/machotool" "$verb" "$@" \
                 >"$T/sl.out" 2>"$T/sl.err" || rc=$?
         else
-            "$BIN/macho9" "$verb" "$@" >"$T/sl.out" 2>"$T/sl.err" || rc=$?
+            "$BIN/machotool" "$verb" "$@" >"$T/sl.out" 2>"$T/sl.err" || rc=$?
         fi
         if [ "$rc" -eq 1 ] && grep -qF "$needle" "$T/sl.err"; then
             ok "$what: refuses (1), naming the missing section data"
@@ -364,7 +364,7 @@ printf 'dylib append /x\n' >"$T/sl.edits"
 sectionless_case "$rewrite_refusal" edit "$T/sl.edits"
 
 info_rc=0
-"$BIN/macho9" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?
+"$BIN/machotool" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?
 if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (no section data bounds it)$" "$T/sl_info.out"; then
     ok "macho9 info: sectionless image: the header pad is reported unknown, not a number"
 else
@@ -388,10 +388,10 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
     rm -f "$T/og.out.macho"
     rc=0
     if [ -n "$gm" ]; then
-        DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" grow "$T/og.macho" "$T/og.out.macho" 4096 \
+        DYLD_INSERT_LIBRARIES="$gm" "$BIN/machotool" grow "$T/og.macho" "$T/og.out.macho" 4096 \
             >"$T/og.out" 2>"$T/og.err" || rc=$?
     else
-        "$BIN/macho9" grow "$T/og.macho" "$T/og.out.macho" 4096 \
+        "$BIN/machotool" grow "$T/og.macho" "$T/og.out.macho" 4096 \
             >"$T/og.out" 2>"$T/og.err" || rc=$?
     fi
     if [ "$rc" -gt 127 ]; then
@@ -429,10 +429,10 @@ for grow in "" --allow-grow; do
         rm -f "$T/od.out.macho"
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/od.macho" "$T/od.out.macho" \
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/machotool" dylib "$T/od.macho" "$T/od.out.macho" \
                 -append /x $grow >"$T/od.out" 2>"$T/od.err" || rc=$?
         else
-            "$BIN/macho9" dylib "$T/od.macho" "$T/od.out.macho" -append /x $grow \
+            "$BIN/machotool" dylib "$T/od.macho" "$T/od.out.macho" -append /x $grow \
                 >"$T/od.out" 2>"$T/od.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then
@@ -454,7 +454,7 @@ for grow in "" --allow-grow; do
 done
 
 info_rc=0
-"$BIN/macho9" info "$T/oobsection.macho" >"$T/oi.out" 2>&1 || info_rc=$?
+"$BIN/machotool" info "$T/oobsection.macho" >"$T/oi.out" 2>&1 || info_rc=$?
 if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (the first section lies past the end of the image)$" "$T/oi.out"; then
     ok "macho9 info: oobsection fixture: the header pad is reported unknown, not a number"
 else
