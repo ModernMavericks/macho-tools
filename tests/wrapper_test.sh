@@ -1157,7 +1157,7 @@ run retag_swift_classes rsc1
     || bad "retag_swift_classes nonzero" "rsc1's bytes did not change"
 
 # A mixed run good/hard-linked/good: the hard-linked argument is refused (the
-# new divergence this task's install step introduces -- the C tool wrote
+# new divergence installing via mv introduces -- the C tool wrote
 # through the open fd regardless of hard links; this wrapper installs via mv,
 # which cannot update every name for an inode at once), the loop keeps going,
 # exit is 1, stdout is the two good binaries' lines plus the REDUCED total,
@@ -1607,6 +1607,34 @@ run fix_macho -dashy -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib
     && ok "fix_macho: a file name starting with a dash is a file name" \
     || bad "fix_macho leading dash" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
+
+# THE TAUGHT BLOCK ITSELF MUST BE PASTEABLE, not just descriptive
+# (compat/translate.sh's "reads as a pasteable equivalent" claim). For a
+# leading-dash FILE with no directory part, FILE.new begins with '-' too, and
+# macho9 deliberately refuses an OUT spelled that way -- so before
+# mt_out_for/mt_install_line learned to write OUT as ./FILE.new here, the
+# printed macho9 line looked right but failed the moment it was copied and
+# run on its own, even though the wrapper's own real run (its temp is always
+# dot-prefixed, mw_prepare) went through fine. Pin it end to end: run the
+# wrapper for real in one directory, pull the taught block back out of its
+# stderr and eval it verbatim in a second, identically-seeded directory, and
+# compare the two results byte-for-byte.
+fresh
+mkdir "$T/wrap" "$T/taught"
+cp "$FIXTURE" "$T/wrap/-dashy"
+cp "$FIXTURE" "$T/taught/-dashy"
+( cd "$T/wrap" && "$BIN/change_dylib" -dashy -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) \
+    >/dev/null 2>"$T/err"
+rc=$?
+taught=$(awk '/^    /{sub(/^    /, ""); print}' "$T/err")
+( cd "$T/taught" && PATH="$BIN:$PATH" eval "$taught" ) >/dev/null 2>"$T/err2"
+rc2=$?
+[ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && [ -n "$taught" ] \
+    && cmp -s "$T/wrap/-dashy" "$T/taught/-dashy" \
+    && ok "change_dylib: the taught block for a leading-dash FILE runs verbatim and matches the wrapper" \
+    || bad "change_dylib leading-dash taught block" \
+        "wrapper rc $rc, taught rc $rc2, taught: [$taught], stderr2: $(cat "$T/err2")"
+rm -rf "$T/wrap" "$T/taught"
 
 # An EMPTY NEW segment name: legal (a segname may be all NULs) and matched by
 # tests/compat-matrix.tsv's `rename_segment f __DATA ''` row, whose C-side

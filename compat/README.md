@@ -124,7 +124,8 @@ for why they would be rare:
     failed install. Those are the wrapper's, not a forwarded code -- and for
     `retag_swift_classes` an absent or unwritable argument is a WORDING
     divergence too: `tests/compat-matrix.tsv`'s rows for that case (measured
-    before this task) have both sides agreeing on `perror(path)`'s
+    before the wrapper's own pre-check began answering first) have both
+    sides agreeing on `perror(path)`'s
     "`<path>: No such file or directory`", which is still what
     `mswift_retag_file` itself prints when macho9 actually reaches the
     open() -- but the wrapper's own pre-check now answers first, in its own
@@ -167,7 +168,7 @@ for why they would be rare:
     and `compat/add_version_min.sh`'s own headers have the rest of the
     detail.
 
-There is a fourth gap this list used to omit entirely: no argument
+There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 `mg_grow_header` (`grep -c "grew header pad" tests/compat-matrix.tsv` is 0)
 -- `tests/fixture.macho`'s header pad is large enough, and the sweep's

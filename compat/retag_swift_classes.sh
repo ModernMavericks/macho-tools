@@ -41,7 +41,7 @@
 #       hard-link check only looks at regular files, so a directory falls
 #       through it and reaches macho9 itself, which refuses with its own
 #       words, `d: cannot open or read`, from mi_open's read failing on one)
-#       -- and, new with this task's install step, a write that macho9 itself
+#       -- and, new with this wrapper's install step, a write that macho9 itself
 #       cannot make: a WRITABLE argument inside a NON-writable directory.
 #       mw_prepare's own checks pass (the argument itself is fine), but the
 #       temp macho9 writes beside it needs the DIRECTORY writable, which the
@@ -80,7 +80,8 @@
 # perror(path) instead -- "<path>: No such file or directory" -- which is
 # still what mswift_retag_file itself prints when macho9 actually reaches the
 # open() (tests/compat-matrix.tsv's rows for an absent argument recorded both
-# sides matching on that wording, before this task). mw_require_writable now
+# sides matching on that wording, before the wrapper's own pre-check began
+# answering first). mw_require_writable now
 # intercepts first and says "open: ..." instead, so an absent or unwritable
 # argument no longer matches the old tool's wording, only its exit code.
 #

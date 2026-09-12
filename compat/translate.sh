@@ -268,11 +268,25 @@ mt_qargs() {
 # installs onto the target, so the link survives and everything else pointing
 # through it sees the new content. Teaching the resolve step would be teaching
 # the wrapper's implementation rather than the command a human wants.
+#
+# A FILE whose own name begins with `-` and has no directory part (`sub/-d`
+# is unaffected -- its `.new` name starts with `s`) makes FILE.new begin with
+# `-` too, and macho9 refuses an OUT spelled that way, naming `./OUT` as the
+# remedy (cli/macho9.c). So mt_new_name gives the teaching form that name
+# directly, keeping the printed macho9 line and the `mv -f` line that follows
+# it both runnable pasted verbatim; a wrapper never sees this, because
+# MT_OUT is always its own dot-prefixed temp (mw_prepare, macho9-compat.sh).
+mt_new_name() {
+    case $1 in
+        -*) printf './%s.new' "$1" ;;
+        *)  printf '%s.new' "$1" ;;
+    esac
+}
 mt_out_for() {
-    if [ -n "${MT_OUT:-}" ]; then printf '%s' "$MT_OUT"; else printf '%s.new' "$1"; fi
+    if [ -n "${MT_OUT:-}" ]; then printf '%s' "$MT_OUT"; else mt_new_name "$1"; fi
 }
 mt_install_line() {
-    [ -n "${MT_OUT:-}" ] || printf 'mv -f%s\n' "$(mt_qargs "$1.new" "$1")"
+    [ -n "${MT_OUT:-}" ] || printf 'mv -f%s\n' "$(mt_qargs "$(mt_new_name "$1")" "$1")"
 }
 
 # The origin tool's own diagnostic, on stderr, and a nonzero return.
