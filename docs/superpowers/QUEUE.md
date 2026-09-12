@@ -6,7 +6,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 |---|---|---|---|---|
 | 1 | Report what macho9 did | — | `plans/2026-09-10-report-what-macho9-did.md` | **done**, pushed, CI green at `77f076a` |
 | 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | **done**, pushed, CI green at `36703e0` |
-| 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; unblocked |
+| 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | **done**, pushed, `9e39a57..770433f` |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | plan written; shelved until item 3 merges |
 | 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written before item 2 shipped; re-check against it before starting (see below) |
 | 6 | **Human code review + excellent documentation** | — | — | not started |
@@ -456,6 +456,17 @@ depended-on wrapper, plus a new `wrapper_test` assertion pinning the temp's
 absence from stderr — a new construct and a new gate, which is why it was not
 bought with the last of item 3's verification budget. `tests/characterize.sh`'s
 own console output shows the same line, and is a convenient reproduction.
+
+**A latent collision worth knowing before anything else emits `target`.**
+`me_log_derived` and the empty-expansion line emit **four-space-indented**
+report lines, and since the report became unconditional those go to stderr
+always. `tests/wrapper_test.sh`'s taught-block extractor pulls commands out of
+wrapper stderr with `awk '/^    /{sub(/^    /,""); print}'` — also four spaces.
+No collision exists today, because no wrapper translates to a `target`
+statement and the report's statement echoes are two-space indented (confirmed
+by running that awk over a real multi-family stderr: only the two taught lines
+come back). But if a wrapper ever emits `target`, its expansion listing would
+be captured as taught commands. Either indentation is the thing to change then.
 
 ## Outstanding owner actions
 

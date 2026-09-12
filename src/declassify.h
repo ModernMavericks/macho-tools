@@ -146,7 +146,7 @@ int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len);
 #define MDCL_SLACK (2*1024*1024)
 
 /* What one conversion did, for a caller that reports it (src/edit.c's
- * verbose log). Every field is a figure the conversion already has in hand
+ * report). Every field is a figure the conversion already has in hand
  * as it works -- the counters behind its "Processed N rebases, M binds"
  * line, the lengths of the two streams it emits, the commands it strips, and
  * __LINKEDIT's size before and after -- copied out, never recounted. */

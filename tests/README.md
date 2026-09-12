@@ -60,7 +60,7 @@ it are what outlive them — as are `known-callers.sh`'s pinned pipeline
 digests. Regenerate it only from a real 10.9 build of both families, and say
 in the commit why a row changed.
 
-**A grep for `macho9` will hit 1,209 of its lines, and that is correct.**
+**A grep for `macho9` will hit 1,213 of its lines, and that is correct.**
 Those rows are a frozen measurement of what the historical C binaries did,
 taken while this repo's own binary still answered to that name. Renaming them
 now would falsify the record they exist to preserve rather than update it —
