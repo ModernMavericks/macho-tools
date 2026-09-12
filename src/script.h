@@ -29,11 +29,18 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
 /* The statement vocabulary an edit script's operation lines are drawn from.
  * See src/script.c's MS_TABLE for the kind/op pairs actually accepted --
  * these enums just name the values ms_parse fills into an ms_stmt, and the
- * values a `switch` on .kind/.op matches against. */
+ * values a `switch` on .kind/.op matches against.
+ *
+ * MS_TARGET is the one whose meaning depends on the binary: `target 10.9`
+ * expands, where it is written, into the statements THIS image needs (see
+ * src/edit.h's TARGET). Its second field is a profile name rather than a
+ * verb, which is why the op enum has one entry that is not a verb --
+ * occupying the same slot means the table matches it, counts its operands
+ * and advertises it exactly as it does every other statement. */
 enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
-       MS_FIXUPS, MS_DYLIB, MS_RPATH };
+       MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
-       MS_INSERT, MS_REEXPORT };
+       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9 };
 
 /* One operation line from an edit script. `a`/`.b` (NULL when the
  * statement's arity doesn't use them) point into the owning ms_script's
@@ -45,7 +52,9 @@ typedef struct { int kind, op; const char *a, *b; int line; } ms_stmt;
 /* A parsed edit script: every operation line (not directive lines -- those
  * only set the three fields below) in source order. Every directive --
  * `allow-grow`, `fatal-warnings`, `arch NAME` -- is repeatable and must
- * precede every operation. */
+ * precede every operation, `target` included: it is a statement, and the
+ * directives govern what its expansion may do. A script may name at most one
+ * `target`; a second is a parse error. */
 typedef struct {
     ms_stmt *stmts;
     int      n;

@@ -110,24 +110,30 @@ static int mswift_in_bounds(uint64_t fsize, uint64_t off, uint64_t len) {
     return off <= fsize && len <= fsize - off;
 }
 
-/* Retag one class record in place; returns 1 if it changed. co is a file
- * offset translated from a class virtual address via segment vmaddr/fileoff
- * -- neither mi_open-validated -- so it still needs its own bound before the
- * 8-byte data word at co+CLASS_DATA_OFFSET is read. */
+/* One class record: 1 if it carries the stable-ABI tag, and -- unless this is
+ * only counting them (`apply` == 0) -- move that tag to the legacy bit. co is
+ * a file offset translated from a class virtual address via segment
+ * vmaddr/fileoff -- neither mi_open-validated -- so it still needs its own
+ * bound before the 8-byte data word at co+CLASS_DATA_OFFSET is read.
+ *
+ * Counting and retagging are the same walk on purpose: what `target 10.9`
+ * detects has to be exactly what `swift-abi set legacy` would then do, and
+ * two walks agreeing by inspection is how this repo's recurring defect class
+ * starts. */
 static int mswift_retag(uint8_t *buf, size_t fsize, struct mswift_seg *segs, int nsegs,
-                        uint64_t class_va) {
+                        uint64_t class_va, int apply) {
     int64_t co = mswift_file_off(segs, nsegs, class_va);
     if (co < 0 || !mswift_in_bounds(fsize, (uint64_t)co + CLASS_DATA_OFFSET, sizeof(uint64_t))) return 0;
     uint64_t *data = (uint64_t *)(buf + co + CLASS_DATA_OFFSET);
     if ((*data & 3) != IS_SWIFT_STABLE) return 0;
-    *data = (*data & ~(uint64_t)3) | IS_SWIFT_LEGACY;
+    if (apply) *data = (*data & ~(uint64_t)3) | IS_SWIFT_LEGACY;
     return 1;
 }
 
-/* See swift_retag.h. mswift_retag_file's former middle, moved rather than
- * copied: every list, every class and its metaclass, retagged in the
- * caller's buffer. */
-int mswift_retag_image(mi_image *im) {
+/* mswift_retag_file's former middle, moved rather than copied: every list,
+ * every class and its metaclass, in the caller's buffer -- retagged when
+ * `apply` is set, only counted when it is not. */
+static int mswift_walk(mi_image *im, int apply) {
     size_t fsize = im->size;
 
     struct mswift_seg segs[64];
@@ -152,16 +158,25 @@ int mswift_retag_image(mi_image *im) {
         for (uint64_t i = 0; i + 8 <= listsize; i += 8) {
             uint64_t cls_va = *(uint64_t *)(im->buf + listoff + i);
             if (!cls_va) continue;
-            changed += mswift_retag(im->buf, fsize, segs, nsegs, cls_va);
+            changed += mswift_retag(im->buf, fsize, segs, nsegs, cls_va, apply);
             /* The metaclass carries the same tag and is reached via isa. */
             int64_t co = mswift_file_off(segs, nsegs, cls_va);
             if (co >= 0 && mswift_in_bounds(fsize, (uint64_t)co + CLASS_ISA_OFFSET, sizeof(uint64_t))) {
                 uint64_t meta_va = *(uint64_t *)(im->buf + co + CLASS_ISA_OFFSET);
-                if (meta_va) changed += mswift_retag(im->buf, fsize, segs, nsegs, meta_va);
+                if (meta_va) changed += mswift_retag(im->buf, fsize, segs, nsegs, meta_va, apply);
             }
         }
     }
     return changed;
+}
+
+/* See swift_retag.h. */
+int mswift_retag_image(mi_image *im) {
+    return mswift_walk(im, 1);
+}
+
+int mswift_stable_tagged_image(mi_image *im) {
+    return mswift_walk(im, 0);
 }
 
 int mswift_retag_file(const char *path, const char *out, size_t *out_size) {

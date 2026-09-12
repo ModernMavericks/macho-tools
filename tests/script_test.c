@@ -322,14 +322,15 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Walks ms_table_row directly and confirms MS_TABLE has the spec's 14 rows
- * (the "Statements" table lists exactly 14 kind/op pairs), each of which
- * round-trips through an actual ms_parse -- not just that one known row's
- * text appears somewhere. tests/cli_test.sh separately counts
- * --capabilities' own "statement " lines (exactly 14, all unique); together
- * the two catch the generator (cli/machotool.c's loop over ms_table_row) and
- * the table itself going out of step with each other -- a dropped, extra,
- * or duplicated line on either side. */
+/* Walks ms_table_row directly and confirms MS_TABLE has the spec's 15 rows
+ * (the "Statements" table's 14 kind/op pairs, plus `target 10.9`, whose
+ * profile occupies the op column), each of which round-trips through an
+ * actual ms_parse -- not just that one known row's text appears somewhere.
+ * tests/cli_test.sh separately counts --capabilities' own "statement " lines
+ * (exactly 15, all unique); together the two catch the generator
+ * (cli/machotool.c's loop over ms_table_row) and the table itself going out
+ * of step with each other -- a dropped, extra, or duplicated line on either
+ * side. */
 static void test_capabilities_table_round_trips(void) {
     int i, n_rows = 0;
     const char *kind, *op;
@@ -371,7 +372,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 14, "the statement table has 14 rows (got %d)", n_rows);
+    CHECK(n_rows == 15, "the statement table has 15 rows (got %d)", n_rows);
 }
 
 static void test_arch_directive_names_rows(void) {
@@ -409,6 +410,58 @@ static void test_arch_directive_errors(void) {
     CHECK(strstr(err, "line 2") != NULL, "and names line 2 (got: %s)", err);
 }
 
+static void test_target_parses_and_is_positional(void) {
+    static const char src[] = "allow-grow\ntarget 10.9\nload-command delete uuid\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
+    /* target IS a statement -- it occupies a position, because the expansion
+     * lands where it is written and position changes what later statements
+     * can do (fixups set classic rewrites __LINKEDIT, moving the header pad
+     * available to every dylib replace after it). */
+    CHECK(s.n == 2, "target occupies a statement slot (got n=%d)", s.n);
+    CHECK(s.stmts[0].kind == MS_TARGET, "and it is the first of the two");
+    CHECK(s.stmts[0].a == NULL && s.stmts[0].b == NULL,
+          "the profile is the statement's op, not an operand");
+    CHECK(strcmp(ms_kind_name(s.stmts[0].kind), "target") == 0 &&
+          strcmp(ms_op_name(s.stmts[0].op), "10.9") == 0,
+          "and both halves name themselves back (got '%s %s')",
+          ms_kind_name(s.stmts[0].kind), ms_op_name(s.stmts[0].op));
+    ms_free(&s);
+}
+
+static void test_two_targets_is_a_parse_error(void) {
+    static const char src[] = "target 10.9\ntarget 10.9\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1, "a second target is refused");
+    CHECK(strstr(err, "line 2") != NULL, "and names the line (got: %s)", err);
+}
+
+static void test_unknown_target_is_refused_not_guessed(void) {
+    static const char src[] = "target 10.10\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "an unknown target errors rather than silently doing 10.9's work");
+    CHECK(strstr(err, "10.10") != NULL && strstr(err, "10.9") != NULL,
+          "and names both what was asked for and what this build knows (got: %s)", err);
+    static const char bare[] = "target\n";
+    err[0] = 0;
+    CHECK(ms_parse(bare, sizeof bare - 1, &s, err, sizeof err) == -1,
+          "and a target naming no profile at all is refused too");
+    CHECK(strstr(err, "target") != NULL,
+          "as a target, not as an unknown statement (got: %s)", err);
+}
+
+/* A directive describes the whole run, so it must precede every operation --
+ * and `target` is an operation for that purpose, since allow-grow governs the
+ * statements its expansion becomes. */
+static void test_a_directive_after_target_is_an_error(void) {
+    static const char src[] = "target 10.9\nallow-grow\n";
+    ms_script s; char err[256] = {0};
+    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
+          "allow-grow after target is refused");
+    CHECK(strstr(err, "line 2") != NULL, "and names line 2 (got: %s)", err);
+}
+
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -439,6 +492,10 @@ int main(void) {
     test_arch_directive_names_rows();
     test_no_arch_directive_is_an_empty_mask();
     test_arch_directive_errors();
+    test_target_parses_and_is_positional();
+    test_two_targets_is_a_parse_error();
+    test_unknown_target_is_refused_not_guessed();
+    test_a_directive_after_target_is_an_error();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

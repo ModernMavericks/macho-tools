@@ -409,9 +409,169 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
 unknown:
     /* Unreachable through ms_parse, which refuses a statement outside
      * MS_TABLE; a statement this switch does not lower is a build that
-     * disagrees with itself, not something the image did. */
+     * disagrees with itself, not something the image did. MS_TARGET reaches
+     * this too, and would be that same disagreement: me_statements expands it
+     * instead of lowering it, because it is not one operation. */
     me_say(log, "machotool edit: cannot apply '%s %s'\n", ms_kind_name(st->kind), ms_op_name(st->op));
     return MR_FAIL;
+}
+
+/* ---- target 10.9 --------------------------------------------------------
+ *
+ * The one statement whose meaning depends on the binary. It is not an
+ * operation: it expands, where it is written, into statements the language
+ * already has -- the ones THIS image needs -- and those run in its place.
+ * See edit.h's TARGET for what it detects and why position matters.
+ *
+ * Every detection here is exact: a load command is present or it is not, a
+ * section name begins with __objc_ or it does not, a tag bit is set or it is
+ * not. None of them guesses, so the expansion is reproducible from the image
+ * alone.
+ */
+#define ME_TARGET_MAX 5   /* the five rows of the spec's two tables */
+
+/* One derived statement, and the finding that produced it -- the report
+ * carries both, because "why is this script doing that?" is exactly the
+ * question a profile line raises. */
+typedef struct { ms_stmt stmt; const char *why; } me_derived;
+
+/* What the load commands say about this image. */
+typedef struct { int chained, buildver, version_min, dataconst_objc; } me_seen;
+
+static int me_target_lc(const struct load_command *lc, void *ctx_) {
+    me_seen *f = (me_seen *)ctx_;
+    if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) { f->chained = 1; return 0; }
+    if (lc->cmd == LC_BUILD_VERSION)       { f->buildver = 1; return 0; }
+    if (lc->cmd == LC_VERSION_MIN_MACOSX)  { f->version_min = 1; return 0; }
+    if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
+        /* segname/sectname are 16 bytes and need not be NUL-terminated, which
+         * is why these are strncmp and not strcmp. mi_wrap has already proved
+         * cmdsize covers the section array nsects claims, so this walk stays
+         * inside the command. A __DATA_CONST with no __objc_ section is left
+         * alone: what breaks on 10.9 is the Objective-C runtime not finding
+         * its metadata (src/segname.h), and a segment carrying none has none
+         * to hide. */
+        if (strncmp(sc->segname, "__DATA_CONST", MSEG_NAME_MAX) != 0) return 0;
+        const struct section_64 *sect = (const struct section_64 *)(sc + 1);
+        for (uint32_t k = 0; k < sc->nsects; k++)
+            if (strncmp(sect[k].sectname, "__objc_", 7) == 0) f->dataconst_objc = 1;
+    }
+    return 0;
+}
+
+/* The 10.9 profile, against the image as this statement finds it: fills `d`
+ * and returns how many statements it holds, 0 through ME_TARGET_MAX.
+ *
+ * The order is the order they must run in. `fixups set classic` comes first
+ * because nothing can grow the header while the image still has chained
+ * fixups (src/grow.h), and every statement after it sees the __LINKEDIT and
+ * the header pad it left. The rest are independent of each other.
+ *
+ * NEVER dylib or rpath work: no tool can guess which stub dylib you meant,
+ * and that is the dominant real workload. A profile that guessed would be
+ * wrong silently, which is the failure class this toolkit exists to remove.
+ *
+ * Each derived statement carries the `target` line's own source line, which
+ * is where it came from and the only line anyone wrote.
+ *
+ * `im` is a view, and is not written. */
+static int me_expand_10_9(mi_image *im, me_derived *d, int line) {
+    me_seen f;
+    int n = 0;
+    memset(&f, 0, sizeof f);
+    memset(d, 0, sizeof *d * ME_TARGET_MAX);
+    mi_each_lc(im, me_target_lc, &f);
+
+    if (f.chained) {
+        d[n].stmt.kind = MS_FIXUPS; d[n].stmt.op = MS_SET;
+        d[n].stmt.a = "classic"; d[n].stmt.b = NULL;
+        d[n].stmt.line = line;
+        d[n++].why = "LC_DYLD_CHAINED_FIXUPS present";
+    }
+    if (f.buildver) {
+        d[n].stmt.kind = MS_LOAD_COMMAND; d[n].stmt.op = MS_DELETE;
+        d[n].stmt.a = "build-version"; d[n].stmt.b = NULL;
+        d[n].stmt.line = line;
+        d[n++].why = "LC_BUILD_VERSION present";
+    }
+    if (!f.version_min) {
+        d[n].stmt.kind = MS_VERSION_MIN; d[n].stmt.op = MS_SET;
+        d[n].stmt.a = "10.9"; d[n].stmt.b = NULL;
+        d[n].stmt.line = line;
+        d[n++].why = "no LC_VERSION_MIN_MACOSX";
+    }
+    if (f.dataconst_objc) {
+        d[n].stmt.kind = MS_SEGMENT; d[n].stmt.op = MS_RENAME;
+        d[n].stmt.a = "__DATA_CONST"; d[n].stmt.b = "__DATA";
+        d[n].stmt.line = line;
+        d[n++].why = "__DATA_CONST carries __objc_ sections";
+    }
+    if (mswift_stable_tagged_image(im) > 0) {
+        d[n].stmt.kind = MS_SWIFT_ABI; d[n].stmt.op = MS_SET;
+        d[n].stmt.a = "legacy"; d[n].stmt.b = NULL;
+        d[n].stmt.line = line;
+        d[n++].why = "class records carry the stable-ABI Swift tag";
+    }
+    return n;
+}
+
+/* A derived statement's own line in the report, one indent deeper than the
+ * `target` line it came from, with the finding that produced it. This is the
+ * whole reason `target` is a visible line rather than hidden behaviour: the
+ * same line does different things to different binaries, so the report has to
+ * say which it did here. */
+static void me_log_derived(FILE *log, const me_derived *d) {
+    me_say(log, "    %s %s", ms_kind_name(d->stmt.kind), ms_op_name(d->stmt.op));
+    if (d->stmt.a) me_say(log, " %s", d->stmt.a);
+    if (d->stmt.b) me_say(log, " %s", d->stmt.b);
+    me_say(log, "  (%s)\n", d->why);
+}
+
+/* Expand, then run what the expansion produced, in order, at this position.
+ * Returns 0, or the first derived statement's own MR_REFUSED/MR_FAIL --
+ * which me_statements then reports against the `target` line, since that is
+ * the line the operator wrote.
+ *
+ * A derived statement NEVER counts as unmatched: "this binary already targets
+ * 10.9 correctly" is a correct answer for a profile, unlike for an explicit
+ * operation. Two things enforce that together -- fatal_warnings is cleared in
+ * the script this runs under, and the verdict is not taken at all (decide is
+ * 0), so no "matched nothing" line is printed either. It matters in practice:
+ * `fixups set classic` strips LC_BUILD_VERSION itself, so the `load-command
+ * delete build-version` the same expansion derived finds nothing left to do.
+ * Writing `target 10.9` AND an explicit statement it would have derived is
+ * the other side of this, and is not special-cased: the explicit one is
+ * redundant, and fatal-warnings flags it. */
+static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
+                     const ms_script *s, const ms_stmt *st, FILE *log, int verbose) {
+    me_derived d[ME_TARGET_MAX];
+    mi_image im;
+    int n, i;
+
+    if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
+    n = me_expand_10_9(&im, d, st->line);
+    if (verbose && n == 0)
+        me_say(log, "    nothing to do: this binary already targets 10.9\n");
+
+    /* The same script, minus fatal-warnings: allow-grow and everything else
+     * still govern the expansion, because the directives describe the run and
+     * the expansion is part of it. */
+    {
+        ms_script sub = *s;
+        sub.fatal_warnings = 0;
+        for (i = 0; i < n; i++) {
+            mr_hits hits;
+            int renamed = 0, rc;
+            me_verdict v;
+            memset(&hits, 0, sizeof hits);
+            v.hits = &hits; v.renamed = &renamed; v.decide = 0; v.missed = 0;
+            if (verbose) me_log_derived(log, &d[i]);
+            rc = me_apply(pbuf, psize, path, &sub, &d[i].stmt, log, verbose, &v);
+            if (rc != 0) return rc;
+        }
+    }
+    return 0;
 }
 
 /* Every statement, in order, against one image -- a thin file's, or one fat
@@ -436,7 +596,13 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
         const ms_stmt *stmt = &s->stmts[i];
         if (verbose) me_log_stmt(log, stmt);
         me_verdict v = { &hits[i], &renamed[i], decide, 0 };
-        int rc = me_apply(pbuf, psize, path, s, stmt, log, verbose, &v);
+        /* `target` is not an operation, so it is not lowered to one: it
+         * expands here, in place, into the statements this image needs, and
+         * they run before the next statement in the script does. Its own
+         * hits/renamed entries stay zero -- nothing it derived can miss. */
+        int rc = stmt->kind == MS_TARGET
+            ? me_target(pbuf, psize, path, s, stmt, log, verbose)
+            : me_apply(pbuf, psize, path, s, stmt, log, verbose, &v);
         if (rc != 0) {
             if (rc != MR_REFUSED) rc = MR_FAIL;
             me_say(log, "machotool edit: %s at statement %d of %d (line %d)",

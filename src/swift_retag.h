@@ -95,4 +95,17 @@ int mswift_retag_file(const char *path, const char *out, size_t *out_size);
  */
 int mswift_retag_image(mi_image *im);
 
+/*
+ * How many of those class records carry the stable-ABI tag right now --
+ * mswift_retag_image's walk, counting instead of writing. Nothing in `im`
+ * changes.
+ *
+ * This is what `target 10.9` detects on (src/edit.h's TARGET): a tag bit is
+ * set or it is not, so the detection is exact rather than a guess, and it is
+ * exact about the same records the retag would move, because it IS that walk.
+ * A separate reimplementation that agreed by inspection is the shape of
+ * defect this repo keeps finding.
+ */
+int mswift_stable_tagged_image(mi_image *im);
+
 #endif /* MACHOTOOL_SWIFT_RETAG_H */

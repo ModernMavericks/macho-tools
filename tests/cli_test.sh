@@ -414,19 +414,26 @@ echo "$caps" | grep -qxF "verb edit flags=verbose" \
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The spec's statement vocabulary
-# has exactly 14 <kind,op> pairs; tests/script_test.c's
+# has 14 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
+# column -- makes 15; tests/script_test.c's
 # test_capabilities_table_round_trips separately walks ms_table_row directly
-# and confirms MS_TABLE itself has those 14 rows, each of which round-trips
+# and confirms MS_TABLE itself has those 15 rows, each of which round-trips
 # through ms_parse. This assertion checks the other half of the same claim
 # from here, reusing the $caps already captured above: that
-# print_capabilities' loop over ms_table_row actually emitted 14 "statement "
+# print_capabilities' loop over ms_table_row actually emitted 15 "statement "
 # lines, with none dropped, none extra, and none duplicated. Together the
 # two catch the generator and the table going out of step with each other.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 14 ] && [ "$n_unique" -eq 14 ] \
-    && ok "capabilities: exactly 14 unique statement lines" \
+[ "$n_statements" -eq 15 ] && [ "$n_unique" -eq 15 ] \
+    && ok "capabilities: exactly 15 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
+# The profile vocabulary is advertised from that same table, so a wrapper can
+# see which targets this build knows rather than guess. `target 10.9 0`: no
+# operands after the profile.
+echo "$caps" | grep -qxF "statement target 10.9 0" \
+    && ok "capabilities: the target profile is advertised" \
+    || bad "capabilities statements" "no 'statement target 10.9 0' line: $(echo "$caps" | grep '^statement')"
 echo "$caps" | grep -q "statement dylib replace 2" \
     && ok "capabilities: statement table is advertised" \
     || bad "capabilities statements" "no 'statement dylib replace 2' line: $(echo "$caps" | grep '^statement')"
@@ -3045,6 +3052,262 @@ echo "$caps" | grep -q "^verb minos versions=10.9 flags=allow-grow$" \
     || bad "capabilities minos" "expected 'verb minos versions=10.9 flags=allow-grow': $(echo "$caps" | grep '^verb minos')"
 
 # ============================================================================
+# target 10.9 -- the one statement whose meaning depends on the binary
+# ============================================================================
+# `target 10.9` expands, in place, into the statements the binary actually
+# needs. Detection is EXACT in every case -- a load command is present or it
+# is not, a section name begins with __objc_ or it does not, a tag bit is set
+# or it is not -- so these assertions pin behaviour, not a heuristic's mood.
+#
+# EVERY FIXTURE BELOW IS BUILT SO ITS CONDITION IS TRUE BY CONSTRUCTION, and
+# the premise is then read back with otool rather than with machotool. Hoping
+# the host linker emits the shape a test needs is exactly what made three
+# assertions in this file pass here and fail on the cross runner, whose modern
+# linker emits LC_BUILD_VERSION where 10.9's does not
+# (build_main_without_build_version, above, is the fix that episode produced).
+# Where a fixture is set up with machotool itself, that is circular only in
+# appearance: the otool check right after is what certifies the premise, and a
+# setup that silently did nothing would make the assertion fail loudly rather
+# than pass for the wrong reason.
+printf 'target 10.9\n' >"$T/tgt.edits"
+# FILE OUT SCRIPT with a scratch OUT: a real run, write included, which is
+# what this verb offers in place of a prediction.
+tgt_run() {
+    rm -f "$2"
+    "$MACHOTOOL" edit --verbose "$1" "$2" "${3:-$T/tgt.edits}" \
+        >"$T/tgt.out" 2>"$T/tgt.err"
+}
+
+build_main "$T/tgt_plain"
+tgt_run "$T/tgt_plain" "$T/tgt_plain.out" || bad "target" "$(cat "$T/tgt.err")"
+# A fixture already built for 10.9 needs nothing, and saying so is a correct
+# answer for a profile -- unlike for an explicit operation.
+grep -qF "  target 10.9" "$T/tgt.err" \
+    && ok "target: the report names the profile line" \
+    || bad "target" "no target line in the report: $(cat "$T/tgt.err")"
+
+# ROW 1: LC_DYLD_CHAINED_FIXUPS present -> fixups set classic.
+# ROW 2: LC_BUILD_VERSION present -> load-command delete build-version.
+# mkchained's hand-built image carries both by construction (10.9's linker
+# predates chained fixups by a decade, so no host can be asked for one).
+# The premise is read by mkchained's own `check`, not by otool: chained
+# fixups, the exports trie and LC_BUILD_VERSION all postdate 10.9, and 10.9's
+# otool prints them as "Unknown load command", so an otool grep for those
+# names could only ever hold on the cross runner. A reader built beside the
+# fixture asks the same question on every host -- the reason tests/README.md's
+# host-portability section gives for these readers existing -- and it is still
+# not machotool, so it cannot certify its own setup.
+"$T/mkchained" make "$T/tgt_chained"
+tgt_pre=$("$T/mkchained" check "$T/tgt_chained")
+echo "$tgt_pre" | grep -q "^chained=1" && echo "$tgt_pre" | grep -q "^buildver=1" \
+    || bad "target: fixture setup" "tgt_chained lacks chained fixups or build-version: $(echo "$tgt_pre" | tr '\n' ' ')"
+tgt_run "$T/tgt_chained" "$T/tgt_chained.out" || bad "target (chained)" "$(cat "$T/tgt.err")"
+grep -qF "    fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)" "$T/tgt.err" \
+    && ok "target: chained fixups expand to fixups set classic" \
+    || bad "target (chained)" "no fixups line: $(cat "$T/tgt.err")"
+grep -qF "    load-command delete build-version  (LC_BUILD_VERSION present)" "$T/tgt.err" \
+    && ok "target: LC_BUILD_VERSION expands to load-command delete build-version" \
+    || bad "target (chained)" "no build-version line: $(cat "$T/tgt.err")"
+# The expansion RAN, it was not merely reported: the output is classic.
+tgt_chk=$("$T/mkchained" check "$T/tgt_chained.out")
+echo "$tgt_chk" | grep -q "^chained=0" && echo "$tgt_chk" | grep -q "^dyldinfo=1" \
+    && echo "$tgt_chk" | grep -q "^buildver=0" \
+    && ok "target: ... and the written image is classic, with no LC_BUILD_VERSION" \
+    || bad "target (chained)" "not converted: $(echo "$tgt_chk" | tr '\n' ' ')"
+"$MACHOTOOL" verify "$T/tgt_chained.out" >/dev/null 2>"$T/tgt_v.err" \
+    && ok "target: ... and the result passes machotool verify" \
+    || bad "target (chained)" "verify refused: $(cat "$T/tgt_v.err")"
+# The inverse, so the detection is not "always emit it": a fixture with no
+# LC_BUILD_VERSION derives no delete for one.
+build_main_without_build_version "$T/tgt_nobv"
+tgt_run "$T/tgt_nobv" "$T/tgt_nobv.out" || bad "target (no build-version)" "$(cat "$T/tgt.err")"
+grep -q "load-command delete build-version" "$T/tgt.err" \
+    && bad "target (no build-version)" "derived a delete for a command the image lacks: $(cat "$T/tgt.err")" \
+    || ok "target: an image without LC_BUILD_VERSION derives no delete for it"
+
+# ROW 3: no LC_VERSION_MIN_MACOSX -> version-min set 10.9. strip_version_min
+# makes the premise true whatever the host's linker emitted.
+build_main "$T/tgt_novm"
+"$T/strip_version_min" "$T/tgt_novm" >/dev/null \
+    || bad "target: fixture setup" "strip_version_min failed"
+if otool -l "$T/tgt_novm" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX; then
+    bad "target: fixture setup" "tgt_novm still has LC_VERSION_MIN_MACOSX"
+fi
+tgt_run "$T/tgt_novm" "$T/tgt_novm.out" || bad "target (version-min)" "$(cat "$T/tgt.err")"
+grep -qF "    version-min set 10.9  (no LC_VERSION_MIN_MACOSX)" "$T/tgt.err" \
+    && ok "target: a missing LC_VERSION_MIN_MACOSX expands to version-min set 10.9" \
+    || bad "target (version-min)" "no version-min line: $(cat "$T/tgt.err")"
+otool -l "$T/tgt_novm.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+    && ok "target: ... and the written image has the command" \
+    || bad "target (version-min)" "no LC_VERSION_MIN_MACOSX in the output"
+# The inverse: one that already has it. minos puts it there whatever the
+# linker did, and is a no-op on an image that already had one.
+build_main "$T/tgt_hasvm"
+mtip minos "$T/tgt_hasvm" 10.9 >/dev/null 2>"$T/tgt_minos.err" \
+    || bad "target: fixture setup" "minos failed: $(cat "$T/tgt_minos.err")"
+otool -l "$T/tgt_hasvm" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+    || bad "target: fixture setup" "tgt_hasvm has no LC_VERSION_MIN_MACOSX"
+tgt_run "$T/tgt_hasvm" "$T/tgt_hasvm.out" || bad "target (has version-min)" "$(cat "$T/tgt.err")"
+grep -q "version-min set" "$T/tgt.err" \
+    && bad "target (has version-min)" "derived version-min for an image that has it: $(cat "$T/tgt.err")" \
+    || ok "target: an image that already has LC_VERSION_MIN_MACOSX derives no version-min"
+
+# ROW 4: __DATA_CONST carrying __objc_* sections -> segment rename. No host
+# linker here emits __DATA_CONST either (Xcode 10 and later do), so the
+# fixture is mkswift's __DATA image with its segment renamed the other way --
+# and otool, not machotool, says the premise held.
+"$T/mkswift" make "$T/tgt_dc"
+mtip segment "$T/tgt_dc" __DATA __DATA_CONST >/dev/null 2>"$T/tgt_seg.err" \
+    || bad "target: fixture setup" "segment rename failed: $(cat "$T/tgt_seg.err")"
+otool -l "$T/tgt_dc" 2>/dev/null | grep -q "segname __DATA_CONST" \
+    && otool -l "$T/tgt_dc" 2>/dev/null | grep -q "sectname __objc_classlist" \
+    || bad "target: fixture setup" "tgt_dc is not a __DATA_CONST carrying __objc_ sections"
+tgt_run "$T/tgt_dc" "$T/tgt_dc.out" || bad "target (__DATA_CONST)" "$(cat "$T/tgt.err")"
+grep -qF "    segment rename __DATA_CONST __DATA  (__DATA_CONST carries __objc_ sections)" \
+    "$T/tgt.err" \
+    && ok "target: a __DATA_CONST carrying __objc_ sections expands to the rename" \
+    || bad "target (__DATA_CONST)" "no segment rename line: $(cat "$T/tgt.err")"
+otool -l "$T/tgt_dc.out" 2>/dev/null | grep -q "segname __DATA_CONST" \
+    && bad "target (__DATA_CONST)" "__DATA_CONST survived the expansion" \
+    || ok "target: ... and the written image has no __DATA_CONST left"
+# The inverse: the same fixture before the rename has its __objc_ sections in
+# __DATA already, so there is nothing to rename.
+"$T/mkswift" make "$T/tgt_nodc"
+if otool -l "$T/tgt_nodc" 2>/dev/null | grep -q "segname __DATA_CONST"; then
+    bad "target: fixture setup" "tgt_nodc unexpectedly has a __DATA_CONST"
+fi
+tgt_run "$T/tgt_nodc" "$T/tgt_nodc.out" || bad "target (no __DATA_CONST)" "$(cat "$T/tgt.err")"
+grep -q "segment rename" "$T/tgt.err" \
+    && bad "target (no __DATA_CONST)" "derived a rename with no __DATA_CONST: $(cat "$T/tgt.err")" \
+    || ok "target: an image with no __DATA_CONST derives no segment rename"
+
+# ROW 5: class records carrying the stable-ABI Swift tag -> swift-abi set
+# legacy. mkswift's records carry tag bit 1 (value 2) by construction, and
+# mkswift's own reader -- not machotool -- says so, before and after. The same
+# fixture as the row above, run again so this row stands on its own.
+tgt_tags=$("$T/mkswift" tags "$T/tgt_nodc")
+tgt_run "$T/tgt_nodc" "$T/tgt_nodc.out" || bad "target (swift)" "$(cat "$T/tgt.err")"
+echo "$tgt_tags" | grep -qx "class 2 0x1000009c2" \
+    && ok "target: fixture setup: the Swift fixture carries the stable-ABI tag" \
+    || bad "target: fixture setup" "not the stable-ABI tag: $tgt_tags"
+grep -qF "    swift-abi set legacy  (class records carry the stable-ABI Swift tag)" "$T/tgt.err" \
+    && ok "target: the stable-ABI Swift tag expands to swift-abi set legacy" \
+    || bad "target (swift)" "no swift-abi line: $(cat "$T/tgt.err")"
+"$T/mkswift" tags "$T/tgt_nodc.out" | grep -qx "class 1 0x1000009c1" \
+    && ok "target: ... and the written image's records carry the legacy tag" \
+    || bad "target (swift)" "not retagged: $("$T/mkswift" tags "$T/tgt_nodc.out")"
+# The inverse: build_main's fixture has no Objective-C at all.
+tgt_run "$T/tgt_plain" "$T/tgt_plain.out" || bad "target (no swift)" "$(cat "$T/tgt.err")"
+grep -q "swift-abi set" "$T/tgt.err" \
+    && bad "target (no swift)" "derived swift-abi for an image with no class records: $(cat "$T/tgt.err")" \
+    || ok "target: an image with no Swift class records derives no swift-abi"
+
+# IT EXPANDS WHERE IT IS WRITTEN. Position is not cosmetic: fixups set
+# classic rewrites __LINKEDIT, which changes the header pad available to
+# every dylib replace after it, and this tool does not reorder statements --
+# the script is the plan. So the expansion has to land at the target line's
+# own position, which the report's order is what shows.
+tgt_at() { grep -n "$2" "$1" | head -1 | cut -d: -f1; }
+printf 'load-command delete uuid\ntarget 10.9\n' >"$T/tgt_after.edits"
+printf 'target 10.9\nload-command delete uuid\n' >"$T/tgt_before.edits"
+"$T/mkchained" make "$T/tgt_pos1"
+"$T/mkchained" make "$T/tgt_pos2"
+tgt_run "$T/tgt_pos1" "$T/tgt_pos1.out" "$T/tgt_after.edits" \
+    || bad "target (position)" "$(cat "$T/tgt.err")"
+tgt_uuid=$(tgt_at "$T/tgt.err" "^  load-command delete uuid$")
+tgt_fx=$(tgt_at "$T/tgt.err" "^    fixups set classic")
+[ -n "$tgt_uuid" ] && [ -n "$tgt_fx" ] && [ "$tgt_uuid" -lt "$tgt_fx" ] \
+    && ok "target: written last, its expansion is reported last" \
+    || bad "target (position)" "uuid at '$tgt_uuid', expansion at '$tgt_fx': $(cat "$T/tgt.err")"
+tgt_run "$T/tgt_pos2" "$T/tgt_pos2.out" "$T/tgt_before.edits" \
+    || bad "target (position)" "$(cat "$T/tgt.err")"
+tgt_uuid=$(tgt_at "$T/tgt.err" "^  load-command delete uuid$")
+tgt_fx=$(tgt_at "$T/tgt.err" "^    fixups set classic")
+[ -n "$tgt_uuid" ] && [ -n "$tgt_fx" ] && [ "$tgt_fx" -lt "$tgt_uuid" ] \
+    && ok "target: written first, its expansion is reported first" \
+    || bad "target (position)" "expansion at '$tgt_fx', uuid at '$tgt_uuid': $(cat "$T/tgt.err")"
+
+# TARGET NEVER COUNTS AS UNMATCHED UNDER fatal-warnings. On a chained image
+# the expansion derives both `fixups set classic` and `load-command delete
+# build-version` -- and the first strips LC_BUILD_VERSION itself, so the
+# second finds nothing left to do. "This binary already targets 10.9
+# correctly" is a correct answer for a profile, so that is not a miss.
+printf 'fatal-warnings\ntarget 10.9\n' >"$T/tgt_fw.edits"
+"$T/mkchained" make "$T/tgt_fw"
+tgt_run "$T/tgt_fw" "$T/tgt_fw.out" "$T/tgt_fw.edits" && tgt_fw_rc=0 || tgt_fw_rc=$?
+[ "$tgt_fw_rc" -eq 0 ] && [ -e "$T/tgt_fw.out" ] \
+    && ok "target: a derived statement that matches nothing is not a miss under fatal-warnings" \
+    || bad "target (fatal-warnings)" "exit $tgt_fw_rc: $(cat "$T/tgt.err")"
+grep -q "matched nothing" "$T/tgt.err" \
+    && bad "target (fatal-warnings)" "reported a derived statement as unmatched: $(cat "$T/tgt.err")" \
+    || ok "target: ... and nothing is reported as having matched nothing"
+
+# THE DIRECTIVES STILL GOVERN THE EXPANSION, and a derived statement's
+# refusal is reported against the line the operator actually wrote. The
+# fixture has no LC_VERSION_MIN_MACOSX and a pad too short for one, so the
+# derived `version-min set 10.9` is refused without allow-grow and succeeds
+# with it -- the same answer the explicit statement gets.
+#
+# NOT $T/vm_tight, though it is the same shape: this needs LC_BUILD_VERSION
+# ABSENT too. On a host whose linker emits one, the expansion would derive a
+# `load-command delete build-version` that runs first and frees at least 24
+# bytes -- more than the 16 LC_VERSION_MIN_MACOSX needs -- so the run would
+# succeed and this assertion would fail there and pass here. Same trap,
+# same fix: make the premise true (build_main_without_build_version) rather
+# than assume it.
+build_main_without_build_version "$T/tgt_tight"
+"$T/strip_version_min" "$T/tgt_tight" >/dev/null \
+    || bad "target: fixture setup" "strip_version_min failed on tgt_tight"
+tgt_pad=$(vm_pad_of "$T/tgt_tight")
+if [ -z "$tgt_pad" ] || [ "$tgt_pad" -lt 32 ]; then
+    bad "target: fixture setup" "pad '$tgt_pad' too small to size a filler"
+    tgt_pad=32
+fi
+tgt_cmd=$((tgt_pad - tgt_pad % 8))
+tgt_fill="/$(printf "%$((tgt_cmd - 26))s" '' | tr ' ' t)"
+mtip dylib "$T/tgt_tight" -append "$tgt_fill" >/dev/null 2>"$T/tgt_fill.err" \
+    || bad "target: fixture setup" "filler append failed: $(cut -c1-160 "$T/tgt_fill.err")"
+tgt_left=$(vm_pad_of "$T/tgt_tight")
+[ -n "$tgt_left" ] && [ "$tgt_left" -lt 16 ] \
+    && ok "target: fixture setup: ${tgt_left} bytes of pad, fewer than the 16 version-min needs" \
+    || bad "target: fixture setup" "expected fewer than 16 bytes of pad, got '$tgt_left'"
+tgt_before_sha=$(sha "$T/tgt_tight")
+tgt_run "$T/tgt_tight" "$T/tgt_tight.out" && tgt_tight_rc=0 || tgt_tight_rc=$?
+[ "$tgt_tight_rc" -eq 1 ] && [ ! -e "$T/tgt_tight.out" ] \
+    && [ "$(sha "$T/tgt_tight")" = "$tgt_before_sha" ] \
+    && ok "target: a derived statement that needs allow-grow is refused (1) without it" \
+    || bad "target (allow-grow)" "expected 1 and no OUT, got $tgt_tight_rc: $(cat "$T/tgt.err")"
+grep -qF "machotool edit: refused at statement 1 of 1 (line 1);" "$T/tgt.err" \
+    && ok "target: ... and the refusal names the target line, not a line nobody wrote" \
+    || bad "target (allow-grow)" "not that wording: $(cat "$T/tgt.err")"
+printf 'allow-grow\ntarget 10.9\n' >"$T/tgt_ag.edits"
+tgt_run "$T/tgt_tight" "$T/tgt_tight.out" "$T/tgt_ag.edits" \
+    || bad "target (allow-grow)" "with the directive: $(cat "$T/tgt.err")"
+otool -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+    && ok "target: with allow-grow, the same expansion grows the header and lands" \
+    || bad "target (allow-grow)" "no LC_VERSION_MIN_MACOSX after the grow"
+
+# ONE TARGET PER SCRIPT, AND AN UNKNOWN ONE IS A REFUSAL -- both at parse
+# time, so nothing is read and nothing is written.
+printf 'target 10.9\ntarget 10.9\n' >"$T/tgt_two.edits"
+rm -f "$T/tgt_two.out"
+rc=0
+"$MACHOTOOL" edit "$T/tgt_plain" "$T/tgt_two.out" "$T/tgt_two.edits" \
+    >/dev/null 2>"$T/tgt_two.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/tgt_two.out" ] && grep -q "line 2" "$T/tgt_two.err" \
+    && ok "target: a second target is a parse error (2) naming its line" \
+    || bad "target (two)" "expected 2 and 'line 2', got $rc: $(cat "$T/tgt_two.err")"
+printf 'target 10.10\n' >"$T/tgt_unknown.edits"
+rm -f "$T/tgt_unknown.out"
+rc=0
+"$MACHOTOOL" edit "$T/tgt_plain" "$T/tgt_unknown.out" "$T/tgt_unknown.edits" \
+    >/dev/null 2>"$T/tgt_unknown.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/tgt_unknown.out" ] \
+    && grep -q "10.10" "$T/tgt_unknown.err" && grep -q "10.9" "$T/tgt_unknown.err" \
+    && ok "target: an unknown target errors (2) rather than silently doing 10.9's work" \
+    || bad "target (unknown)" "expected 2 naming 10.10 and 10.9, got $rc: $(cat "$T/tgt_unknown.err")"
+
+# ============================================================================
 # edit on a fat file, end to end
 # ============================================================================
 # edit on a fat file, end to end: two build_main executables in one
@@ -3083,6 +3346,26 @@ grep -q "slice arm64: moved from offset" "$T/fat.err" \
 cmp -s "$T/fat_out1" "$T/fat_s1" \
     && ok "edit: the arm64 slice is byte-identical, though it moved" \
     || bad "edit fat" "the arm64 slice changed"
+
+# target 10.9 IS DETECTED PER SLICE, which is the whole of what "its meaning
+# depends on the binary" means for a fat file: one container, two slices, one
+# `target 10.9` line, and two different expansions. The second slice is
+# mkchained's chained-fixups image, labelled arm64 in its fat_arch entry the
+# way fat_s1 is above -- so exactly one slice has chained fixups, and exactly
+# one `fixups set classic` may be derived across the whole run.
+"$T/mkchained" make "$T/fat_tgt1"
+"$BIN/makefat" "$T/fat_tgt" "$T/tgt_plain" 0x1000007 3 12 "$T/fat_tgt1" 0x100000c 0 12
+rm -f "$T/fat_tgt.out"
+rc=0
+"$MACHOTOOL" edit --verbose "$T/fat_tgt" "$T/fat_tgt.out" "$T/tgt.edits" \
+    >/dev/null 2>"$T/fat_tgt.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "target: a fat file's slices are each expanded" \
+    || bad "target fat" "expected 0, got $rc: $(cat "$T/fat_tgt.err")"
+fat_tgt_n=$(grep -c "^  target 10.9$" "$T/fat_tgt.err" || true)
+fat_tgt_fx=$(grep -c "^    fixups set classic" "$T/fat_tgt.err" || true)
+[ "$fat_tgt_n" -eq 2 ] && [ "$fat_tgt_fx" -eq 1 ] \
+    && ok "target: ... the same line in both slices, expanding differently in each" \
+    || bad "target fat" "expected 2 target lines and 1 fixups line, got $fat_tgt_n and $fat_tgt_fx: $(cat "$T/fat_tgt.err")"
 
 printf 'arch amd64\nload-command delete uuid\n' >"$T/fat_bad.edits"
 rc=0

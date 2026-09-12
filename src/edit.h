@@ -90,6 +90,49 @@ typedef struct {
  * B before A -- the reverse of `machotool dylib FILE -insert A -insert B`, which
  * places its whole list at once, in the order given.
  *
+ * TARGET. `target 10.9` is the one statement whose meaning depends on the
+ * binary: every other statement asks for the same thing of every input (it
+ * may match nothing, but WHAT it asks for is fixed), while this one asks a
+ * different question of every image and answers it differently. It is not an
+ * operation and performs nothing itself. It EXPANDS, at its own position,
+ * into statements the language already has -- the ones this image needs --
+ * and those run there, in its place, before the next statement in the script.
+ *
+ * What it expands to, each detection exact rather than heuristic (a load
+ * command is present or it is not; a section name begins with __objc_ or it
+ * does not; a tag bit is set or it is not), in this order:
+ *
+ *   LC_DYLD_CHAINED_FIXUPS present     `fixups set classic`
+ *   LC_BUILD_VERSION present           `load-command delete build-version`
+ *   no LC_VERSION_MIN_MACOSX           `version-min set 10.9`
+ *   __DATA_CONST with __objc_ sections `segment rename __DATA_CONST __DATA`
+ *   stable-ABI Swift class records     `swift-abi set legacy`
+ *
+ * NEVER `dylib` or `rpath` work: no tool can guess which stub dylib you
+ * meant, and that is the dominant real workload.
+ *
+ * POSITION IS NOT COSMETIC, which is why this is a statement and not an
+ * option: `fixups set classic` rewrites __LINKEDIT and strips load commands,
+ * changing the header pad available to every `dylib replace` after it, and
+ * nothing here reorders statements -- the script is the plan. So the operator
+ * decides where the expansion lands by deciding where to write the line.
+ * `fixups set classic` comes first WITHIN the expansion for the same reason:
+ * nothing can grow the header while the image still has chained fixups.
+ *
+ * The directives still govern what the expansion does -- allow-grow reaches a
+ * derived `version-min set 10.9` exactly as it reaches an explicit one -- with
+ * one exception: a derived statement NEVER counts as unmatched (see
+ * fatal-warnings, below). If one is refused, the refusal names the `target`
+ * line, since that is the line that was written.
+ *
+ * On a fat file each selected slice is detected on its own, so one `target`
+ * line can expand to different statements in different slices -- which is
+ * what "its meaning depends on the binary" amounts to when there is more than
+ * one binary in the file.
+ *
+ * A script names AT MOST ONE target, and only a target this build knows;
+ * ms_parse refuses both (src/script.h), so neither reaches here.
+ *
  * REPORT, to o->log. Most refusal lines end by naming both files and what
  * became of each -- "OUT not written; PATH left unmodified" -- because
  * nothing is written until after the last verify has passed, so OUT is as it
@@ -191,6 +234,20 @@ typedef struct {
  *   `version-min set 10.9`: "appended LC_VERSION_MIN_MACOSX 10.9" when it
  *     appended one (mv_add_version_min_image's `added`), and nothing when
  *     the image already had one.
+ *   `target 10.9`: its EXPANSION, line by line, each indented under the
+ *     target line and followed by the finding that produced it --
+ *
+ *         target 10.9
+ *           fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
+ *           version-min set 10.9  (no LC_VERSION_MIN_MACOSX)
+ *
+ *     -- or "nothing to do: this binary already targets 10.9" when the
+ *     expansion is empty. That listing is the whole reason `target` is a
+ *     visible line rather than hidden behaviour: the same line does
+ *     different things to different binaries, so the report has to say what
+ *     it did to THIS one. Each derived statement's own follow-ups (above)
+ *     are logged beneath it, exactly as they are for a statement somebody
+ *     wrote out.
  * Every other statement logs only its statement line.
  *
  * DIRECTIVES.
@@ -228,6 +285,16 @@ typedef struct {
  * that happens and the run continues. `append` and `insert` always act, and
  * the three `set` statements (version-min, swift-abi, fixups) set a state,
  * so for them "already so" or "nothing to retag" is success, never a miss.
+ *
+ * `target` never counts as unmatched, and neither does anything its expansion
+ * derived: "this binary already targets 10.9 correctly" is a correct answer
+ * for a profile, unlike for an explicit operation. Nor is a derived miss even
+ * reported -- `fixups set classic` strips LC_BUILD_VERSION itself, so the
+ * `load-command delete build-version` the same expansion derived legitimately
+ * finds nothing left to do. Writing `target 10.9` AND an explicit statement it
+ * would have derived is the other side of this, and is deliberately not
+ * special-cased: the explicit one is then redundant, and fatal-warnings flags
+ * it, which is right.
  */
 int me_run(const char *path, const char *out, const ms_script *s,
            const me_opts *o);

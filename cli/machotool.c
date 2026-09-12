@@ -360,8 +360,11 @@ static void print_ops_csv(int is_rpath) {
  *       `kinds=` and `ops=` above are generated from LC_STRIP_KINDS and
  *       DYLIB_OPS rather than hand-copied. `nargs` is the operand count
  *       after `<kind> <op>`, e.g. "statement dylib replace 2" means `dylib
- *       replace OLD NEW`. Directives (allow-grow, fatal-warnings) are
- *       deliberately not listed here -- that is a later decision.
+ *       replace OLD NEW`. One row's second field is a PROFILE rather than an
+ *       op -- "statement target 10.9 0" is the `target 10.9` line, and a
+ *       wrapper reads which profiles this build knows the same way it reads
+ *       which ops each kind takes. Directives (allow-grow, fatal-warnings)
+ *       are deliberately not listed here -- that is a later decision.
  *
  * `dylib` lists all five brief ops; `rpath` lists four -- everything but
  * `reexport`, which LC_RPATH's single kind makes meaningless. Both lists are

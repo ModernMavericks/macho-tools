@@ -62,8 +62,16 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * GENERATED from these rows rather than maintained beside them -- this repo
  * has already had a defect from two such lists disagreeing (the DYLIB_OPS
  * table against the --capabilities text). Adding a statement here is the
- * whole of adding a statement. 14 rows: every "<kind> <op>" the spec
- * accepts. */
+ * whole of adding a statement. 15 rows: every "<kind> <op>" the spec
+ * accepts.
+ *
+ * The last row is `target 10.9`, whose second field is a PROFILE name, not a
+ * verb. It sits in the op column because that is what makes the profile part
+ * of this one table: an unknown profile is refused by the same lookup that
+ * refuses an unknown op, `target 10.9 extra` by the same arity check, and
+ * --capabilities advertises which profiles this build knows without a second
+ * list to keep in step with this one. Adding `target 10.10` one day is one
+ * row here and one case in src/edit.c's expansion. */
 static const struct { const char *kind; int k; const char *op; int o; int nargs; }
 MS_TABLE[] = {
     { "load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,   1 },
@@ -80,6 +88,7 @@ MS_TABLE[] = {
     { "rpath",        MS_RPATH,        "delete",   MS_DELETE,   1 },
     { "rpath",        MS_RPATH,        "append",   MS_APPEND,   1 },
     { "rpath",        MS_RPATH,        "insert",   MS_INSERT,   1 },
+    { "target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0 },
 };
 static const int MS_TABLE_N = (int)(sizeof MS_TABLE / sizeof MS_TABLE[0]);
 
@@ -94,6 +103,23 @@ const char *ms_kind_name(int kind) {
     for (i = 0; i < MS_TABLE_N; i++)
         if (MS_TABLE[i].k == kind) return MS_TABLE[i].kind;
     return "unknown";
+}
+
+/* The profile names MS_TABLE carries for `target`, comma-separated, for the
+ * refusal that names what this build actually accepts. Read out of the table
+ * rather than written beside it, for the reason the table exists. */
+static void ms_target_list(char *out, size_t outsz) {
+    size_t o = 0;
+    int i, first = 1;
+    if (!outsz) return;
+    out[0] = '\0';
+    for (i = 0; i < MS_TABLE_N && o + 1 < outsz; i++) {
+        if (MS_TABLE[i].k != MS_TARGET) continue;
+        int w = snprintf(out + o, outsz - o, "%s%s", first ? "" : ", ", MS_TABLE[i].op);
+        if (w < 0) break;
+        o += (size_t)w;
+        first = 0;
+    }
 }
 
 const char *ms_op_name(int op) {
@@ -201,7 +227,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
      * which one gets reported depends on that order, not on source
      * position (they're all on the same line). */
     int n_stmts = 0;
-    int allow_grow = 0, fatal_warnings = 0, seen_operation = 0;
+    int allow_grow = 0, fatal_warnings = 0, seen_operation = 0, seen_target = 0;
     unsigned arch_mask = 0;
     size_t i = 0;
     int lineno = 0;
@@ -265,6 +291,19 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
             continue;
         }
 
+        /* `target` names a profile where every other statement names an op,
+         * so both of the next two refusals word it as a profile: "unknown
+         * statement 'target 10.10'" would read as though the whole line were
+         * unrecognized, when what this build does not know is the 10.10 part.
+         * An unknown profile is refused rather than quietly given 10.9's
+         * work, which is the whole point of naming one. */
+        if (strcmp(fields[0], "target") == 0 && n < 2) {
+            char profiles[64];
+            ms_target_list(profiles, sizeof profiles);
+            return ms_failf(stmts, text, out, err, errsz, lineno,
+                "target names a profile (%s)", profiles);
+        }
+
         if (n < 2)
             return ms_failf(stmts, text, out, err, errsz, lineno,
                 "unknown statement '%s'", fields[0]);
@@ -273,6 +312,12 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
         for (t = 0; t < MS_TABLE_N; t++) {
             if (strcmp(fields[0], MS_TABLE[t].kind) == 0 &&
                 strcmp(fields[1], MS_TABLE[t].op) == 0) { found = t; break; }
+        }
+        if (found < 0 && strcmp(fields[0], "target") == 0) {
+            char profiles[64];
+            ms_target_list(profiles, sizeof profiles);
+            return ms_failf(stmts, text, out, err, errsz, lineno,
+                "unknown target '%s' (this build knows: %s)", fields[1], profiles);
         }
         if (found < 0)
             return ms_failf(stmts, text, out, err, errsz, lineno,
@@ -305,6 +350,17 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                        strcmp(fields[2], "classic") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "fixups set accepts only 'classic' (got '%s')", fields[2]);
+            }
+
+            /* One target per script. Two would each expand against the image
+             * the other left, so the second would be answering a question the
+             * first had already changed the answer to -- and a script naming
+             * two profiles has not decided what it is porting to. */
+            if (kind == MS_TARGET) {
+                if (seen_target)
+                    return ms_failf(stmts, text, out, err, errsz, lineno,
+                        "a script names at most one target");
+                seen_target = 1;
             }
 
             stmts[n_stmts].kind = kind;

@@ -266,6 +266,9 @@ the header pad by an exact byte count) is not expressible as a line here —
 `version-min set` statement grow the pad on its own as a side effect, which
 is a different thing from naming a byte count directly.
 
+There is one more line, `target 10.9`, which is neither of those: see "The
+`target` statement", below.
+
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
 `dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal
@@ -292,6 +295,80 @@ allow-grow          permission to enlarge the header pad by lowering the image
 fatal-warnings      an operation that matched nothing refuses the whole run
                     (exit 1, nothing written) instead of only being reported
 ```
+
+### The `target` statement
+
+```
+target        10.9
+```
+
+Every other statement means the same thing for every input — `dylib replace
+A B` may match nothing, but *what it asks for* is fixed. `target 10.9` asks a
+different question of every binary and answers it differently: it is the
+intent level, arriving as a named line rather than as hidden behaviour.
+
+**It expands, where it is written, into statements the language already
+has** — the ones this binary actually needs — and those run in its place:
+
+| detected | expands to |
+|---|---|
+| `LC_DYLD_CHAINED_FIXUPS` present | `fixups set classic` |
+| `LC_BUILD_VERSION` present | `load-command delete build-version` |
+| no `LC_VERSION_MIN_MACOSX` | `version-min set 10.9` |
+| `__DATA_CONST` carrying `__objc_*` sections | `segment rename __DATA_CONST __DATA` |
+| class records carrying the stable-ABI Swift tag | `swift-abi set legacy` |
+
+Each detection is exact rather than a guess: a load command is present or it
+is not, a section name begins with `__objc_` or it does not, a tag bit is set
+or it is not. **Never `dylib` or `rpath` work** — no tool can guess which stub
+dylib you meant, and that is the dominant real workload, so a profile stops
+where the guessing would start.
+
+**Position is not cosmetic, which is why this is a statement and not a
+flag.** `fixups set classic` rewrites `__LINKEDIT` and strips load commands,
+which changes the header pad available to every `dylib replace` after it, and
+nothing reorders your statements — the script is the plan. Where you write
+the line is where the expansion lands:
+
+```
+allow-grow
+
+target 10.9
+
+dylib replace /System/Library/Frameworks/Metal.framework/Versions/A/Metal  @loader_path/libMetalStub.dylib
+rpath  insert  @loader_path/../Frameworks
+```
+
+The report lists the expansion line by line, with the finding that produced
+each, since the same line does different things to different binaries:
+
+```
+  target 10.9
+    fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
+    version-min set 10.9  (no LC_VERSION_MIN_MACOSX)
+```
+
+and says `nothing to do: this binary already targets 10.9` when the
+expansion is empty.
+
+The rest of the rules:
+
+- **One `target` per script.** A second is a parse error.
+- **An unknown target is a refusal.** `target 10.10` errors, naming what this
+  build does know, rather than silently doing 10.9's work.
+- **The directives still govern the expansion** — `allow-grow` reaches a
+  derived `version-min set 10.9` exactly as it reaches one you wrote — and if
+  a derived statement is refused, the refusal names the `target` line, which
+  is the line you wrote.
+- **`target` never counts as unmatched under `fatal-warnings`,** and neither
+  does anything it derived: "this binary already targets 10.9 correctly" is a
+  correct answer for a profile, unlike for an explicit operation. (It happens
+  for real: `fixups set classic` strips `LC_BUILD_VERSION` itself, so the
+  `load-command delete build-version` the same expansion derived finds nothing
+  left to do.)
+- **Writing `target 10.9` *and* an explicit statement it would have derived
+  makes the explicit one redundant, and `fatal-warnings` will flag it.** That
+  is right, and is documented rather than special-cased.
 
 ### Worked example
 
@@ -350,8 +427,9 @@ machotool edit "$REAL" "$T" claude.edits
   reexport` and `rpath replace/delete` (no command naming that path), and
   `segment rename` (no segment of that name). `append` and `insert` always
   act, and the three `set` statements treat "already so" as success, so none
-  of those can miss. On a fat file, a statement has matched if it matched in
-  any selected slice.
+  of those can miss. Neither can `target`, nor anything its expansion derived
+  (see "The `target` statement", above). On a fat file, a statement has
+  matched if it matched in any selected slice.
 - **`MACHO_NO_VERIFY` does not affect `edit`'s own final verification.** A
   `dylib`/`rpath`/`load-command` statement still runs the same per-step
   plausibility check `machotool dylib`/`rpath`/`lc` run (see "Prove it or
