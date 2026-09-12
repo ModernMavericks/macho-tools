@@ -17,6 +17,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
 | 12 | An `insert_dylib` wrapper | — | — | not started; not yet designed |
 | 13 | What real app backports need and we lack | — | — | not started; researched 2026-09-11, see below |
+| 14 | Spike: weaken binds in memory at load time | — | — | not started; spike scoped 2026-09-12, see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -295,6 +296,57 @@ entitlements). Note SIP and Gatekeeper never obstructed them, by design —
 everything is written inside the `.app`, and the one system-framework
 substitution is bundled and reached through an injected `@executable_path`
 `LC_LOAD_DYLIB` rather than replacing the system copy.
+
+## Item 14: spike — weaken binds in memory at load time
+
+Raised by the repo owner 2026-09-12, reading item 13's note that
+`landonf/XcodePostFacto` does equivalent work in memory and so never writes or
+re-signs anything. A **spike**: the output is an answer, not code we keep.
+
+**Why it is worth asking.** It dissolves the one item 13 finding that no amount
+of load-command coverage fixes. Nothing on disk changes, so the code signature
+stays valid: no ad-hoc re-sign, no dropped private entitlements, no CloudKit
+workaround, no SIP question, and undoing it means not injecting. XcodePostFacto
+never touched the app bundle at all, because it is a *launcher* — it sets
+`DYLD_INSERT_LIBRARIES` and execs the target, so even `Info.plist` stays
+untouched, and editing `Info.plist` is precisely what forced their re-sign.
+
+**Confirmed available here 2026-09-12:** `_dyld_register_image_state_change_handler`
+is exported from 10.9.5's `/usr/lib/system/libdyld.dylib` (build 13F1911). The
+declaration is not in the SDK — `dyld_priv.h` ships with dyld's source, not
+Xcode — so a caller declares it itself.
+
+**What it does not avoid.** The operations are item 13's gaps 1 and 2 —
+weakening an import, and rewriting its ordinal to flat lookup. In-memory
+relocates that work rather than removing it. The opcode walker is reusable; the
+*locating* arithmetic is not, because this repo's buffer-level operations assume
+file layout, and `LC_DYLD_INFO.bind_off` is a file offset: in a mapped image you
+need `__LINKEDIT`'s vmaddr plus the slide. `__LINKEDIT` is also mapped
+read-only, so patching means `vm_protect` out and back.
+
+**The question that decides feasibility, and is genuinely open:** which images
+can a handler still reach in time? Registered from an inserted library, it fires
+for images mapped *after* it — whether it can still catch the **main
+executable**, which dyld may already have bound by the time our constructor
+runs, is unknown. XcodePostFacto's targets were frameworks Xcode loads later,
+which does not settle the general case. If only later-loaded images are
+reachable, this is a technique for framework-shaped problems, not a general
+porting tool.
+
+**The probe.** Declare the SPI, register at `dyld_image_state_dependents_mapped`,
+and try to weaken one bind against a test binary that links a deliberately
+missing symbol — once where the symbol is in a `dlopen`ed dylib, once where it
+is in the main executable. Report which worked. Also worth noting the blunt
+alternative and why it is not this: `DYLD_FORCE_FLAT_NAMESPACE` abandons
+two-level namespace wholesale, which is presumably why XcodePostFacto rewrote
+individual binds instead.
+
+**If it works,** the shape is two front ends over one walker: one writes a file,
+one patches mapped memory. That is the same split this repo already has between
+file-level and buffer-level operations, so it is not a new architecture — but a
+runtime injector is a new *kind* of artifact, with a test strategy that cannot
+be "hash the output file", so it wants its own spec rather than being folded
+into item 13.
 
 ## Outstanding owner actions
 
