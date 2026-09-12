@@ -2857,8 +2857,15 @@ rm -f "$T/noverb_out"
 nv_rc=0
 "$MACHOTOOL" edit --verbose "$T/noverb" "$T/noverb_out" "$T/nv.edits" \
     >/dev/null 2>"$T/nv.err" || nv_rc=$?
-[ "$nv_rc" -ne 0 ] && ok "edit: --verbose is not a flag any more" \
-    || bad "no quiet mode" "--verbose was accepted; the flag survives"
+# EX_FAIL (2) and no OUT, the same pair the --dry-run and --output cases above
+# check: "it exited non-zero" would also be satisfied by a build that refused
+# the flag with the wrong code, or that refused it only after creating OUT.
+[ "$nv_rc" -eq 2 ] && [ ! -e "$T/noverb_out" ] \
+    && ok "edit: --verbose is an unknown flag now (2), and writes no OUT" \
+    || bad "no quiet mode" "expected 2 and no OUT, got $nv_rc: $(cat "$T/nv.err")"
+grep -q "unknown flag '--verbose'" "$T/nv.err" \
+    && ok "edit: ... and says which flag it did not recognize" \
+    || bad "no quiet mode" "the refusal does not name --verbose: $(cat "$T/nv.err")"
 
 # And the report happens anyway, with no flag asked for.
 build_main "$T/noverb2"

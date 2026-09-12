@@ -225,10 +225,10 @@ static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path,
  * streams into.
  *
  * A statement that succeeded logs, indented beneath its statement line, the
- * work it did beyond what it names: the ordinal
- * renumbering of a dylib insert or delete, what `fixups set classic`
- * converted or that it passed the image through, what `swift-abi set
- * legacy` retagged, and the command `version-min set` appended. */
+ * work it did beyond what it names: the ordinal renumbering of a dylib insert
+ * or delete, what `fixups set classic` converted or that it passed the image
+ * through, what `swift-abi set legacy` retagged, and the command
+ * `version-min set` appended. */
 static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
                     const ms_script *s, const ms_stmt *st, FILE *log,
                     me_verdict *v) {

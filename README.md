@@ -177,12 +177,12 @@ a script would do without disturbing anything, give it a scratch `OUT` — that 
 the same run, and the result is a file you can inspect rather than a prediction.
 
 `edit` takes no flags at all — its three arguments are `FILE`, `OUT` and
-`SCRIPT`, in that order. There is no `--` to end flag parsing, so a `FILE` or `SCRIPT` whose real name
-starts with `--` is refused as an unknown flag; reference it through a path that
-doesn't, e.g. `./--name`. One leading dash is a file name there, as it is for
-every other verb. Not for `OUT`, though: an `OUT` beginning with `-` is refused
-and says so, because `OUT` is a file this command creates, so a flag-looking one
-is a mistake rather than a name.
+`SCRIPT`, in that order. There is no `--` to end flag parsing, so a `FILE` or
+`SCRIPT` whose real name starts with `--` is refused as an unknown flag;
+reference it through a path that doesn't, e.g. `./--name`. One leading dash is
+a file name there, as it is for every other verb. Not for `OUT`, though: an
+`OUT` beginning with `-` is refused and says so, because `OUT` is a file this
+command creates, so a flag-looking one is a mistake rather than a name.
 
 **Edit writes nothing unless every statement succeeded.** The whole script is
 parsed before `FILE` is opened at all, so a typo in the last line of a long

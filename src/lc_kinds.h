@@ -44,7 +44,7 @@ int lc_kind_by_name(const char *name, uint32_t *cmd);
  * vocabulary from the KIND names above, which cover only what `lc -delete`
  * can strip. Returns NULL for a kind not in its list, so each caller decides
  * how to show one it does not know. cli/machotool.c's `info` dump and
- * src/edit.c's verbose report both ask this; it is the one list. */
+ * src/edit.c's report both ask this; it is the one list. */
 const char *lc_cmd_name(uint32_t cmd);
 
 #endif

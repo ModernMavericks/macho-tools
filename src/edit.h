@@ -24,9 +24,9 @@
 /* THERE IS NO QUIET MODE, so there is no field that asks for one. Every run
  * logs each statement and the follow-up work it did (see REPORT, below): a
  * tool whose job is to make edits nobody can see afterwards should not have
- * an option to say nothing about them. The report goes to `log`, which is
- * stderr, so a caller who wants silence has `2>/dev/null` and needs no
- * cooperation from us. */
+ * an option to say nothing about them. Where the report goes is the caller's
+ * choice, through `log` -- the CLI hands it stderr, so a caller who wants
+ * silence has `2>/dev/null` and needs no cooperation from us. */
 typedef struct {
     FILE *log;            /* where the report goes; stderr in the CLI, and
                            * stderr when NULL */
@@ -62,8 +62,8 @@ typedef struct {
  * the selected slices: it has matched if it matched in any of them, and the
  * verdict is taken when the last selected slice has run it.
  *
- * Every slice is accounted for in the report: "slice NAME:" before an
- * edited slice's statements and "slice NAME: verified" after; "slice NAME:
+ * Every slice is accounted for in the report: "slice NAME:" before an edited
+ * slice's statements and "slice NAME: verified" after; "slice NAME:
  * not selected by arch; passed through unchanged" or "slice NAME: 32-bit;
  * passed through unchanged" for the rest; and, after the slices are laid out
  * again, "slice NAME: moved from offset 0x… to 0x…" for any slice an earlier
@@ -180,10 +180,10 @@ typedef struct {
  * written (N bytes)" -- on a fat run "PATH: verified" is the reassembled
  * container's own verdict, once, after every selected slice's "slice NAME:
  * verified" (see FAT FILES, above, for the rest of the per-slice lines).
- * me_run flushes stdout before each line
- * it writes and before each "matched nothing" report, so those land after any
- * stdout line printed before them; an operation's own stderr message, written
- * while it runs, is not ordered this way.
+ * me_run flushes stdout before each line it writes and before each "matched
+ * nothing" report, so those land after any stdout line printed before them;
+ * an operation's own stderr message, written while it runs, is not ordered
+ * this way.
  *
  * WHAT THE OPERATIONS PRINT THEMSELVES. me_run calls each operation's
  * in-memory core, not its CLI verb, so an edit run shows the lines those
@@ -220,9 +220,8 @@ typedef struct {
  *
  * FOLLOW-UPS: a statement that succeeds logs, indented beneath its statement
  * line, the work it did beyond what it names -- the part a user cannot see
- * for themselves. Every figure is one the
- * operation computed while doing the work and handed back, never a second
- * look at the image:
+ * for themselves. Every figure is one the operation computed while doing the
+ * work and handed back, never a second look at the image:
  *   `dylib insert` and `dylib delete`: the command inserted or removed and
  *     its ordinal, the renumbering map (old->new), and how many nlist
  *     entries and SET_DYLIB_ORDINAL opcodes -- bind, weak and lazy -- the
