@@ -476,7 +476,7 @@ static int me_target_lc(const struct load_command *lc, void *ctx_) {
  * is where it came from and the only line anyone wrote.
  *
  * `im` is a view, and is not written. */
-static int me_expand_10_9(mi_image *im, me_derived *d, int line) {
+static int me_expand_10_9(const mi_image *im, me_derived *d, int line) {
     me_seen f;
     int n = 0;
     memset(&f, 0, sizeof f);

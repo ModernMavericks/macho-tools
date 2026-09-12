@@ -132,8 +132,16 @@ static int mswift_retag(uint8_t *buf, size_t fsize, struct mswift_seg *segs, int
 
 /* mswift_retag_file's former middle, moved rather than copied: every list,
  * every class and its metaclass, in the caller's buffer -- retagged when
- * `apply` is set, only counted when it is not. */
-static int mswift_walk(mi_image *im, int apply) {
+ * `apply` is set, only counted when it is not.
+ *
+ * `im` is const so the counting entry point below can be honest about taking
+ * a view it does not change; that qualifier is NOT what stops the retag path
+ * writing, and must not be read as though it were. C's const is shallow: a
+ * `const mi_image *` still yields a `uint8_t *const` buf, whose bytes stay
+ * writable. `apply` is the only thing that decides whether they are written,
+ * which is why it, and not a qualifier, is what the two entry points differ
+ * in. */
+static int mswift_walk(const mi_image *im, int apply) {
     size_t fsize = im->size;
 
     struct mswift_seg segs[64];
@@ -175,7 +183,7 @@ int mswift_retag_image(mi_image *im) {
     return mswift_walk(im, 1);
 }
 
-int mswift_stable_tagged_image(mi_image *im) {
+int mswift_stable_tagged_image(const mi_image *im) {
     return mswift_walk(im, 0);
 }
 

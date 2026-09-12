@@ -3080,11 +3080,39 @@ tgt_run() {
 
 build_main "$T/tgt_plain"
 tgt_run "$T/tgt_plain" "$T/tgt_plain.out" || bad "target" "$(cat "$T/tgt.err")"
-# A fixture already built for 10.9 needs nothing, and saying so is a correct
-# answer for a profile -- unlike for an explicit operation.
+# The profile line is named in the report whatever the binary turns out to
+# need. NOT "a fixture built for 10.9 needs nothing": build_main's fixture
+# needs nothing HERE, and on the cross runner carries LC_BUILD_VERSION and so
+# derives a delete for it. That is precisely the premise this block's own
+# header warns against stating, so it is not stated -- the empty expansion
+# gets a fixture built for it, below.
 grep -qF "  target 10.9" "$T/tgt.err" \
     && ok "target: the report names the profile line" \
     || bad "target" "no target line in the report: $(cat "$T/tgt.err")"
+
+# AN EMPTY EXPANSION IS AN ANSWER, and it is the profile's whole point: "this
+# binary already targets 10.9 correctly" is correct for a profile, unlike for
+# an explicit operation, so the run says so and exits 0 rather than reporting
+# nothing (which would be indistinguishable from the line having done
+# nothing at all).
+#
+# The fixture needs every one of the five detections to be false on any host,
+# which no plain build_main can promise: strip LC_BUILD_VERSION and add
+# LC_VERSION_MIN_MACOSX, each already otool-certified by the helper that does
+# it. The other three -- chained fixups, a __DATA_CONST, Swift class records
+# -- no linker on any host this repo supports can emit at all.
+build_main_without_build_version "$T/tgt_empty"
+mtip minos "$T/tgt_empty" 10.9 >/dev/null 2>"$T/tgt_empty_minos.err" \
+    || bad "target: fixture setup" "minos failed: $(cat "$T/tgt_empty_minos.err")"
+otool -l "$T/tgt_empty" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+    || bad "target: fixture setup" "tgt_empty has no LC_VERSION_MIN_MACOSX"
+tgt_run "$T/tgt_empty" "$T/tgt_empty.out" && tgt_empty_rc=0 || tgt_empty_rc=$?
+[ "$tgt_empty_rc" -eq 0 ] && [ -e "$T/tgt_empty.out" ] \
+    && ok "target: a binary that needs nothing is a successful run (0), with OUT written" \
+    || bad "target (empty)" "exit $tgt_empty_rc: $(cat "$T/tgt.err")"
+grep -qF "    nothing to do: this binary already targets 10.9" "$T/tgt.err" \
+    && ok "target: ... and the report says so rather than saying nothing" \
+    || bad "target (empty)" "no 'nothing to do' line: $(cat "$T/tgt.err")"
 
 # ROW 1: LC_DYLD_CHAINED_FIXUPS present -> fixups set classic.
 # ROW 2: LC_BUILD_VERSION present -> load-command delete build-version.
@@ -3119,11 +3147,19 @@ echo "$tgt_chk" | grep -q "^chained=0" && echo "$tgt_chk" | grep -q "^dyldinfo=1
     || bad "target (chained)" "verify refused: $(cat "$T/tgt_v.err")"
 # The inverse, so the detection is not "always emit it": a fixture with no
 # LC_BUILD_VERSION derives no delete for one.
+#
+# Every one of these inverses pairs its negative grep with a positive one: a
+# report that stopped being produced at all would satisfy "no build-version
+# line" just as well as a correct detection does, and then four assertions
+# would pass vacuously, together, for the one reason that ought to fail them.
 build_main_without_build_version "$T/tgt_nobv"
 tgt_run "$T/tgt_nobv" "$T/tgt_nobv.out" || bad "target (no build-version)" "$(cat "$T/tgt.err")"
-grep -q "load-command delete build-version" "$T/tgt.err" \
-    && bad "target (no build-version)" "derived a delete for a command the image lacks: $(cat "$T/tgt.err")" \
-    || ok "target: an image without LC_BUILD_VERSION derives no delete for it"
+if grep -qF "  target 10.9" "$T/tgt.err" &&
+   ! grep -q "load-command delete build-version" "$T/tgt.err"; then
+    ok "target: an image without LC_BUILD_VERSION derives no delete for it"
+else
+    bad "target (no build-version)" "expected a report with no build-version line: $(cat "$T/tgt.err")"
+fi
 
 # ROW 3: no LC_VERSION_MIN_MACOSX -> version-min set 10.9. strip_version_min
 # makes the premise true whatever the host's linker emitted.
@@ -3148,9 +3184,11 @@ mtip minos "$T/tgt_hasvm" 10.9 >/dev/null 2>"$T/tgt_minos.err" \
 otool -l "$T/tgt_hasvm" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     || bad "target: fixture setup" "tgt_hasvm has no LC_VERSION_MIN_MACOSX"
 tgt_run "$T/tgt_hasvm" "$T/tgt_hasvm.out" || bad "target (has version-min)" "$(cat "$T/tgt.err")"
-grep -q "version-min set" "$T/tgt.err" \
-    && bad "target (has version-min)" "derived version-min for an image that has it: $(cat "$T/tgt.err")" \
-    || ok "target: an image that already has LC_VERSION_MIN_MACOSX derives no version-min"
+if grep -qF "  target 10.9" "$T/tgt.err" && ! grep -q "version-min set" "$T/tgt.err"; then
+    ok "target: an image that already has LC_VERSION_MIN_MACOSX derives no version-min"
+else
+    bad "target (has version-min)" "expected a report with no version-min line: $(cat "$T/tgt.err")"
+fi
 
 # ROW 4: __DATA_CONST carrying __objc_* sections -> segment rename. No host
 # linker here emits __DATA_CONST either (Xcode 10 and later do), so the
@@ -3177,9 +3215,11 @@ if otool -l "$T/tgt_nodc" 2>/dev/null | grep -q "segname __DATA_CONST"; then
     bad "target: fixture setup" "tgt_nodc unexpectedly has a __DATA_CONST"
 fi
 tgt_run "$T/tgt_nodc" "$T/tgt_nodc.out" || bad "target (no __DATA_CONST)" "$(cat "$T/tgt.err")"
-grep -q "segment rename" "$T/tgt.err" \
-    && bad "target (no __DATA_CONST)" "derived a rename with no __DATA_CONST: $(cat "$T/tgt.err")" \
-    || ok "target: an image with no __DATA_CONST derives no segment rename"
+if grep -qF "  target 10.9" "$T/tgt.err" && ! grep -q "segment rename" "$T/tgt.err"; then
+    ok "target: an image with no __DATA_CONST derives no segment rename"
+else
+    bad "target (no __DATA_CONST)" "expected a report with no segment rename line: $(cat "$T/tgt.err")"
+fi
 
 # ROW 5: class records carrying the stable-ABI Swift tag -> swift-abi set
 # legacy. mkswift's records carry tag bit 1 (value 2) by construction, and
@@ -3198,9 +3238,11 @@ grep -qF "    swift-abi set legacy  (class records carry the stable-ABI Swift ta
     || bad "target (swift)" "not retagged: $("$T/mkswift" tags "$T/tgt_nodc.out")"
 # The inverse: build_main's fixture has no Objective-C at all.
 tgt_run "$T/tgt_plain" "$T/tgt_plain.out" || bad "target (no swift)" "$(cat "$T/tgt.err")"
-grep -q "swift-abi set" "$T/tgt.err" \
-    && bad "target (no swift)" "derived swift-abi for an image with no class records: $(cat "$T/tgt.err")" \
-    || ok "target: an image with no Swift class records derives no swift-abi"
+if grep -qF "  target 10.9" "$T/tgt.err" && ! grep -q "swift-abi set" "$T/tgt.err"; then
+    ok "target: an image with no Swift class records derives no swift-abi"
+else
+    bad "target (no swift)" "expected a report with no swift-abi line: $(cat "$T/tgt.err")"
+fi
 
 # IT EXPANDS WHERE IT IS WRITTEN. Position is not cosmetic: fixups set
 # classic rewrites __LINKEDIT, which changes the header pad available to
@@ -3241,6 +3283,36 @@ tgt_run "$T/tgt_fw" "$T/tgt_fw.out" "$T/tgt_fw.edits" && tgt_fw_rc=0 || tgt_fw_r
 grep -q "matched nothing" "$T/tgt.err" \
     && bad "target (fatal-warnings)" "reported a derived statement as unmatched: $(cat "$T/tgt.err")" \
     || ok "target: ... and nothing is reported as having matched nothing"
+
+# THE OTHER SIDE OF THAT, WHICH IS NOT SPECIAL-CASED: writing `target 10.9`
+# AND an explicit statement it would have derived makes the explicit one
+# redundant, and fatal-warnings flags it. Same script as above with one line
+# added -- the expansion's `fixups set classic` strips LC_BUILD_VERSION, so by
+# the time the EXPLICIT `load-command delete build-version` runs there is
+# nothing of that kind left. A statement somebody wrote that matched nothing
+# is a miss, and under fatal-warnings a refusal. Both halves are documented
+# rather than smoothed over, so both halves are pinned.
+printf 'fatal-warnings\ntarget 10.9\nload-command delete build-version\n' >"$T/tgt_redundant.edits"
+"$T/mkchained" make "$T/tgt_redundant"
+tgt_red_before=$(sha "$T/tgt_redundant")
+tgt_run "$T/tgt_redundant" "$T/tgt_redundant.out" "$T/tgt_redundant.edits" \
+    && tgt_red_rc=0 || tgt_red_rc=$?
+[ "$tgt_red_rc" -eq 1 ] && [ ! -e "$T/tgt_redundant.out" ] \
+    && [ "$(sha "$T/tgt_redundant")" = "$tgt_red_before" ] \
+    && ok "target: an explicit statement the expansion already did is redundant, and fatal-warnings refuses it (1)" \
+    || bad "target (redundant)" "expected 1 and no OUT, got $tgt_red_rc: $(cat "$T/tgt.err")"
+grep -q "no load command of kind build-version to delete" "$T/tgt.err" \
+    && ok "target: ... and the miss reported is the explicit statement's, not the derived one's" \
+    || bad "target (redundant)" "no miss reported for the explicit statement: $(cat "$T/tgt.err")"
+# Without fatal-warnings the same script is a report and not a refusal, which
+# is what makes the line above fatal-warnings' doing rather than target's.
+printf 'target 10.9\nload-command delete build-version\n' >"$T/tgt_redlax.edits"
+"$T/mkchained" make "$T/tgt_redlax"
+tgt_run "$T/tgt_redlax" "$T/tgt_redlax.out" "$T/tgt_redlax.edits" \
+    && tgt_redlax_rc=0 || tgt_redlax_rc=$?
+[ "$tgt_redlax_rc" -eq 0 ] && [ -e "$T/tgt_redlax.out" ] \
+    && ok "target: ... and without fatal-warnings the same redundancy is only reported" \
+    || bad "target (redundant)" "expected 0 and an OUT, got $tgt_redlax_rc: $(cat "$T/tgt.err")"
 
 # THE DIRECTIVES STILL GOVERN THE EXPANSION, and a derived statement's
 # refusal is reported against the line the operator actually wrote. The
