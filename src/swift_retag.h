@@ -59,19 +59,22 @@
                                  * (MI_IO_ERROR); already reported */
 #define MSWIFT_NOT_MACHO  (-2)  /* not a readable 64-bit Mach-O; NOTHING printed,
                                  * so a front-end that cares must say so itself */
-#define MSWIFT_RACED      (-3)  /* `path` named a different inode by the time it
-                                 * was validated; already reported, nothing written */
 
 /*
  * Retag every class record reachable from `path`'s __objc_classlist and
  * __objc_nlclslist (in either __DATA or __DATA_CONST), and the metaclass each
- * one's isa points at, writing the file back in place if anything changed.
+ * one's isa points at, and write the result as `out`. `path` is READ and
+ * never written; `out` is created afresh (wa_write_new, src/atomic_write.h),
+ * carrying `path`'s mode, owner and xattrs. `out` must not be `path` --
+ * wa_write_new refuses that and this returns MSWIFT_ERROR without writing
+ * anything.
  *
- * Returns the number of class records retagged (0 if there were none to do),
- * or one of the MSWIFT_* codes above. Nothing is written when the count is 0,
- * and nothing is written on any failure.
+ * Returns the number of class records retagged (0 if there were none to do,
+ * in which case `out` is still written -- a non-negative return always means
+ * `out` is the answer), or one of the MSWIFT_* codes above. Nothing is
+ * written when the return is negative.
  */
-int mswift_retag_file(const char *path);
+int mswift_retag_file(const char *path, const char *out);
 
 /*
  * mswift_retag_file's retag, without the file: the same walk over the image

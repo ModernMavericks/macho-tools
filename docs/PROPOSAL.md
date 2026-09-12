@@ -158,7 +158,7 @@ macho9 lc FILE OP...
 macho9 grow FILE N                                          (macho_grow)
 macho9 minos FILE OUT 10.9 [--allow-grow]                   (add_version_min)
 macho9 segment FILE OLD NEW                                 (rename_segment)
-macho9 retag-swift FILE                                     (retag_swift_classes)
+macho9 retag-swift FILE OUT                                 (retag_swift_classes)
 macho9 info FILE              dump load commands, ordinals, pads
 macho9 verify FILE            check the invariants
 macho9 port FILE --for 10.9 --insert @loader_path/libA.dylib ...

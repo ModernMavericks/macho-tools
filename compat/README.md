@@ -17,7 +17,7 @@ The six original entry points, kept for compatibility. All six are now
 | `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
 | `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
 | `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OLD NEW` |
-| `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE`, once per file |
+| `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE OUT`, once per file, installed over each `FILE` |
 | `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE -` when more than one command's worth (two renames already are) |
 
 plus the two files every wrapper sources:
@@ -69,10 +69,10 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with four known exceptions, truthfully not all the same KIND of
+check them, with three known exceptions, truthfully not all the same KIND of
 known: one reproduced on a real file (one out of 300 in the differential
-corpus, below), two argued unreachable in practice rather than observed, and
-the fourth true by construction rather than by measurement -- it follows
+corpus, below), one argued unreachable in practice rather than observed, and
+the third true by construction rather than by measurement -- it follows
 directly from reading what two of the wrappers' code does, not from a corpus
 row that exhibits it, so no file "reproduces" it and no argument is needed
 for why it would be rare:
@@ -83,11 +83,6 @@ for why it would be rare:
     renumber. `compat/rename_segment.sh`'s header has the measurement. It is
     one file out of 300 in `tests/differential.sh`'s corpus, and closing it
     means changing `macho9`.
-  * `retag_swift_classes` on a file that changed under it mid-run
-    (`MSWIFT_RACED`) exits 1 where the C tool exited 0, because reporting
-    success for a write that did not happen is the silent-success shape this
-    codebase refuses. `compat/retag_swift_classes.sh`'s header has the
-    measurement; a race is not something a test can stage.
   * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
@@ -100,11 +95,13 @@ for why it would be rare:
     `patch_macho` and `rename_segment`, which translate every nonzero
     macho9 exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
-    header has it) and is likewise unaffected by this. (`add_version_min`
-    has refusals of its OWN on top of that, made before macho9 runs and
-    exiting 1, because it installs its result over `FILE` itself: an absent
-    or unwritable `FILE`, a `FILE` carrying other hard links, and a failed
-    install. Those are the wrapper's, not a forwarded code. `change_dylib`'s
+    header has it) and is likewise unaffected by this. (`add_version_min` and
+    `retag_swift_classes` -- the two wrappers whose verb installs its result
+    over `FILE` itself -- both have refusals of their OWN on top of that,
+    exiting 1, made before macho9 runs for the argument in question: an
+    absent or unwritable `FILE`, a `FILE` carrying other hard links, and a
+    failed install. Those are the wrapper's, not a forwarded code.
+    `change_dylib`'s
     own unwritable-`FILE` guard exits 2 instead, deliberately: it reproduces
     what `mr_apply_file`'s own `open` failure gives on the path that still
     reaches it, rather than inventing a second answer.

@@ -1719,9 +1719,9 @@ build_main "$T/segment_fw_fixture"
     || { grep -q "usage:" "$T/segment_fw.err" \
          && ok "segment: does not accept --fatal-warnings (refused as a usage error)" \
          || bad "segment: --fatal-warnings" "refused, but not with a usage message: $(cat "$T/segment_fw.err")"; }
-"$MACHO9" retag-swift "$T/segment_fw_fixture" --fatal-warnings \
+"$MACHO9" retag-swift "$T/segment_fw_fixture" "$T/segment_fw_fixture.rsout" --fatal-warnings \
     >/dev/null 2>"$T/retag_fw.err" \
-    && bad "retag-swift: --fatal-warnings" "should be refused (retag-swift takes exactly FILE)" \
+    && bad "retag-swift: --fatal-warnings" "should be refused (retag-swift takes exactly FILE OUT)" \
     || { grep -q "usage:" "$T/retag_fw.err" \
          && ok "retag-swift: does not accept --fatal-warnings (refused as a usage error)" \
          || bad "retag-swift: --fatal-warnings" "refused, but not with a usage message: $(cat "$T/retag_fw.err")"; }
@@ -2496,9 +2496,12 @@ meta 2 0x1000009c2" ] \
     && ok "retag-swift: fixture starts with both records on the stable-ABI bit" \
     || bad "retag-swift: precondition" "unexpected starting tags: $tags_before"
 
-"$MACHO9" retag-swift "$T/swift_fixture" >"$T/retag.out" 2>&1 \
+swift_fixture_before=$(sha "$T/swift_fixture")
+"$MACHO9" retag-swift "$T/swift_fixture" "$T/swift_out1" >"$T/retag.out" 2>&1 \
     || bad "retag-swift: exit" "$(cat "$T/retag.out")"
-tags_after=$("$T/mkswift" tags "$T/swift_fixture")
+[ "$(sha "$T/swift_fixture")" = "$swift_fixture_before" ] \
+    && ok "retag-swift: FILE is untouched" || bad "retag-swift" "FILE changed"
+tags_after=$("$T/mkswift" tags "$T/swift_out1")
 [ "$tags_after" = "class 1 0x1000009c1
 meta 1 0x1000009c1" ] \
     && ok "retag-swift: moved both tags to the legacy bit, leaving every other bit alone" \
@@ -2509,17 +2512,20 @@ grep -q "retagged 2 class record(s)" "$T/retag.out" \
     && ok "retag-swift: reported both the class and its metaclass" \
     || bad "retag-swift: count" "expected 2 records, got: $(cat "$T/retag.out")"
 
-# Idempotent: a second run finds nothing on the stable bit, says 0, and does
-# not flip anything back.
-cp "$T/swift_fixture" "$T/swift_twice_before"
-"$MACHO9" retag-swift "$T/swift_fixture" >"$T/retag2.out" 2>&1 \
+# Idempotent: retagging the already-retagged OUT finds nothing on the stable
+# bit, says 0, and does not flip anything back.
+swift_out1_before=$(sha "$T/swift_out1")
+"$MACHO9" retag-swift "$T/swift_out1" "$T/swift_out2" >"$T/retag2.out" 2>&1 \
     || bad "retag-swift: second run exit" "$(cat "$T/retag2.out")"
 grep -q "retagged 0 class record(s)" "$T/retag2.out" \
     && ok "retag-swift: a second run retags nothing" \
     || bad "retag-swift: idempotence" "expected 0 records, got: $(cat "$T/retag2.out")"
-cmp -s "$T/swift_fixture" "$T/swift_twice_before" \
-    && ok "retag-swift: a run with nothing to do left the file untouched" \
-    || bad "retag-swift: idempotence" "the file changed on a no-op run"
+[ "$(sha "$T/swift_out1")" = "$swift_out1_before" ] \
+    && ok "retag-swift: a run with nothing to do left FILE untouched" \
+    || bad "retag-swift: idempotence" "FILE changed on a no-op run"
+cmp -s "$T/swift_out1" "$T/swift_out2" \
+    && ok "retag-swift: a no-op run's OUT still carries the same bytes" \
+    || bad "retag-swift: idempotence" "OUT differs from FILE on a no-op run"
 
 # Handed something it cannot read, this verb SAYS SO rather than exiting 0
 # with no output -- the whole reason it does not just forward the old tool's
@@ -2540,9 +2546,12 @@ else
     printf 'not a mach-o at all, just bytes.\n' > "$T/retag_fat_blob"
     "$T/segread" wrap "$T/retag_fat" "$T/swift_fixture" "$T/retag_fat_blob"
     rc=0
-    "$MACHO9" retag-swift "$T/retag_fat" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
+    "$MACHO9" retag-swift "$T/retag_fat" "$T/retag_fat_out" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
     [ "$rc" -eq 1 ] && ok "retag-swift: refuses a fat container with the documented refusal code" \
         || bad "retag-swift: fat" "expected exit 1, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
+    [ ! -e "$T/retag_fat_out" ] \
+        && ok "retag-swift: ... and writes no OUT for a refusal" \
+        || bad "retag-swift: fat" "OUT was written despite the refusal"
     grep -q "not a readable 64-bit Mach-O" "$T/retag_fat.err" \
         && ok "retag-swift: says why it refused, instead of silently doing nothing" \
         || bad "retag-swift: fat message" "no explanation on stderr: $(cat "$T/retag_fat.err")"
@@ -2551,7 +2560,7 @@ else
     # everything.
     cp "$T/swift_fixture" "$T/retag_thin_control"
     rc=0
-    "$MACHO9" retag-swift "$T/retag_thin_control" >"$T/retag_thin_control.out" 2>&1 || rc=$?
+    "$MACHO9" retag-swift "$T/retag_thin_control" "$T/retag_thin_control_out" >"$T/retag_thin_control.out" 2>&1 || rc=$?
     [ "$rc" -eq 0 ] \
         && ok "retag-swift: the same bytes, thin, are accepted -- the refusal is about the container" \
         || bad "retag-swift: thin control" "expected exit 0, got $rc: $(cat "$T/retag_thin_control.out")"
@@ -2563,7 +2572,7 @@ fi
 # by-name test of the negative codes: collapse those branches and one of
 # these two exit codes moves.
 rc=0
-"$MACHO9" retag-swift "$T/no-such-file-for-retag" >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
+"$MACHO9" retag-swift "$T/no-such-file-for-retag" "$T/retag_missing_out" >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
 [ "$rc" -eq 2 ] \
     && ok "retag-swift: an unopenable path is a failure (2), not a refusal (1) and not silent success" \
     || bad "retag-swift: missing path" "expected exit 2, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
@@ -2581,6 +2590,28 @@ rc=0
 [ -s "$T/retag_missing.err" ] \
     && ok "retag-swift: an unopenable path prints something, per MSWIFT_ERROR's contract" \
     || bad "retag-swift: missing path stderr" "exit 2 but stderr was empty -- MSWIFT_ERROR's 'already reported' contract broke"
+
+# retag-swift never writes its input: FILE OUT, and an OUT that is FILE is
+# refused. Any 64-bit Mach-O fixture does, whether or not it carries a Swift
+# class to retag -- OUT is written either way.
+build_main "$T/rs_in"
+rs_before=$(sha "$T/rs_in"); rs_ino=$(stat -f %i "$T/rs_in")
+"$MACHO9" retag-swift "$T/rs_in" "$T/rs_out" >"$T/rs.out" 2>"$T/rs.err" \
+    && ok "retag-swift FILE OUT: succeeds" || bad "retag-swift FILE OUT" "$(cat "$T/rs.err")"
+[ "$(sha "$T/rs_in")" = "$rs_before" ] && [ "$(stat -f %i "$T/rs_in")" = "$rs_ino" ] \
+    && ok "retag-swift FILE OUT: FILE is untouched" || bad "retag-swift FILE OUT" "FILE changed"
+[ -e "$T/rs_out" ] \
+    && ok "retag-swift FILE OUT: OUT was written" || bad "retag-swift FILE OUT" "OUT is missing"
+grep -q "^Wrote $T/rs_out (" "$T/rs.out" \
+    && ok "retag-swift FILE OUT: says what it wrote" || bad "retag-swift FILE OUT" "no Wrote line: $(cat "$T/rs.out")"
+rc=0; "$MACHO9" retag-swift "$T/rs_in" "$T/rs_in" >/dev/null 2>"$T/rs_same.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/rs_in")" = "$rs_before" ] \
+    && ok "retag-swift: OUT that is FILE is refused (2), FILE untouched" || bad "retag-swift OUT=FILE" "rc $rc"
+grep -q "never writes its input" "$T/rs_same.err" \
+    && ok "retag-swift: ... refused up front, before any work" \
+    || bad "retag-swift OUT=FILE" "not the up-front refusal: $(cat "$T/rs_same.err")"
+rc=0; "$MACHO9" retag-swift "$T/rs_in" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "retag-swift: a missing OUT is a usage error (2)" || bad "retag-swift no OUT" "rc $rc"
 
 # The MI_IO_ERROR branch inside mi_open specifically (not mswift_retag_file's
 # own earlier open()/fstat(), which the absent-file case above already

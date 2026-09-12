@@ -31,8 +31,9 @@
 #     hostile case stays correct.
 #   * A CONVERTED VERB NAMES AN OUTPUT of its own, because it no longer writes
 #     the file it is given. macho9's rewriting verbs are being converted one
-#     at a time; `minos` is the first, so `add_version_min` is so far the only
-#     translation here that names one. Which output depends on who is reading:
+#     at a time; `minos` was the first and `retag-swift` is the second, so
+#     `add_version_min` and `retag_swift_classes` are so far the only
+#     translations here that name one. Which output depends on who is reading:
 #     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
 #     command writes exactly that and nothing follows it; without it -- the
 #     teaching form a human sees -- the output is FILE.new and the command is
@@ -133,9 +134,9 @@
 #   add_version_min FILE               minos      FILE OUT 10.9
 #   patch_macho IN OUT                 declassify IN OUT
 #   rename_segment FILE O N            segment    FILE O N
-#   retag_swift_classes F1 F2 F3       retag-swift F1
-#                                      retag-swift F2
-#                                      retag-swift F3
+#   retag_swift_classes F1 F2 F3       retag-swift F1 OUT1
+#                                      retag-swift F2 OUT2
+#                                      retag-swift F3 OUT3
 #
 # ---- ordering, and the one command an old invocation becomes -------------
 #
@@ -186,8 +187,7 @@
 #     set, so it is no longer one of this verb's divergences from
 #     rename_segment.
 #   macho9 retag-swift refuses (exit 1) a non-Mach-O argument that
-#     retag_swift_classes skipped silently, and exits 2 on the raced path
-#     where retag_swift_classes exited 0.
+#     retag_swift_classes skipped silently.
 #   macho9 declassify uses exit 2 (EX_FAIL) for an operational failure where
 #     patch_macho returns its same flat 1 -- a considered refusal, unlike
 #     that case, now exits 1 on both sides, by coincidence, not construction
@@ -693,11 +693,17 @@ mt_tr_rename_segment() {
 mt_tr_retag_swift_classes() {
     # `argc < 2`. This is the one tool whose grammar is variadic over FILES
     # rather than over flags, and macho9 retag-swift takes exactly one file --
-    # so the translation is a loop, one line per file, in argv order.
+    # so the translation is a loop, one line per file, in argv order. MT_OUT
+    # is a single output for the whole call, so it only makes sense set when a
+    # wrapper is retranslating ONE file at a time (compat/retag_swift_classes.sh
+    # does); the teaching form (no MT_OUT) is over every file at once and gives
+    # each its own FILE.new and install line, same as mt_out_for/mt_install_line
+    # do for any other converted verb.
     [ $# -ge 1 ] || { printf 'Usage: %s binary [binary ...]\n' "$MT_PROG" >&2; return 1; }
     mt_pre="$(mt_pre_word)"
     for mt_f in "$@"; do
-        printf '%s retag-swift%s\n' "$mt_pre" "$(mt_qargs "$mt_f")"
+        printf '%s retag-swift%s\n' "$mt_pre" "$(mt_qargs "$mt_f" "$(mt_out_for "$mt_f")")"
+        mt_install_line "$mt_f"
     done
 }
 

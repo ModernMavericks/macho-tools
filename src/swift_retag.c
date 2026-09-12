@@ -1,31 +1,20 @@
 /*
  * mswift_ -- see swift_retag.h. This is compat/retag_swift_classes.c's former
  * process() and the three helpers only it used, unchanged in behaviour and in
- * every message it prints; the argv loop, the per-file report and the exit
- * code stayed behind in that tool.
+ * every message it prints, plus the file around it: it no longer writes
+ * `path` back in place, it writes `out` (mswift_retag_file's own middle,
+ * mswift_retag_image, is unchanged -- the walk over the image in memory never
+ * touched the file). The argv loop, the per-file report and the exit code
+ * stayed behind in that tool.
  *
- * The one thing that did change is the return VALUE: process() collapsed "not
- * a Mach-O" and "raced" into the same 0 it uses for "nothing to retag", which
- * left a caller unable to tell a refusal from a silent success. Those two now
- * have their own codes (swift_retag.h), and cli/macho9.c's `retag-swift` verb
- * reports both.
- *
- * The old grammar's wrapper (compat/retag_swift_classes.sh) reproduces ONE of
- * them and deliberately not the other, and the two must not be described as
- * one thing:
- *
- *   MSWIFT_NOT_MACHO  mapped back onto the same "skip quietly, not an error"
- *                     the C tool did -- no message, no had_error, loop
- *                     continues. Nothing observable moved.
- *   MSWIFT_RACED      NOT reproduced. It reaches the wrapper as macho9's exit
- *                     2, indistinguishable there from MSWIFT_ERROR, so it
- *                     becomes had_error and the run exits 1 (the wrapper's
- *                     own historical had_error code) where the C tool
- *                     exited 0. That is a real exit-code divergence, and the
- *                     intended one: the race means NOTHING was written, and
- *                     reporting success for work that did not happen is the
- *                     silent-success shape this codebase refuses. The
- *                     wrapper's own header states it the same way.
+ * The other thing that changed is the return VALUE: process() collapsed "not
+ * a Mach-O" into the same 0 it uses for "nothing to retag", which left a
+ * caller unable to tell a refusal from a silent success. That now has its own
+ * code (swift_retag.h's MSWIFT_NOT_MACHO), and cli/macho9.c's `retag-swift`
+ * verb reports it -- while the old grammar's wrapper
+ * (compat/retag_swift_classes.sh) maps it back onto the same "skip quietly,
+ * not an error" the C tool did: no message, no had_error, loop continues.
+ * Nothing observable moved.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +27,7 @@
 
 #include "swift_retag.h"
 #include "image.h"
+#include "atomic_write.h"   /* wa_write_new: `path` is read, `out` is written */
 
 #define IS_SWIFT_STABLE 2
 #define IS_SWIFT_LEGACY 1
@@ -175,28 +165,29 @@ int mswift_retag_image(mi_image *im) {
     return changed;
 }
 
-int mswift_retag_file(const char *path) {
-    /* Open O_RDWR early so an unwritable file fails immediately; mi_open
-     * (O_RDONLY) does the actual read and validation, same split as
-     * change_dylib and patch_macho use. */
-    int fd = open(path, O_RDWR);
+int mswift_retag_file(const char *path, const char *out) {
+    /* Opened only to report an unreadable `path` immediately, before any
+     * analysis, in the words this function has always used for that; mi_open
+     * (O_RDONLY too) does the actual read and validation. Nothing is ever
+     * written through this descriptor -- `path` is an input now -- so it is
+     * closed again at once and the result goes to `out`. */
+    int fd = open(path, O_RDONLY);
     if (fd < 0) { perror(path); return MSWIFT_ERROR; }
     struct stat st0;
     if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return MSWIFT_ERROR; }
+    close(fd);
 
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        /* Not only a TOCTOU race (the open()/fstat() above proved this path
-         * opens, but mi_open's own whole-file malloc or its read can still
-         * fail on their own) -- either way this is MSWIFT_ERROR, the same
-         * code this function's own open()/fstat() failures above use, not
-         * MSWIFT_NOT_MACHO. MSWIFT_ERROR's contract (swift_retag.h) is
-         * "already reported", which cmd_retag_swift relies on to stay
-         * silent for this code -- so, unlike MSWIFT_NOT_MACHO just below,
-         * this prints before returning. */
+        /* The open()/fstat() above only proved this path opens, not that
+         * mi_open's own independent open, read of the whole file, or the
+         * malloc it reads into will succeed too -- any of those, or an
+         * actual TOCTOU race, land here. MSWIFT_ERROR's contract
+         * (swift_retag.h) is "already reported", which cmd_retag_swift
+         * relies on to stay silent for this code -- so, unlike
+         * MSWIFT_NOT_MACHO just below, this prints before returning. */
         fprintf(stderr, "%s: cannot open or read\n", path);
-        close(fd);
         return MSWIFT_ERROR;
     }
     if (mo_rc != 0) {
@@ -207,23 +198,7 @@ int mswift_retag_file(const char *path) {
          * walked with undefined behavior. Nothing is printed: the multi-file
          * front-end wants to keep going quietly, and the single-file one
          * wants to word the refusal itself. */
-        close(fd);
         return MSWIFT_NOT_MACHO;
-    }
-
-    /* mi_open reads `path` through its own, separate O_RDONLY descriptor, so
-     * the bytes just validated and the fd written back through (opened
-     * above) are two different opens of whatever `path` named at each
-     * moment -- see src/version_min.c's identical check for the full
-     * reasoning. Refuse rather than write the newly-validated bytes into a
-     * possibly different inode than the one that was opened. */
-    struct stat st1;
-    if (stat(path, &st1) != 0 ||
-        st1.st_dev != st0.st_dev || st1.st_ino != st0.st_ino) {
-        fprintf(stderr, "%s: changed underneath us between open and validation; skipping\n", path);
-        mi_close(&im);
-        close(fd);
-        return MSWIFT_RACED;
     }
 
     size_t fsize = im.size;
@@ -235,13 +210,11 @@ int mswift_retag_file(const char *path) {
      * straight into it (mswift_retag()) and this eventually free()s it. */
     uint8_t *buf = mi_release(&im);
 
-    if (changed) {
-        if (lseek(fd, 0, SEEK_SET) != 0 ||
-            write(fd, buf, fsize) != (ssize_t)fsize) {
-            perror("write"); free(buf); close(fd); return MSWIFT_ERROR;
-        }
-    }
+    /* Written even when nothing changed: a non-negative return means `out`
+     * is the answer, so it has to exist either way. wa_write_new creates it
+     * afresh from `path`'s mode, owner and xattrs and never touches `path`. */
+    int wr = wa_write_new(path, out, buf, fsize);
+    if (wr != 0) { free(buf); return MSWIFT_ERROR; }   /* WA_IS_INPUT: checked earlier by cmd_retag_swift */
     free(buf);
-    close(fd);
     return changed;
 }

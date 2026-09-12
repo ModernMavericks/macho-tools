@@ -8,7 +8,7 @@
  *   macho9 dylib FILE [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert -reexport
  *   macho9 rpath FILE [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert
  *   macho9 segment FILE OLD NEW
- *   macho9 retag-swift FILE
+ *   macho9 retag-swift FILE OUT
  *   macho9 lc FILE [--fatal-warnings] -delete KIND
  *   macho9 grow FILE N
  *   macho9 minos FILE OUT 10.9 [--allow-grow]
@@ -367,7 +367,7 @@ static void usage(const char *prog) {
         "                                                    -insert PATH (searched FIRST)\n"
         "       %s segment FILE OLD NEW                     rename every segment named OLD, and\n"
         "                                                    its sections' copy of that name\n"
-        "       %s retag-swift FILE\n"
+        "       %s retag-swift FILE OUT                     FILE is only read; OUT must not be FILE\n"
         "       %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n"
         "                                                    uuid | codesig | source-version |\n"
         "                                                    build-version | code-sign-drs\n"
@@ -934,29 +934,29 @@ static int cmd_segment(const char *path, const char *oldname, const char *newnam
  * prints nothing and exits 0 on a fat binary is exactly the silent success
  * docs/PROPOSAL.md's `verify` section exists to rule out.
  *
- * TWO DELIBERATE DIVERGENCES FROM retag_swift_classes, both of which a
- * wrapper author has to know about, because in each case the two front-ends
- * return DIFFERENT codes for the same input. Both are handled in
- * compat/retag_swift_classes.sh, whose header says how:
+ * ONE DELIBERATE DIVERGENCE FROM retag_swift_classes, which a wrapper author
+ * has to know about, because the two front-ends return DIFFERENT codes for
+ * the same input: MSWIFT_NOT_MACHO. retag_swift_classes skips such an
+ * argument silently and keeps going through the rest of its argv, ending at
+ * 0; this verb has exactly one file to talk about, so it refuses (EX_REFUSED)
+ * and says why. compat/retag_swift_classes.sh's header says how it maps that
+ * back.
  *
- *   - MSWIFT_NOT_MACHO. retag_swift_classes skips such an argument silently
- *     and keeps going through the rest of its argv, ending at 0; this verb
- *     has exactly one file to talk about, so it refuses (EX_REFUSED) and says
- *     why.
- *   - MSWIFT_RACED -- `path` named a different inode by the time it was
- *     validated, so NOTHING was written. retag_swift_classes returns 0 for
- *     that (a benign skip in a multi-file run, already reported on stderr);
- *     this verb returns EX_FAIL. Reporting success for work it did not do is the
- *     silent-success shape this codebase refuses, and a caller that scripted
- *     `macho9 retag-swift F && install F` on a 0 would install the file the
- *     race left behind.
- *
- * Both codes are tested BY NAME below, never as `n < 0` -- swift_retag.h says
- * why: a fourth benign code added later would otherwise silently become a
- * macho9 failure, which is the same "two places deciding one thing" drift the
+ * MSWIFT_NOT_MACHO is tested BY NAME below, never as `n < 0` -- swift_retag.h
+ * says why: a future benign code would otherwise silently become a macho9
+ * failure, which is the same "two places deciding one thing" drift the
  * shared module exists to prevent. */
-static int cmd_retag_swift(const char *path) {
-    int n = mswift_retag_file(path);
+static int cmd_retag_swift(const char *path, const char *out) {
+    /* Before any read: naming FILE as OUT is a mistake about what this tool
+     * does, not about this file's content, and saying so up front is the
+     * difference between "refused, nothing happened" and a refusal that
+     * arrives after the work. wa_write_new would refuse it anyway at the
+     * write; this is the same answer, earlier and in this verb's own words. */
+    if (wa_is_input(path, out)) {
+        fprintf(stderr, "macho9 retag-swift: %s is %s; macho9 never writes its input\n", out, path);
+        return EX_FAIL;
+    }
+    int n = mswift_retag_file(path, out);
     if (n == MSWIFT_NOT_MACHO) {
         fprintf(stderr, "macho9 retag-swift: %s: not a readable 64-bit Mach-O. "
                         "This verb is thin-only, like retag_swift_classes, so that "
@@ -964,8 +964,7 @@ static int cmd_retag_swift(const char *path) {
                         "Mach-O at all.\n", path);
         return EX_REFUSED;
     }
-    /* Both already printed their own diagnostic inside mswift_retag_file. */
-    if (n == MSWIFT_ERROR || n == MSWIFT_RACED) return EX_FAIL;
+    if (n == MSWIFT_ERROR) return EX_FAIL;   /* already reported inside mswift_retag_file */
     if (n < 0) {
         /* A code swift_retag.h grew that this verb has not been taught. Refuse
          * rather than fall through to "retagged -4 class record(s)" and exit
@@ -978,6 +977,11 @@ static int cmd_retag_swift(const char *path) {
         return EX_FAIL;
     }
     printf("%s: retagged %d class record(s)\n", path, n);
+    struct stat outst;
+    if (stat(out, &outst) == 0)
+        printf("Wrote %s (%lld bytes)\n", out, (long long)outst.st_size);
+    else
+        printf("Wrote %s\n", out);
     return 0;
 }
 
@@ -1279,8 +1283,8 @@ int main(int argc, char **argv) {
         return cmd_segment(argv[2], argv[3], argv[4]);
     }
     if (strcmp(verb, "retag-swift") == 0) {
-        if (argc != 3) { fprintf(stderr, "usage: %s retag-swift FILE\n", argv[0]); return EX_FAIL; }
-        return cmd_retag_swift(argv[2]);
+        if (argc != 4) { fprintf(stderr, "usage: %s retag-swift FILE OUT\n", argv[0]); return EX_FAIL; }
+        return cmd_retag_swift(argv[2], argv[3]);
     }
     if (strcmp(verb, "lc") == 0) {
         if (argc < 5) { fprintf(stderr, "usage: %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n", argv[0]); return EX_FAIL; }
