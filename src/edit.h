@@ -90,11 +90,14 @@ typedef struct {
  * B before A -- the reverse of `macho9 dylib FILE -insert A -insert B`, which
  * places its whole list at once, in the order given.
  *
- * REPORT, to o->log. EVERY refusal line ends by naming both files and what
- * became of each -- "OUT not written; PATH left unmodified" -- because that is
- * true of every one of them: nothing is written until after the last verify has
+ * REPORT, to o->log. Once the image has been read, every refusal line ends by
+ * naming both files and what became of each -- "OUT not written; PATH left
+ * unmodified" -- because nothing is written until after the last verify has
  * passed, so OUT is as it was (usually absent) and PATH was never a
- * destination. Always printed: a statement's refusal,
+ * destination. A refusal before the image is read (no OUT named, OUT is
+ * PATH, PATH cannot be opened or read, or PATH is not a readable 64-bit
+ * Mach-O) says only what it can before there is an image to report on.
+ * Always printed: a statement's refusal,
  *   "macho9 edit: refused at statement K of N (line L); OUT not written; PATH
  *   left unmodified"
  * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L

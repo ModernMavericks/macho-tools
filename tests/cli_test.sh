@@ -363,6 +363,12 @@ rc=0
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 1" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 1"
 
+# "output positional=2 never-writes-input" is the shape every rewriting verb's
+# positionals take: a wrapper checks for this line rather than assume it.
+echo "$caps" | grep -qx "output positional=2 never-writes-input" \
+    && ok "capabilities: output line documents FILE OUT, never-writes-input" \
+    || bad "capabilities: output line" "missing or wrong: $(echo "$caps" | grep '^output')"
+
 for v in verify info grow minos lc dylib rpath segment retag-swift declassify edit; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"

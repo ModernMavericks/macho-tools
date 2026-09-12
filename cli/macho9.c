@@ -308,7 +308,13 @@ static void print_ops_csv(int is_rpath) {
  *       --fatal-warnings, where mr_apply_file returns MR_REFUSED for an
  *       operation that matched nothing -- see that flag's own entry below.
  *       See EX_REFUSED's own comment for the full reasoning.
- *   line 3+: "verb <name> [key=value ...]"
+ *   line 3: "output positional=2 never-writes-input" -- the shape every
+ *       rewriting verb's positionals take: FILE, then OUT as the positional
+ *       right after it, and OUT=FILE (by path, symlink or hard link) is
+ *       always refused. `positional=2` is OUT's position counting from 1;
+ *       this line exists so a wrapper checks for it instead of assuming the
+ *       shape.
+ *   line 4+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out.
  *       Recognized attributes:
@@ -374,6 +380,10 @@ static void print_ops_csv(int is_rpath) {
 static int print_capabilities(void) {
     printf("format 1\n");
     printf("exitcodes ok=0 refused=%d failed=%d\n", EX_REFUSED, EX_FAIL);
+    /* Every rewriting verb reads FILE and writes OUT, the positional right
+     * after it, and refuses an OUT that is FILE: macho9 never writes its
+     * input. A wrapper checks for this line rather than assume the shape. */
+    printf("output positional=2 never-writes-input\n");
     printf("verb declassify\n");
     printf("verb verify\n");
     printf("verb info\n");
@@ -1173,8 +1183,9 @@ static int cmd_declassify(const char *in, const char *out) {
  * name starts with '-' has no escape here (no "--"); reference it through a
  * path that doesn't, e.g. "./-name" (README's edit section says so too).
  *
- * OUT IS CHECKED BEFORE THE SCRIPT IS READ -- m9_bad_out, the same refusals
- * every other OUT-taking verb makes, before any input is opened. ms_parse then
+ * OUT IS CHECKED BEFORE THE SCRIPT IS READ -- m9_bad_out, the same refusal
+ * every other OUT-taking verb gets for a single-dash OUT (a `--`-prefixed one
+ * is caught as an unknown flag first), before any input is opened. ms_parse then
  * runs, and can fail, before anything is written -- see edit.h's own header
  * comment, which states that as the property this module exists for: nothing is
  * written unless every statement succeeds and the final verify passes. A parse

@@ -1514,12 +1514,13 @@ run fix_macho f -rename_seg __DATA 12345678901234567
 # BOTH CASES DISCRIMINATE NOW, and the unwritable one more sharply than
 # before. Remove the wrapper's check and the absent file reports macho9's
 # "macho9 edit: nosuchfile: cannot open or read" instead of fix_macho's own
-# words; the unwritable one SUCCEEDS -- measured -- because
-# wa_write_atomic mkstemps beside the file and renames over it, which needs
-# the DIRECTORY to be writable and not the file, so a mode-444 binary is
-# replaced (new inode, mode 444 carried over) and the run exits 0 where
-# fix_macho's O_RDWR refused. The check below is the only thing standing
-# between a caller and that silent rewrite. Each was mutation-tested.
+# words; the unwritable one SUCCEEDS -- measured -- because macho9 edit
+# writes the wrapper's temp (not FILE) via wa_write_new, and mw_finish's mv
+# lands that temp on FILE, which needs the DIRECTORY to be writable and not
+# the file, so a mode-444 binary is replaced (new inode, mode 444 carried
+# over from FILE's own stat) and the run exits 0 where fix_macho's O_RDWR
+# refused. The check below is the only thing standing between a caller and
+# that silent rewrite. Each was mutation-tested.
 run fix_macho nosuchfile -strip_build_version -change A B
 [ "$rc" -eq 1 ] && has_line "$T/err" 'open: No such file or directory' \
     && ok "fix_macho: an absent file fails immediately, in fix_macho's own words" \
@@ -1546,9 +1547,9 @@ chmod 644 "$T/f"
 # the pre-wrapper binaries; these keep them verified.
 
 # A SPACE in the file name, on the mixed-family path -- the one that emits
-# `macho9 edit FILE -`, so the path is quoted into an edit command line rather
-# than a verb's. Asserted by comparing against the same operations on an
-# ordinarily-named copy.
+# `macho9 edit FILE <temp> -`, so the path is quoted into an edit command line
+# rather than a verb's. Asserted by comparing against the same operations on
+# an ordinarily-named copy.
 fresh
 cp "$FIXTURE" "$T/has space"
 ( cd "$T" && "$BIN/change_dylib" "has space" -strip-lc uuid \

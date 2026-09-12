@@ -104,6 +104,30 @@ file**; these tools **never move a byte of data**, editing only within existing
 header padding. That is why `-strip-lc` and `-grow` exist, and why a replacement
 path that is too long is an error here and a non-event with Apple's tool.
 
+## macho9 never writes its input
+
+Every rewriting verb — `dylib`, `rpath`, `lc`, `segment`, `minos`,
+`retag-swift`, `declassify`, `grow`, `edit` — takes `FILE OUT`: `FILE` is
+opened read-only and never touched, and the result goes to `OUT`, the
+positional right after it. An `OUT` that names `FILE` — the same path, a
+symlink to it, or a hard link to it — is refused before any work is done.
+`macho9 --capabilities`' `output positional=2 never-writes-input` line tells
+a caller to expect this shape rather than assume it.
+
+A successful write gives `OUT` `FILE`'s permission bits, `FILE`'s owner
+(best-effort — changing owner needs privilege), and every extended attribute
+`FILE` carries (quarantine and the like), then renames a temp file onto
+`OUT`: `OUT` ends up either its previous content or the whole new file, never
+a partial one, and a symlink at `OUT` is followed to its target rather than
+replaced.
+
+The six `compat/` wrappers still *look* like they edit in place, the way the
+retired C tools did: each writes to a temp file beside `FILE` and moves it
+over `FILE` once the run succeeds. A `FILE` with more than one hard link is
+refused up front instead — moving the temp over one name would leave every
+other name for that inode on the old content, and there is no atomic way to
+update every name for an inode at once.
+
 ## Prove it or refuse
 
 `-grow` makes header room by lowering the image base, which invalidates every
@@ -195,16 +219,12 @@ after printing it. On a fat file the refusal line names the slice too — or,
 for a statement's own miss (see `fatal-warnings`, below), says it matched
 nothing in any selected slice.
 
-**The write replaces `FILE` by rename**, as `objcopy` does: the new image goes
-to a temporary file beside `FILE`, which is then renamed over it, keeping
-`FILE`'s mode. So a read-only (`0444`) `FILE` in a writable directory is
-replaced, and the run exits 0. (A `FILE` with more than one hard link is
-written through in place instead, so that every name sees the change; see
-`src/atomic_write.h`.) `macho9 dylib`, `rpath`, `lc`, `segment`, `grow` and
-`declassify` do not do this at all any more: each takes `FILE OUT` and never
-writes `FILE`, so whether `FILE` is writable is not a question they ask.
-`edit` is the verb this section is about, and the last one that still rewrites
-the file it is given.
+**The write never touches `FILE`.** `edit`, like every other rewriting verb,
+takes `FILE OUT` and writes only `OUT`, by way of a temp file and a rename —
+see "macho9 never writes its input", above, for what that guarantees. So
+whether `FILE` is writable is not a question `edit` asks either; a read-only
+(`0444`) `FILE` in a writable directory is read just fine, and the run exits
+0.
 
 ### File format
 
@@ -342,8 +362,8 @@ macho9 edit "$REAL" "$T" claude.edits
 
 ## Notes
 
-- Not yet a drop-in replacement for `insert_dylib` on 32-bit or fat inputs, or on
-  a binary whose export trie needs a wider ULEB. See `docs/prior-art.md`.
+- Not yet a drop-in replacement for `insert_dylib` on 32-bit input, refused
+  deliberately. See `docs/prior-art.md`.
 - This repo is its **own upstream**: the tools are not a port of somebody else's
   project. `UPSTREAM_VERSION` is still the family's file and the version is still
   `<version>-mavericks.N`; what differs is that no Renovate customManager watches

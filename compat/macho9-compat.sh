@@ -253,8 +253,8 @@ mw_run() {
 # conversion rather than a gap in it: a verb that writes an output opens FILE
 # O_RDONLY, so it has no opinion about whether FILE is writable -- it never
 # writes FILE. (`dylib`/`rpath`/`lc`/`segment` used to give this refusal for
-# free, from mr_apply_file's own O_RDWR.) Meanwhile `macho9 edit` reads the
-# image O_RDONLY and only discovers it cannot write when it writes, and
+# free, from mr_apply_file's own O_RDWR; now, like `macho9 edit`, they read
+# FILE O_RDONLY and only discover an unwritable OUT when they write it.) And
 # rename_segment gates on `macho9 info`, which is O_RDONLY too. So preserving
 # the historical refusal is permanently this layer's job, which is why
 # mw_prepare calls this before anything runs.

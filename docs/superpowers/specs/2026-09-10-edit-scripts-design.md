@@ -3,6 +3,15 @@
 **Status:** design, agreed 2026-09-10. Supersedes the `port` verb sketched in
 `docs/PROPOSAL.md`, including its name.
 
+**Amended by `2026-09-11-never-write-the-input-design.md`:** every passage
+below that shows `--output` or `--dry-run` is superseded. `OUT` is a required
+positional, right after `FILE`, on every rewriting verb including `edit`;
+there is no flag form, and there is no `edit FILE SCRIPT` shape that rewrites
+`FILE` in place. `--dry-run` is gone outright — a real run to a scratch `OUT`
+is the same run, write included, so it already answers what `--dry-run` was
+for. See "binutils alignment", below, for the one place this also changes
+which column a `Matched` binutils comparison belongs in.
+
 **Depends on:** Task 0 of
 `docs/superpowers/plans/2026-09-10-report-what-macho9-did.md`. Verification is
 currently blind on every dylib and bundle, so a mandatory verify gate would be a
@@ -549,8 +558,8 @@ fatal-warnings      an operation that matched nothing is an error, not a report
 
 `allow-grow` keeps its name to match `ld`'s permission convention
 (`--allow-multiple-definition`, `--allow-shlib-undefined`). It stays distinct
-from the standalone `grow FILE N` verb, which is an instruction rather than a
-permission.
+from the standalone `grow FILE OUT N` verb, which is an instruction rather
+than a permission.
 
 `fatal-warnings` matches `ld` and `gas`, and GCC's `-Werror`. An operation that
 matched nothing genuinely is a warning; this promotes it.
@@ -699,10 +708,9 @@ made except `declassify` and `port` — the two this design replaces.
 
 ## binutils alignment
 
-**Matched:** `objcopy`'s `infile [outfile]` shape, where omitting the output
-modifies in place via temp-and-rename. `--redefine-syms=FILE`'s edit script-file
-conventions. `rename`, from `--rename-section`. `--fatal-warnings`, from `ld`
-and `gas`. `--allow-*`, from `ld`.
+**Matched:** `--redefine-syms=FILE`'s edit script-file conventions. `rename`,
+from `--rename-section`. `--fatal-warnings`, from `ld` and `gas`. `--allow-*`,
+from `ld`.
 
 **Deliberately not matched:** `--remove-section` and `--strip-all` — Apple says
 *delete* and *load command*, and Mach-O people reading `otool -l` are the
@@ -714,10 +722,16 @@ vocabulary to match is `lipo`'s (`-arch`, `-thin`, `-extract`, `-remove`), not
 binutils' `--target`/`-I`/`-O`, which is a different concept. Do not spend the
 word elsewhere.
 
-**Knowingly divergent:** `objcopy` frames address manipulation mechanically
-(`--adjust-vma`, `--change-addresses`). `allow-grow` and the `grow` verb frame
-it by intent — enlarge the header pad — with lowering the image base as the
-means. The pad is what a caller cares about here.
+**Knowingly divergent:** `objcopy`'s `infile [outfile]` shape, where omitting
+the output modifies in place via temp-and-rename. `macho9`'s output is always
+named, on every rewriting verb including `edit`, and it is never the input —
+so there is no omitted-output case, and the temp-and-rename `objcopy` does
+when the output is left out is instead what every verb does unconditionally,
+naming a separate `OUT` rather than defaulting to `FILE`. `objcopy` also
+frames address manipulation mechanically (`--adjust-vma`,
+`--change-addresses`); `allow-grow` and the `grow` verb frame it by intent —
+enlarge the header pad — with lowering the image base as the means. The pad
+is what a caller cares about here.
 
 ## Exit codes — corrected while we still can
 
