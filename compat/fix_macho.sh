@@ -14,13 +14,13 @@
 # GRAMMAR. compat/translate.sh holds the whole mapping and the reasoning; in
 # brief, one verb per family --
 #
-#     -strip_build_version  macho9 lc      FILE -delete build-version
-#     -change O N           macho9 dylib   FILE -replace O N
-#     -rename_seg O N       macho9 segment FILE O N        (one line per pair)
+#     -strip_build_version  macho9 lc      FILE OUT -delete build-version
+#     -change O N           macho9 dylib   FILE OUT -replace O N
+#     -rename_seg O N       macho9 segment FILE OUT O N    (one line per pair)
 #
 # -- when the invocation is ONE command's worth. Anything more than that --
 # which includes two -rename_seg pairs, since `macho9 segment` takes one --
-# becomes a single `macho9 edit FILE -` with the operations as statements on
+# becomes a single `macho9 edit FILE - --output OUT` with the operations as statements on
 # stdin, ordered load-command, dylib, segment, because deleting a load command
 # hands header pad back and the dylib rewrite consumes it. A rename changes no
 # sizes, so it can only go last. `argc < 3`, a trailing `-change`/`-rename_seg`
@@ -75,17 +75,18 @@
 #
 #   3. THE WRITE-BACK IS ATOMIC. fix_macho lseek'd to 0 and wrote the whole
 #      file back over itself, so a crash, a full disk or a kill mid-write left
-#      a corrupt binary. macho9 writes through wa_write_atomic
-#      (src/atomic_write.h): mkstemp + rename, following a symlink to its
-#      target, preserving xattrs, and writing in place when st_nlink > 1.
+#      a corrupt binary. macho9 never writes the file at all now: it writes a
+#      temp beside it (wa_write_new, src/atomic_write.h -- mkstemp + rename,
+#      carrying FILE's mode, owner and xattrs) and this wrapper installs that
+#      temp with one mv, in the same directory. So the caller's file is either
+#      wholly old or wholly new, and a failure anywhere leaves it wholly old.
 #      WHY ADOPTING IT IS RIGHT: these tools exist to make binaries loadable;
 #      a half-written one is the failure they are supposed to prevent.
 #      NO CAVEAT ANY MORE. An invocation worth more than one command is one
-#      `macho9 edit FILE -`, and me_run (src/edit.c) reads the image once,
-#      applies every statement to it in memory, verifies, and writes once
-#      through wa_write_atomic -- so a refusal at any statement leaves FILE
-#      exactly as it was, and there is no second write to be caught between.
-#      A one-command invocation reaches wa_write_atomic directly, as before.
+#      `macho9 edit FILE - --output OUT`, and me_run (src/edit.c) reads the
+#      image once, applies every statement to it in memory, verifies, and
+#      writes once -- so a refusal at any statement leaves the temp unwritten
+#      and FILE exactly as it was, with no second write to be caught between.
 #
 #   4. A FAT SLICE WHOSE EDIT FAILS now REFUSES THE WHOLE FILE.
 #      fix_macho's fat loop treated EVERY per-slice failure the same way: its
@@ -198,19 +199,38 @@
 # way: it is 1, same as everything else this mapping already collapses to
 # 1.)
 #
-# ---- the writability check -----------------------------------------------
+# ---- the in-place edit ---------------------------------------------------
 #
-# fix_macho opened the file O_RDWR before it looked at it, so an absent or
-# unwritable file failed immediately, with no analysis and no write.
-# mr_apply_file opens O_RDWR up front too and perror()s "open" identically --
-# so an invocation that emits one of its verbs needs nothing here. One that
-# emits `macho9 edit` does: me_run reads the image O_RDONLY and finds out it
-# cannot write only when it writes, at the END of the run, with a different
-# message. The check below keeps both shapes failing where fix_macho did, and
-# for the absent case it is the only thing that does. `test -w` is not
-# open(O_RDWR) -- it consults the real uid and does not see ACLs -- so it can
-# disagree at the edges; it agrees on the two cases that actually reach a
-# caller (absent, and mode-denied), and both sides exit 1 either way.
+# fix_macho rewrote the file it was given; `macho9 dylib`/`lc`/`segment` do
+# not. So this wrapper takes the shared install path -- mw_prepare names a
+# temp beside the file FILE really is, mw_retranslate re-emits the command
+# with that temp as its output, mw_run_to_tmp runs it and drops the "Wrote
+# <temp>" line no C tool ever printed, and mw_finish mv's the temp over the
+# target or discards it when the bytes did not change. macho9-compat.sh's "the
+# install path" section has the reasoning for each step. `macho9 edit`, which
+# every invocation worth more than one command becomes, has not converted yet
+# and takes the same temp through its `--output` flag, so both shapes install
+# identically.
+#
+# THE WRITABILITY CHECK comes with it, inside mw_prepare. fix_macho opened the
+# file O_RDWR before it looked at it, so an absent or unwritable file failed
+# immediately, with no analysis and no write. No macho9 command reproduces that
+# any more -- a verb that writes an output opens FILE O_RDONLY, and `macho9
+# edit` finds out it cannot write only when it writes, at the END of the run,
+# with a different message -- so mw_require_writable is the only thing that
+# does. `test -w` is not open(O_RDWR) -- it consults the real uid and does not
+# see ACLs -- so it can disagree at the edges; it agrees on the two cases that
+# actually reach a caller (absent, and mode-denied), and both sides exit 1
+# either way.
+#
+# A HARD-LINKED FILE IS NOW REFUSED (exit 1), which is the one behaviour here
+# that no version of fix_macho had: it wrote through its own descriptor, so
+# every link saw the change, while an install by mv would leave the others on
+# the old content. Every wrapper on this install path makes the same trade;
+# mw_prepare has the message and the remedy. And creating a temp beside FILE
+# needs the DIRECTORY writable, where the C tool needed only FILE itself to be,
+# so a writable binary in a read-only directory now fails (`mkstemp:
+# Permission denied`, from macho9's own write of the temp) with FILE untouched.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
@@ -231,11 +251,19 @@ mw_translate fix_macho "$@" || exit $?
 
 mw_file=$1
 
-mw_require_writable "$mw_file" || exit $?
+mw_prepare "$mw_file" || exit 1
+mw_retranslate fix_macho "$@" || exit 1
 
-mw_run
+mw_run_to_tmp
 mw_frc=$?
 # Every nonzero becomes 1: see "exit codes" above. Named mw_frc rather than
 # reusing mw_rc, which macho9-compat.sh owns.
 [ "$mw_frc" -eq 0 ] || exit 1
+mw_finish || exit 1
+# The line this wrapper has always ended a changed run with, printed by
+# mr_apply_file while the verbs still wrote FILE and printed here now -- see
+# "the in-place edit" above. Not fix_macho's own "File updated: F", which this
+# wrapper has never reproduced (see "STDOUT IS NOT REPRODUCED").
+[ "$MW_CHANGED" -eq 1 ] \
+    && printf 'Updated %s (%s bytes)\n' "$mw_file" "$(wc -c < "$MW_TARGET" | tr -d ' ')"
 exit 0

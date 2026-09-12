@@ -1026,7 +1026,7 @@ after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{p
     && ok "fat collision: input left completely untouched on refusal" \
     || bad "fat collision" "input was modified despite the refusal"
 
-# --- 14. write_atomic must replace the FILE, never the PATH -------------------
+# --- 14. the install must replace the FILE, never the PATH --------------------
 # Regression: the mkstemp+rename atomic write (landed alongside case 12/13's
 # fat fixes) rename()d over the PATH the caller gave it. When that path is a
 # SYMLINK -- exactly the shape of a macOS framework dylib,
@@ -1035,8 +1035,13 @@ after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{p
 # follows the same symlink) unpatched, while the tool still printed
 # "Updated" and exited 0. The same rename-over-path also breaks a file with
 # multiple hard links: the sibling name keeps the stale content because
-# rename() gives its own name a fresh inode. Both are covered here, plus the
-# ordinary (single-link, non-symlink) case that must keep its atomicity win.
+# rename() gives its own name a fresh inode.
+#
+# THE QUESTION IS THE SAME, THE ANSWERING CODE HAS MOVED. macho9 does not write
+# FILE at all now; compat/change_dylib.sh does, by installing a temp with mv
+# (mw_resolve/mw_prepare/mw_finish, compat/macho9-compat.sh). So the symlink
+# case is that install's to get right, and it still does; the hard-link case is
+# one mv cannot get right, and 14b below is now the REFUSAL that replaced it.
 # Structural reader, not otool text: otool -l's "path X (offset N)" wording
 # and its -A2 line spacing both drift across Xcode versions -- this suite
 # went red on the modern cross runner seven times during this project, every
@@ -1095,56 +1100,71 @@ xattr -w com.macho9.test present "$T/wa_real" 2>/dev/null || true
 ln -s wa_real "$T/wa_link"
 before_ino=$(stat -f %i "$T/wa_real")
 "$CHANGE_DYLIB" "$T/wa_link" -add-rpath /opt/macho9_wa_pad >/dev/null \
-    || bad "write_atomic symlink" "change_dylib failed"
+    || bad "install symlink" "change_dylib failed"
 if [ -L "$T/wa_link" ] && [ "$(readlink "$T/wa_link")" = "wa_real" ]; then
-    ok "write_atomic: symlink is still a symlink, to the same name"
+    ok "install: symlink is still a symlink, to the same name"
 else
-    bad "write_atomic symlink" "wa_link is no longer a symlink to wa_real"
+    bad "install symlink" "wa_link is no longer a symlink to wa_real"
 fi
 after_ino=$(stat -f %i "$T/wa_real")
 if rpath_present "$T/wa_real" "/opt/macho9_wa_pad"; then
-    ok "write_atomic: the REAL target got the change (via the symlink)"
+    ok "install: the REAL target got the change (via the symlink)"
 else
-    bad "write_atomic symlink" "wa_real does not have the new rpath"
+    bad "install symlink" "wa_real does not have the new rpath"
 fi
 [ "$before_ino" != "$after_ino" ] \
-    && ok "write_atomic: symlink's real target rewritten via mkstemp+rename (fresh inode = atomicity kept)" \
-    || bad "write_atomic symlink" "wa_real's inode did not change ($before_ino) -- fell back to in-place write instead of the atomic path"
+    && ok "install: symlink's real target rewritten via mkstemp+rename (fresh inode = atomicity kept)" \
+    || bad "install symlink" "wa_real's inode did not change ($before_ino) -- fell back to in-place write instead of the atomic path"
 xv=$(xattr -p com.macho9.test "$T/wa_real" 2>/dev/null || echo MISSING)
 case "$xv" in
-    present) ok "write_atomic: xattr on the real target survived" ;;
-    MISSING) bad "write_atomic symlink" "xattr dropped from the real target" ;;
-    *) bad "write_atomic symlink" "xattr corrupted: got '$xv'" ;;
+    present) ok "install: xattr on the real target survived" ;;
+    MISSING) bad "install symlink" "xattr dropped from the real target" ;;
+    *) bad "install symlink" "xattr corrupted: got '$xv'" ;;
 esac
 
-# 14b. hard link: two names, one inode. A naive mkstemp+rename gives one
-# name a fresh inode and leaves the other showing stale content -- so this
-# must fall back to an in-place write, and BOTH names must show the change.
+# 14b. hard link: two names, one inode. THIS IS NOW A REFUSAL, and the
+# assertion is inverted from what it used to be. change_dylib's C tool wrote
+# through its own descriptor, so every name for the inode saw the change, and
+# wa_write_atomic reproduced that by falling back to an in-place write when
+# st_nlink > 1 -- the one path in the old writer that could leave a file half
+# written. macho9 does not write FILE at all now: the wrapper writes a temp and
+# mv's it, which would give this name a fresh inode and leave the sibling on
+# the old content. So mw_prepare (compat/macho9-compat.sh) refuses a
+# hard-linked FILE up front, with the C tool's flat failure code, rather than
+# silently splitting the group -- the one new behaviour a caller of any of these
+# wrappers can see, and a trade every one of them makes the same way.
 build_main "$T/wa_hard1"
 ln "$T/wa_hard1" "$T/wa_hard2"
-"$CHANGE_DYLIB" "$T/wa_hard1" -add-rpath /opt/macho9_wa_hardpad >/dev/null \
-    || bad "write_atomic hardlink" "change_dylib failed"
-if rpath_present "$T/wa_hard1" "/opt/macho9_wa_hardpad" && rpath_present "$T/wa_hard2" "/opt/macho9_wa_hardpad"; then
-    ok "write_atomic: hard-linked sibling shows the change too (still one inode)"
+wa_hard_sha=$(shasum -a 256 < "$T/wa_hard1")
+wa_hard_rc=0
+"$CHANGE_DYLIB" "$T/wa_hard1" -add-rpath /opt/macho9_wa_hardpad >/dev/null 2>"$T/wa_hard.err" \
+    || wa_hard_rc=$?
+[ "$wa_hard_rc" -eq 1 ] && grep -q 'hard link' "$T/wa_hard.err" \
+    && ok "hard link: a hard-linked FILE is refused (1), saying why" \
+    || bad "hard link" "exit $wa_hard_rc: $(cat "$T/wa_hard.err")"
+if [ "$(shasum -a 256 < "$T/wa_hard1")" = "$wa_hard_sha" ] \
+        && ! rpath_present "$T/wa_hard1" "/opt/macho9_wa_hardpad"; then
+    ok "hard link: ... and neither name was touched"
 else
-    bad "write_atomic hardlink" "sibling link did not see the update -- hard-link group was split"
+    bad "hard link" "the refused run modified the file anyway"
 fi
 [ "$(stat -f %i "$T/wa_hard1")" = "$(stat -f %i "$T/wa_hard2")" ] \
-    && ok "write_atomic: hard-link count preserved (both names, one inode)" \
-    || bad "write_atomic hardlink" "wa_hard1 and wa_hard2 no longer share an inode"
+    && ok "hard link: the group is still one inode, unsplit" \
+    || bad "hard link" "wa_hard1 and wa_hard2 no longer share an inode"
 
 # 14c. ordinary case: no symlink, no extra hard link -- must still take the
-# atomic mkstemp+rename path (the whole reason write_atomic exists: a write
-# failing partway must never leave a half-written binary in place).
+# atomic mkstemp+rename path (the whole reason wa_write_new writes a temp and
+# the wrapper installs it with mv: a write failing partway must never leave a
+# half-written binary in place).
 build_main "$T/wa_plain"
 before_ino=$(stat -f %i "$T/wa_plain")
 "$CHANGE_DYLIB" "$T/wa_plain" -add-rpath /opt/macho9_wa_plain >/dev/null \
-    || bad "write_atomic ordinary" "change_dylib failed"
+    || bad "install ordinary" "change_dylib failed"
 after_ino=$(stat -f %i "$T/wa_plain")
 if rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && [ "$before_ino" != "$after_ino" ]; then
-    ok "write_atomic: ordinary case still goes through mkstemp+rename (new inode)"
+    ok "install: ordinary case still goes through mkstemp+rename (new inode)"
 else
-    bad "write_atomic ordinary" "expected the change applied via a fresh inode (rpath present=$(rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && echo y || echo n), inode $before_ino -> $after_ino)"
+    bad "install ordinary" "expected the change applied via a fresh inode (rpath present=$(rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && echo y || echo n), inode $before_ino -> $after_ino)"
 fi
 
 # --- 15. LC_LAZY_LOAD_DYLIB (legacy -lazy_library) must be an explicit ------
@@ -1596,22 +1616,24 @@ grep -qi "malformed LC_RPATH" "$T/bad_rpath.err" \
 cat > "$T/one_pass.c" <<'EOF'
 #include <string.h>
 #include "rewrite.h"
-/* one_pass FILE OLD-DYLIB NEW-DYLIB NEW-RPATH -- one mr_apply_file call
+/* one_pass FILE OUT OLD-DYLIB NEW-DYLIB NEW-RPATH -- one mr_apply_file call
  * carrying both a dylib change and an rpath append, exactly what
  * compat/change_dylib.c's main() used to build from
- * `-change OLD NEW -add-rpath NEW-RPATH -grow`. */
+ * `-change OLD NEW -add-rpath NEW-RPATH -grow`. It writes OUT, not FILE:
+ * mr_apply_file never writes the file it is given, so the caller installs
+ * OUT the same way the compat wrappers do. */
 int main(int argc, char **argv) {
-    if (argc != 5) return 2;
+    if (argc != 6) return 2;
     mr_change ch;
-    ch.old_path = argv[2]; ch.new_path = argv[3]; ch.reexport = 0;
+    ch.old_path = argv[3]; ch.new_path = argv[4]; ch.reexport = 0;
     const char *radd[1];
-    radd[0] = argv[4];
+    radd[0] = argv[5];
     mr_ops ops;
     memset(&ops, 0, sizeof ops);
     ops.dylib_changes = &ch;  ops.n_dylib_changes = 1;
     ops.rpath_appends = radd; ops.n_rpath_appends = 1;
     ops.allow_grow = 1;
-    return mr_apply_file(argv[1], &ops);
+    return mr_apply_file(argv[1], argv[2], &ops);
 }
 EOF
 "$CC" -O2 -Wall -I "$SRC_DIR" -o "$T/one_pass" "$T/one_pass.c" "$SRC_DIR"/*.c \
@@ -1651,8 +1673,9 @@ two_grows=$(grep -c "grew header pad" "$T/g_two.out")
 # Route B: ONE mr_apply_file call carrying both families -- growing once for
 # the summed delta, the pre-wrapper C tool's shape.
 rc=0
-"$T/one_pass" "$T/g_one" "@loader_path/liba.dylib" "$GROW_DYLIB" "$GROW_RPATH" \
+"$T/one_pass" "$T/g_one" "$T/g_one.new" "@loader_path/liba.dylib" "$GROW_DYLIB" "$GROW_RPATH" \
     >"$T/g_one.out" 2>"$T/g_one.err" || rc=$?
+[ "$rc" -ne 0 ] || mv -f "$T/g_one.new" "$T/g_one"
 [ "$rc" -eq 0 ] \
     && ok "mixed-family double grow: the one-call route succeeds" \
     || bad "mixed-family double grow" "the one-call route failed (exit $rc): $(cat "$T/g_one.err")"

@@ -9,7 +9,8 @@
 # back to what the C tool it replaced would have produced. A wrapper whose
 # verb has been converted to write an OUTPUT instead of rewriting its input
 # has two more steps -- run it into a temp beside the caller's file, then
-# install that temp over the file. add_version_min.sh is the first; see "the
+# install that temp over the file. All of them take those two steps now except
+# patch_macho.sh, whose grammar has always named its own output; see "the
 # install path" below.
 #
 # WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. Task 1 put the whole
@@ -169,7 +170,7 @@ mw_translate() {
     mw_trc=$?
     unset MT_PROG0
     [ "$mw_trc" -eq 0 ] || return "$mw_trc"
-    # COMMANDS, not lines. `macho9 edit FILE -` carries its statements in a
+    # COMMANDS, not lines. `macho9 edit FILE - --output OUT` carries its statements in a
     # here-document, so one command can be six lines; a command is a line that
     # STARTS with the program word (compat/translate.sh's output contract says
     # so, and mt_pre_word is where that word comes from) -- or with `mv -f`,
@@ -215,7 +216,7 @@ mw_teach() {
 #
 # THIS NO LONGER LOOPS, and that is the whole point of the change that removed
 # the loop: an old invocation that would have been a sequence of macho9
-# commands is now ONE `macho9 edit FILE -` with the operations as statements
+# commands is now ONE `macho9 edit FILE - --output OUT` with the operations as statements
 # on stdin, so a translation is at most one command and there is no sequence
 # left to step through. (compat/retag_swift_classes.sh is the one
 # translation that is still several commands -- one per binary -- and it has
@@ -240,19 +241,19 @@ mw_run() {
 # perror("open"): `open: No such file or directory` or `open: Permission
 # denied` -- no program name, on stderr, exit 1.
 #
-# A `dylib`/`rpath`/`lc`/`segment` command reproduces that for free, from
-# mr_apply_file's own O_RDWR. The paths that do NOT are the ones that open the
-# file some other way first: `macho9 edit` reads the image O_RDONLY and only
-# discovers it cannot write when it writes, and rename_segment gates on
-# `macho9 info`, which is O_RDONLY too. Either way the caller's first
-# diagnostic would be a different message at a different time. It lives here
-# rather than in a wrapper because two byte-for-byte copies of it in two
-# wrappers is the thing this file exists not to have.
+# NO macho9 COMMAND REPRODUCES IT ANY MORE, and that is the point of the
+# conversion rather than a gap in it: a verb that writes an output opens FILE
+# O_RDONLY, so it has no opinion about whether FILE is writable -- it never
+# writes FILE. (`dylib`/`rpath`/`lc`/`segment` used to give this refusal for
+# free, from mr_apply_file's own O_RDWR.) Meanwhile `macho9 edit` reads the
+# image O_RDONLY and only discovers it cannot write when it writes, and
+# rename_segment gates on `macho9 info`, which is O_RDONLY too. So preserving
+# the historical refusal is permanently this layer's job, which is why
+# mw_prepare calls this before anything runs.
 #
-# Returns 1 rather than exiting, so the caller keeps the decision; both call
-# sites read `mw_require_writable "$mw_file" || exit $?`. The two strings are
-# a contract, not a message: tests/wrapper_test.sh and tests/known-callers.sh
-# pin them.
+# Returns 1 rather than exiting, so the caller keeps the decision. The two
+# strings are a contract, not a message: tests/wrapper_test.sh and
+# tests/known-callers.sh pin them.
 mw_require_writable() {
     if [ ! -e "$1" ]; then
         printf 'open: No such file or directory\n' >&2
@@ -269,8 +270,11 @@ mw_require_writable() {
 #
 # macho9's rewriting verbs are being converted, one at a time, so that none of
 # them writes the file it is given: each becomes `macho9 VERB FILE OUT ...`.
-# `minos` was the first one converted and `retag-swift` is the second; the
-# rest follow. The historical tools DID
+# `minos` went first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
+# `segment` together. `declassify` already had the shape; `grow` and `edit`
+# still write the file they are given -- `edit` takes its output as a
+# `--output` flag, which is all this path needs from it. The historical tools
+# DID
 # edit FILE in place, and their callers still expect that, so a wrapper whose
 # verb has moved reproduces it in the only way that is safe: write a temp
 # beside the real target, then mv it over. The five functions below are that
@@ -360,16 +364,20 @@ mw_retranslate() {
 }
 
 # mw_run_to_tmp -- run the translation (which writes MW_TMPFILE) with its
-# stdout captured, then pass every line through except a final "Wrote ..."
-# naming the temp file, which no C tool ever printed. Returns macho9's status.
+# stdout captured, then pass every line through except the "Wrote <temp> (N
+# bytes)" one, which no C tool ever printed and which names a file no caller
+# has heard of. Returns macho9's status.
+#
+# Matched on the whole "Wrote <temp> (" prefix rather than on "Wrote " alone,
+# and anywhere in the output rather than only on the last line: `macho9
+# segment` follows its write with `macho9 segment: renamed=N`, so for a
+# fix_macho -rename_seg the temp-naming line is not the last one. A line naming
+# anything else still comes through -- that is somebody's contract, not this
+# function's to edit.
 mw_run_to_tmp() {
     mw_run >"$MW_T/out"
     mw_rc=$?
-    if [ "$(sed -n '$p' "$MW_T/out" | cut -c1-6)" = 'Wrote ' ]; then
-        sed '$d' "$MW_T/out"
-    else
-        cat "$MW_T/out"
-    fi
+    awk -v p="Wrote $MW_TMPFILE (" 'index($0, p) != 1' "$MW_T/out"
     return "$mw_rc"
 }
 

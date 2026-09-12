@@ -16,7 +16,7 @@ The six original entry points, kept for compatibility. All six are now
 | `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT` |
 | `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
 | `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
-| `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OLD NEW` |
+| `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OUT OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE OUT`, once per file, installed over each `FILE` |
 | `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE -` when more than one command's worth (two renames already are) |
 
@@ -95,9 +95,10 @@ for why it would be rare:
     `patch_macho` and `rename_segment`, which translate every nonzero
     macho9 exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
-    header has it) and is likewise unaffected by this. (`add_version_min` and
-    `retag_swift_classes` -- the two wrappers whose verb installs its result
-    over `FILE` itself -- both have refusals of their OWN on top of that,
+    header has it) and is likewise unaffected by this. (EVERY wrapper whose
+    verb now writes an output the wrapper installs over `FILE` -- all of them
+    but `patch_macho`, whose grammar has always named its own output --
+    has refusals of its OWN on top of that,
     exiting 1, made before macho9 runs for the argument in question: an
     absent or unwritable `FILE`, a `FILE` carrying other hard links, and a
     failed install. Those are the wrapper's, not a forwarded code -- and for
@@ -119,11 +120,12 @@ for why it would be rare:
     `retag_swift_classes` it surfaces as `had_error` (exit 1) rather than
     `add_version_min`'s raw, forwarded 2, since this wrapper never forwards
     one argument's exit code as the whole run's.
-    `change_dylib`'s
-    own unwritable-`FILE` guard exits 2 instead, deliberately: it reproduces
-    what `mr_apply_file`'s own `open` failure gives on the path that still
-    reaches it, rather than inventing a second answer.
-    `compat/change_dylib.sh`'s header has the reasoning.) A CONSIDERED
+    `change_dylib` briefly had an unwritable-`FILE` guard of its own that
+    exited 2, chosen to match what `mr_apply_file`'s `open(O_RDWR)` then gave
+    on the single-family path; that path opens `FILE` read-only now, so there
+    is no such code to match and the guard is gone -- `mw_prepare` answers
+    for `change_dylib` as it does for every other wrapper here, with the C
+    tool's own flat 1.) A CONSIDERED
     refusal
     (the input examined and declined) still exits 1, matching the C tool by
     coincidence, not by construction; but a genuine operational failure

@@ -2,7 +2,7 @@
 # tests/translate_test.sh -- one test per translation, asserting the EXACT
 # text compat/translate.sh emits: a verb command line, or -- when one old
 # invocation is worth more than one macho9 command -- the whole
-# `macho9 edit FILE -` here-document, terminator included.
+# `macho9 edit FILE - --output OUT` here-document, terminator included.
 #
 #   sh tests/translate_test.sh <bindir>
 #
@@ -85,108 +85,136 @@ refuses() {
 # All ten flags its parser accepts, each alone. `-grow` cannot appear alone
 # (see the usage-error section below), so it is asserted with the smallest
 # operation that lets it through.
-ok cd-change    'macho9 dylib f -replace OLD NEW'        -- change_dylib f -change OLD NEW
-ok cd-delete    'macho9 dylib f -delete P'               -- change_dylib f -delete P
-ok cd-reexport  'macho9 dylib f -reexport P'             -- change_dylib f -reexport P
-ok cd-add       'macho9 dylib f -append P'               -- change_dylib f -add P
-ok cd-insert    'macho9 dylib f -insert P'               -- change_dylib f -insert P
-ok cd-rchange   'macho9 rpath f -replace OLD NEW'        -- change_dylib f -change-rpath OLD NEW
-ok cd-rdelete   'macho9 rpath f -delete P'               -- change_dylib f -delete-rpath P
-ok cd-radd      'macho9 rpath f -append P'               -- change_dylib f -add-rpath P
-ok cd-strip     'macho9 lc f -delete uuid'               -- change_dylib f -strip-lc uuid
-ok cd-grow      'macho9 dylib f --allow-grow -append P'  -- change_dylib f -grow -add P
+ok cd-change    'macho9 dylib f f.new -replace OLD NEW
+mv -f f.new f'        -- change_dylib f -change OLD NEW
+ok cd-delete    'macho9 dylib f f.new -delete P
+mv -f f.new f'               -- change_dylib f -delete P
+ok cd-reexport  'macho9 dylib f f.new -reexport P
+mv -f f.new f'             -- change_dylib f -reexport P
+ok cd-add       'macho9 dylib f f.new -append P
+mv -f f.new f'               -- change_dylib f -add P
+ok cd-insert    'macho9 dylib f f.new -insert P
+mv -f f.new f'               -- change_dylib f -insert P
+ok cd-rchange   'macho9 rpath f f.new -replace OLD NEW
+mv -f f.new f'        -- change_dylib f -change-rpath OLD NEW
+ok cd-rdelete   'macho9 rpath f f.new -delete P
+mv -f f.new f'               -- change_dylib f -delete-rpath P
+ok cd-radd      'macho9 rpath f f.new -append P
+mv -f f.new f'               -- change_dylib f -add-rpath P
+ok cd-strip     'macho9 lc f f.new -delete uuid
+mv -f f.new f'               -- change_dylib f -strip-lc uuid
+ok cd-grow      'macho9 dylib f f.new --allow-grow -append P
+mv -f f.new f'  -- change_dylib f -grow -add P
 
 # -add is NOT -insert and -insert is NOT -add: an appended LC_LOAD_DYLIB gets
 # the highest library ordinal, an inserted one gets ordinal 1. Asserting the
 # pair together is what would catch a translation that silently downgraded one
 # to the other.
-ok cd-add-vs-insert 'macho9 dylib f -append A -insert B' -- change_dylib f -add A -insert B
+ok cd-add-vs-insert 'macho9 dylib f f.new -append A -insert B
+mv -f f.new f' -- change_dylib f -add A -insert B
 
 # Every -strip-lc KIND, since the vocabulary is a table and a table can lose a
 # row. These are change_dylib's own five, from src/lc_kinds.c.
-ok cd-kind-uuid     'macho9 lc f -delete uuid'           -- change_dylib f -strip-lc uuid
-ok cd-kind-codesig  'macho9 lc f -delete codesig'        -- change_dylib f -strip-lc codesig
-ok cd-kind-srcver   'macho9 lc f -delete source-version' -- change_dylib f -strip-lc source-version
-ok cd-kind-buildver 'macho9 lc f -delete build-version'  -- change_dylib f -strip-lc build-version
-ok cd-kind-drs      'macho9 lc f -delete code-sign-drs'  -- change_dylib f -strip-lc code-sign-drs
+ok cd-kind-uuid     'macho9 lc f f.new -delete uuid
+mv -f f.new f'           -- change_dylib f -strip-lc uuid
+ok cd-kind-codesig  'macho9 lc f f.new -delete codesig
+mv -f f.new f'        -- change_dylib f -strip-lc codesig
+ok cd-kind-srcver   'macho9 lc f f.new -delete source-version
+mv -f f.new f' -- change_dylib f -strip-lc source-version
+ok cd-kind-buildver 'macho9 lc f f.new -delete build-version
+mv -f f.new f'  -- change_dylib f -strip-lc build-version
+ok cd-kind-drs      'macho9 lc f f.new -delete code-sign-drs
+mv -f f.new f'  -- change_dylib f -strip-lc code-sign-drs
 
 # Repeats accumulate into ONE command per family, in the order typed -- not one
 # command per operation. Order within an array is meaningful to the rewriter.
-ok cd-repeat 'macho9 dylib f -replace A B -replace C D' -- change_dylib f -change A B -change C D
-ok cd-strip-repeat 'macho9 lc f -delete uuid -delete codesig' -- change_dylib f -strip-lc uuid -strip-lc codesig
+ok cd-repeat 'macho9 dylib f f.new -replace A B -replace C D
+mv -f f.new f' -- change_dylib f -change A B -change C D
+ok cd-strip-repeat 'macho9 lc f f.new -delete uuid -delete codesig
+mv -f f.new f' -- change_dylib f -strip-lc uuid -strip-lc codesig
 
 # ---- change_dylib: mixing families becomes ONE edit script ---------------
 #
 # One family is one verb, whose flags macho9 batches. More than one family has
-# no single verb to be, so it is one `macho9 edit FILE -` with the operations
-# as statements on stdin -- one read, one pass per statement, one write, which
-# is the shape the C tool had and a sequence of verbs did not.
+# no single verb to be, so it is one `macho9 edit FILE - --output OUT` with the
+# operations as statements on stdin -- one read, one pass per statement, one
+# write, which is the shape the C tool had and a sequence of verbs did not.
+# `edit` is the one verb here that has not yet moved OUT to a positional, so
+# the output is named with its flag; the teaching form's trailing `mv` is the
+# same install step every other converted verb's form ends with.
 #
 # The order is load-command, then dylib, then rpath: deleting load commands
 # hands header pad back, and the other two consume it. Getting this backwards
 # is how a mixed invocation that used to fit stops fitting.
-ok cd-mixed-2 "macho9 edit f - <<'MACHO9_EDIT'
+ok cd-mixed-2 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 load-command delete uuid
 dylib replace A B
-MACHO9_EDIT" -- change_dylib f -strip-lc uuid -change A B
+MACHO9_EDIT
+mv -f f.new f" -- change_dylib f -strip-lc uuid -change A B
 
-ok cd-mixed-3 "macho9 edit f - <<'MACHO9_EDIT'
+ok cd-mixed-3 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 load-command delete uuid
 dylib append D
 rpath append R
-MACHO9_EDIT" -- change_dylib f -add-rpath R -add D -strip-lc uuid
+MACHO9_EDIT
+mv -f f.new f" -- change_dylib f -add-rpath R -add D -strip-lc uuid
 
 # The ORDER OF THE FLAGS does not change the order of the statements between
 # families -- only the order within each family's own block.
-ok cd-mixed-order "macho9 edit f - <<'MACHO9_EDIT'
+ok cd-mixed-order "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 load-command delete codesig
 load-command delete uuid
 dylib replace A B
-MACHO9_EDIT" -- change_dylib f -change A B -strip-lc codesig -strip-lc uuid
+MACHO9_EDIT
+mv -f f.new f" -- change_dylib f -change A B -strip-lc codesig -strip-lc uuid
 
 # -grow becomes the `allow-grow` DIRECTIVE, which must precede every
 # operation (src/script.c refuses one that does not). Like the --allow-grow it
 # replaces, it reaches dylib and rpath and not the load-command deletes:
 # src/edit.c sets ops.allow_grow only for the statements that can outgrow the
 # pad, and deleting load commands can only shrink the table.
-ok cd-grow-mixed "macho9 edit f - <<'MACHO9_EDIT'
+ok cd-grow-mixed "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 allow-grow
 load-command delete uuid
 dylib replace A B
 rpath append R
-MACHO9_EDIT" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
+MACHO9_EDIT
+mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
 
 # EVERY INSERT IS EMITTED IN REVERSE FLAG ORDER, because each one goes to the
 # FRONT of the table: as a batch `-insert A -insert B` leaves A at ordinal 1
 # and B at 2, and a sequence reproduces that only by inserting B first. This
 # is the assertion that catches the emission getting it the natural way round.
 # tests/wrapper_test.sh asserts the resulting ordinals on a real binary.
-ok cd-insert-reverse "macho9 edit f - <<'MACHO9_EDIT'
+ok cd-insert-reverse "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 load-command delete uuid
 dylib insert B
 dylib insert A
-MACHO9_EDIT" -- change_dylib f -insert A -insert B -strip-lc uuid
+MACHO9_EDIT
+mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
 # install.sh's production line -- the single most important translation in
 # this task, quoted from the plan's Task 0 evidence.
-ok cd-production "macho9 edit /tmp/c - <<'MACHO9_EDIT'
+ok cd-production "macho9 edit /tmp/c - --output /tmp/c.new <<'MACHO9_EDIT'
 load-command delete uuid
 load-command delete codesig
 dylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
 dylib replace /usr/lib/libicucore.A.dylib @loader_path/../I.dylib
 dylib replace /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib
-MACHO9_EDIT" \
+MACHO9_EDIT
+mv -f /tmp/c.new /tmp/c" \
     -- change_dylib /tmp/c -strip-lc uuid -strip-lc codesig \
         -change /usr/lib/libSystem.B.dylib @loader_path/../S.dylib \
         -change /usr/lib/libicucore.A.dylib @loader_path/../I.dylib \
         -change /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib
 
 # tests/characterize.sh's line, this repo's own CI equivalence gate.
-ok cd-characterize "macho9 edit out - <<'MACHO9_EDIT'
+ok cd-characterize "macho9 edit out - --output out.new <<'MACHO9_EDIT'
 load-command delete uuid
 load-command delete codesig
 dylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
-MACHO9_EDIT" \
+MACHO9_EDIT
+mv -f out.new out" \
     -- change_dylib out -strip-lc uuid -strip-lc codesig \
         -change /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
 
@@ -197,27 +225,33 @@ MACHO9_EDIT" \
 ok cd-grow-only '' -- change_dylib f -grow -grow
 
 # ---- fix_macho ----------------------------------------------------------
-ok fm-change   'macho9 dylib f -replace OLD NEW'         -- fix_macho f -change OLD NEW
-ok fm-stripbv  'macho9 lc f -delete build-version'       -- fix_macho f -strip_build_version
+ok fm-change   'macho9 dylib f f.new -replace OLD NEW
+mv -f f.new f'         -- fix_macho f -change OLD NEW
+ok fm-stripbv  'macho9 lc f f.new -delete build-version
+mv -f f.new f'       -- fix_macho f -strip_build_version
 # -rename_seg is accepted by fix_macho's parser and appears NOWHERE in its
 # usage text. Enumerating from the parser is what found it.
-ok fm-rename   'macho9 segment f __DATA __D2'            -- fix_macho f -rename_seg __DATA __D2
+ok fm-rename   'macho9 segment f f.new __DATA __D2
+mv -f f.new f'            -- fix_macho f -rename_seg __DATA __D2
 # `macho9 segment` takes ONE pair, so two renames are two commands on their
 # own -- no second family needed -- and become one edit script by the same
 # rule as everything else. Each rename is still its own pass, in argv order.
-ok fm-rename-2 "macho9 edit f - <<'MACHO9_EDIT'
+ok fm-rename-2 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 segment rename __A __B
 segment rename __C __D
-MACHO9_EDIT" -- fix_macho f -rename_seg __A __B -rename_seg __C __D
+MACHO9_EDIT
+mv -f f.new f" -- fix_macho f -rename_seg __A __B -rename_seg __C __D
 # All three families, in load-command / dylib / segment order. No allow-grow
 # anywhere: fix_macho has no -grow and never enlarges a header.
-ok fm-all "macho9 edit f - <<'MACHO9_EDIT'
+ok fm-all "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 load-command delete build-version
 dylib replace A B
 segment rename __A __B
-MACHO9_EDIT" -- fix_macho f -change A B -strip_build_version -rename_seg __A __B
+MACHO9_EDIT
+mv -f f.new f" -- fix_macho f -change A B -strip_build_version -rename_seg __A __B
 # The flag is a boolean, so repeating it is still one -delete build-version.
-ok fm-stripbv-twice 'macho9 lc f -delete build-version' \
+ok fm-stripbv-twice 'macho9 lc f f.new -delete build-version
+mv -f f.new f' \
     -- fix_macho f -strip_build_version -strip_build_version
 
 # CHAINED -rename_seg TRANSLATES, and these three assertions USED TO BE
@@ -230,17 +264,19 @@ ok fm-stripbv-twice 'macho9 lc f -delete build-version' \
 # was asked" -- and the C tool is gone, so there is no longer a second answer
 # to preserve. These now pin the translation, in the same place they used to
 # pin the refusal; compat/translate.sh's -rename_seg arm records the reversal.
-ok fm-chain "macho9 edit f - <<'MACHO9_EDIT'
+ok fm-chain "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 segment rename __DATA __X
 segment rename __X __Y
-MACHO9_EDIT" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
+MACHO9_EDIT
+mv -f f.new f" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
 # A chain of three emits three passes, in argv order -- every link, not just
 # the first (which is where the refusal used to trip).
-ok fm-chain-3 "macho9 edit f - <<'MACHO9_EDIT'
+ok fm-chain-3 "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 segment rename __DATA __P
 segment rename __P __Q
 segment rename __Q __R
-MACHO9_EDIT" \
+MACHO9_EDIT
+mv -f f.new f" \
     -- fix_macho f -rename_seg __DATA __P -rename_seg __P __Q -rename_seg __Q __R
 # The empty string is a legal NEW -- a segname may be all NULs -- and it stays
 # an argument rather than vanishing: mt_quote emits it as '' so the emitted
@@ -249,10 +285,11 @@ MACHO9_EDIT" \
 # silently dropped), and it is still worth pinning now that the check is gone.
 # mt_quote's '' is also exactly what src/script.c's ms_split reads back as an
 # empty field, so the statement still has four words.
-ok fm-chain-empty "macho9 edit f - <<'MACHO9_EDIT'
+ok fm-chain-empty "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 segment rename __DATA ''
 segment rename '' __Y
-MACHO9_EDIT" \
+MACHO9_EDIT
+mv -f f.new f" \
     -- fix_macho f -rename_seg __DATA '' -rename_seg '' __Y
 # The three shapes that were never affected by that refusal, and are not
 # affected by its removal either. Each was measured against the real fix_macho
@@ -262,18 +299,21 @@ MACHO9_EDIT" \
 # and not -rename_seg: a rename statement and a `macho9 segment` pass are the
 # same single operation, so sequencing them is the adopted behaviour rather
 # than a shape with no equivalent.
-ok fm-same-old "macho9 edit f - <<'MACHO9_EDIT'
+ok fm-same-old "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 segment rename __DATA __A
 segment rename __DATA __B
-MACHO9_EDIT" -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
-ok fm-new-eq-earlier-old "macho9 edit f - <<'MACHO9_EDIT'
+MACHO9_EDIT
+mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
+ok fm-new-eq-earlier-old "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 segment rename __DATA __B
 segment rename __TEXT __DATA
-MACHO9_EDIT" -- fix_macho f -rename_seg __DATA __B -rename_seg __TEXT __DATA
-ok fm-independent "macho9 edit f - <<'MACHO9_EDIT'
+MACHO9_EDIT
+mv -f f.new f" -- fix_macho f -rename_seg __DATA __B -rename_seg __TEXT __DATA
+ok fm-independent "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 segment rename __DATA __A
 segment rename __TEXT __B
-MACHO9_EDIT" -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
+MACHO9_EDIT
+mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
 
 # ---- the four fixed-arity tools -----------------------------------------
 # macho9 never writes its input, so the teaching form names an output of its
@@ -293,8 +333,10 @@ else
 fi
 ok pm      'macho9 declassify in out'        -- patch_macho in out
 ok pm-same 'macho9 declassify f f'           -- patch_macho f f
-ok rs      'macho9 segment f __DATA __DATA2' -- rename_segment f __DATA __DATA2
-ok rs-16   'macho9 segment f __DATA 1234567890123456' -- rename_segment f __DATA 1234567890123456
+ok rs      'macho9 segment f f.new __DATA __DATA2
+mv -f f.new f' -- rename_segment f __DATA __DATA2
+ok rs-16   'macho9 segment f f.new __DATA 1234567890123456
+mv -f f.new f' -- rename_segment f __DATA 1234567890123456
 # retag_swift_classes is variadic over FILES; macho9 retag-swift takes one, so
 # the translation is a loop, one line per file, in argv order. Each file, like
 # add_version_min's, gets its own output and install step.
@@ -319,16 +361,22 @@ fi
 #
 # Each emitted line has to be eval-safe, because that is how a wrapper runs it.
 # Quote only what needs quoting, so the common case stays readable.
-ok q-space "macho9 segment 'a b' __DATA __D2"      -- rename_segment 'a b' __DATA __D2
+ok q-space "macho9 segment 'a b' 'a b.new' __DATA __D2
+mv -f 'a b.new' 'a b'"      -- rename_segment 'a b' __DATA __D2
 ok q-quote "macho9 declassify 'it'\\''s' out"      -- patch_macho "it's" out
-ok q-empty "macho9 segment f __DATA ''"            -- rename_segment f __DATA ''
-# ... and an eval of that line really does reconstruct the argument.
-line=$( /bin/sh "$TR" rename_segment 'a b' __DATA "__d'x" )
+ok q-empty "macho9 segment f f.new __DATA ''
+mv -f f.new f"            -- rename_segment f __DATA ''
+# ... and an eval of that line really does reconstruct the argument. The FIRST
+# line only: the translation now ends with an `mv` install line, and it is the
+# verb command's own quoting this is about. Positionals after the verb are
+# FILE, OUT, OLD, NEW -- so NEW is $5, not $4.
+line=$( /bin/sh "$TR" rename_segment 'a b' __DATA "__d'x" | sed -n 1p )
 set --; eval "set -- $(printf '%s' "$line" | sed 's/^macho9 //')"
-if [ "$1" = segment ] && [ "$2" = 'a b' ] && [ "$4" = "__d'x" ]; then
+if [ "$1" = segment ] && [ "$2" = 'a b' ] && [ "$5" = "__d'x" ]; then
     pass=$((pass + 1))
 else
-    printf 'FAIL q-eval: eval of %s produced [%s][%s][%s][%s]\n' "$line" "${1:-}" "${2:-}" "${3:-}" "${4:-}" >&2
+    printf 'FAIL q-eval: eval of %s produced [%s][%s][%s][%s][%s]\n' "$line" \
+        "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" >&2
     fail=$((fail + 1))
 fi
 
@@ -387,18 +435,21 @@ refuses fm-chain-change 1 '-change a b and -change b c chain: run them as separa
 # that keeps the refusal from spreading to invocations that do not need it:
 # the verb's own batch is the C tool's semantics, so there is nothing to
 # reproduce and nothing to refuse.
-ok cd-chain-one-family 'macho9 dylib f -replace a b -replace b c' \
+ok cd-chain-one-family 'macho9 dylib f f.new -replace a b -replace b c
+mv -f f.new f' \
     -- change_dylib f -change a b -change b c
-ok fm-chain-one-family 'macho9 dylib f -replace a b -replace b c' \
+ok fm-chain-one-family 'macho9 dylib f f.new -replace a b -replace b c
+mv -f f.new f' \
     -- fix_macho f -change a b -change b c
 # And a -change whose NEW is its OWN old is not a chain: no OTHER statement
 # rewrites what it produced, so a statement and a batch agree. Asserted ON the
 # edit-script path, since that is the only place the check runs at all.
-ok cd-self-replace "macho9 edit f - <<'MACHO9_EDIT'
+ok cd-self-replace "macho9 edit f - --output f.new <<'MACHO9_EDIT'
 load-command delete uuid
 dylib replace a a
 dylib replace c d
-MACHO9_EDIT" -- change_dylib f -change a a -change c d -strip-lc uuid
+MACHO9_EDIT
+mv -f f.new f" -- change_dylib f -change a a -change c d -strip-lc uuid
 
 refuses fm-usage        1 'Usage: fix_macho <file> [-change old new] [-strip_build_version]' -- fix_macho f
 refuses fm-unknown      1 'Unknown option: -nope'  -- fix_macho f -nope
@@ -428,7 +479,8 @@ refuses unknown-tool 2 \
 # -add). Both cap sites in cli/macho9.c carry a comment saying exactly that.
 mkcap() { i=0; out=''; while [ $i -lt $2 ]; do out="$out $1"; i=$((i + 1)); done; printf '%s' "$out"; }
 
-ok cap-strip-16-fits "macho9 lc f$(mkcap '-delete uuid' 16)" -- change_dylib f $(mkcap '-strip-lc uuid' 16)
+ok cap-strip-16-fits "macho9 lc f f.new$(mkcap '-delete uuid' 16)
+mv -f f.new f" -- change_dylib f $(mkcap '-strip-lc uuid' 16)
 refuses cap-strip-17 1 'too many -strip-lc (max 16)' -- change_dylib f $(mkcap '-strip-lc uuid' 17)
 refuses cap-add-33   1 'too many -add (max 32)'      -- change_dylib f $(mkcap '-add P' 33)
 refuses cap-ins-33   1 'too many -insert (max 32)'   -- change_dylib f $(mkcap '-insert P' 33)
@@ -447,7 +499,8 @@ refuses cap-shared 1 'too many -delete (max 32)' \
 # `segment` verb taking one pair and an edit script's `segment rename`
 # statement being one pair, so nothing downstream would ever count them --
 # which makes this file the only thing keeping that refusal alive.
-ok fm-cap-change-32-fits "macho9 dylib f$(mkcap '-replace A B' 32)" \
+ok fm-cap-change-32-fits "macho9 dylib f f.new$(mkcap '-replace A B' 32)
+mv -f f.new f" \
     -- fix_macho f $(mkcap '-change A B' 32)
 refuses fm-cap-change-33 1 'too many -change (max 32)' -- fix_macho f $(mkcap '-change A B' 33)
 refuses fm-cap-rename-17 1 'too many -rename_seg (max 16)' \
@@ -539,11 +592,12 @@ stmtcheck segment rename 2
 # somebody's machine.
 if [ -x /bin/ksh ]; then
     got=$( /bin/ksh "$TR" change_dylib f -strip-lc uuid -change A B -add-rpath R 2>&1 )
-    want="macho9 edit f - <<'MACHO9_EDIT'
+    want="macho9 edit f - --output f.new <<'MACHO9_EDIT'
 load-command delete uuid
 dylib replace A B
 rpath append R
-MACHO9_EDIT"
+MACHO9_EDIT
+mv -f f.new f"
     if [ "$got" = "$want" ]; then
         pass=$((pass + 1))
     else

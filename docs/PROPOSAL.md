@@ -138,26 +138,26 @@ Grammar settled 2026-09-08. The family is a **subcommand**, the operation is a
 ```
 macho9 declassify IN OUT      chained fixups -> LC_DYLD_INFO_ONLY   (patch_macho)
 
-macho9 dylib FILE [--allow-grow] OP...        (change_dylib + fix_macho)
+macho9 dylib FILE OUT [--allow-grow] OP...    (change_dylib + fix_macho)
     -replace  OLD NEW     rewrite a path in place; position and ordinal kept
     -delete   PATH        remove it; renumber survivors; refuse if symbols bind
     -append   PATH        add a dependency, initialized LAST
     -insert   PATH        add a dependency, initialized FIRST; renumbers
     -reexport PATH        promote LC_LOAD_DYLIB -> LC_REEXPORT_DYLIB
 
-macho9 rpath FILE [--allow-grow] OP...
+macho9 rpath FILE OUT [--allow-grow] OP...
     -replace  OLD NEW     rewrite a search path in place, keeping its position
     -delete   PATH        remove a search path
     -append   PATH        add one, searched LAST
     -insert   PATH        add one, searched FIRST
 
-macho9 lc FILE OP...
+macho9 lc FILE OUT OP...
     -delete   KIND        uuid | codesig | source-version | build-version
                           | code-sign-drs
 
 macho9 grow FILE N                                          (macho_grow)
 macho9 minos FILE OUT 10.9 [--allow-grow]                   (add_version_min)
-macho9 segment FILE OLD NEW                                 (rename_segment)
+macho9 segment FILE OUT OLD NEW                             (rename_segment)
 macho9 retag-swift FILE OUT                                 (retag_swift_classes)
 macho9 info FILE              dump load commands, ordinals, pads
 macho9 verify FILE            check the invariants

@@ -18,7 +18,7 @@
  *   3. re-run mg_plausible over the finished image, because this rewriter is
  *      the last stage of the wrapper's chain (patch_macho -> add_version_min
  *      -> change_dylib) and so is the last chance to catch a cumulative
- *      mistake before the file is replaced.
+ *      mistake before a single byte is written.
  *
  * Nothing here moves a byte of file data; only the load commands are
  * rewritten, and only within the header pad. The one exception is -grow,
@@ -340,7 +340,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
          * one function every segment rename in this repo goes through, so no
          * two front-ends can disagree about what a rename is; only getting
          * here through mr_apply_file is what additionally gives this one fat
-         * containers and an atomic write-back. */
+         * containers and an atomically written output. */
         /* BOTH pointers, matching rewrite.h's "Both NULL means no rename was
          * requested": a half-filled pair would otherwise reach
          * mseg_rename_lc's strncpy with a NULL source. No caller sets one
@@ -888,8 +888,11 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * rebases and no self-check of its own. It needs no "before" image, which
      * is what makes it usable across process boundaries.
      *
-     * This is the difference between "binary replaced, re-download that version"
-     * and "patch refused, nothing lost". MACHO_NO_VERIFY=1 opts out.
+     * This is the difference between "the wrapper installed that over your
+     * binary, re-download that version" and "patch refused, nothing lost" --
+     * this rewriter writes a NEW file now, but the compat wrappers still mv it
+     * over the caller's, so the gate protects the same thing it always did.
+     * MACHO_NO_VERIFY=1 opts out.
      *
      * NOT RUN FOR A RENAME-ONLY OPERATION SET, and that is a statement about
      * what mg_plausible checks rather than a concession. It asks whether the
@@ -1236,7 +1239,7 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
     return (po == MR_ERROR) ? MR_REFUSED : 0;
 }
 
-int mr_apply_file(const char *path, const mr_ops *ops) {
+int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
     /* Per-operation hit counts for mr_unmatched_verdict below. Owned and
      * zeroed here, once, so a fat file's slices (each processed by its own
      * mr_process_thin call, via mr_process_fat) all accumulate into the SAME
@@ -1249,13 +1252,15 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
     mr_hits hits;
     memset(&hits, 0, sizeof hits);
 
-    /* The O_RDWR fd is opened up front -- that ordering is load-bearing: it
-     * is what makes an unwritable file fail immediately instead of after all
-     * the analysis has run and printed. It is not HELD for the write-back
-     * (wa_write_atomic() below replaces `path` via a temp file + rename
-     * rather than writing through this fd directly), and it is not used for
-     * the THIN read either: only to learn the size/mode and to peek the
-     * magic, since a fat file's magic isn't MH_MAGIC_64 and mi_open (thin
+    /* O_RDONLY, and closed again at once: `path` is an INPUT now -- the result
+     * goes to `out`, through wa_write_new below -- so nothing is ever written
+     * through this descriptor, and an unwritable `path` is no longer this
+     * function's business to refuse. (It used to open O_RDWR precisely so that
+     * an unwritable file failed before any analysis. Reproducing that refusal
+     * for the historical tools, which really did edit their argument, is the
+     * compat wrappers' job now: mw_prepare, compat/macho9-compat.sh.) The fd
+     * is not used for the THIN read either: only to learn the size and to peek
+     * the magic, since a fat file's magic isn't MH_MAGIC_64 and mi_open (thin
      * only) would refuse it outright. This is the one place that has to tell
      * fat from thin apart before choosing how to read the rest. */
     /* Every return in this function is MR_REFUSED or MR_FAIL, matching the
@@ -1272,7 +1277,7 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
      * callocs in this file are not checked at all -- both of
      * mr_process_thin's new_lcs tables -- so their failure reaches neither
      * code. */
-    int fd = open(path, O_RDWR);
+    int fd = open(path, O_RDONLY);
     if (fd < 0) { perror("open"); return MR_FAIL; }
 
     struct stat st;
@@ -1282,7 +1287,6 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
         close(fd);
         return MR_REFUSED;
     }
-    mode_t orig_mode = st.st_mode;
 
     uint32_t magic;
     if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, &magic, sizeof magic) != (ssize_t)sizeof magic) {
@@ -1375,47 +1379,39 @@ int mr_apply_file(const char *path, const mr_ops *ops) {
         rc = mr_apply_image(&buf, &fsize, path, ops, &modified, &hits);
     }
 
-    /* Captured before the write attempt below, which can turn `rc` from 0 to
-     * MR_FAIL on its own failure -- the miss report's gate has to stay "did
-     * mr_process_thin/mr_process_fat succeed", not "is the file on disk now
-     * what we intended", or a failed write would silently swallow it. */
-    int processed_ok = (rc == 0);
+    /* THE MISS REPORT AND ITS VERDICT COME BEFORE THE WRITE, and the order is
+     * load-bearing. `rc` here is still exactly what mr_process_thin /
+     * mr_process_fat returned, which is the gate this report needs: a refused
+     * rewrite errored out for its own reason, possibly before mr_build_lcs ever
+     * ran a single comparison, so its hit arrays mean nothing and reporting
+     * them would risk calling an operation "matched nothing" that never got a
+     * chance to match anything at all.
+     *
+     * Running it AFTER the write -- where it used to be, so that it read as a
+     * summary of a result already on disk -- would now mean creating `out` and
+     * then returning MR_REFUSED for a --fatal-warnings miss: a refused run that
+     * left an output behind. That was harmless while the write was conditional
+     * on `modified`, because a run where every operation missed changed nothing
+     * and so wrote nothing; with `out` written unconditionally it is not. The
+     * report itself is on stderr (mr_report_unmatched), so moving it costs
+     * nothing in the stdout a successful run produces. */
+    if (rc == 0) rc = mr_unmatched_verdict(ops, &hits);
 
-    if (rc == 0 && modified) {
-        if (wa_write_atomic(path, orig_mode, buf, fsize) != 0) {
-            fprintf(stderr, "ERROR: %s left unmodified (atomic replace failed)\n", path);
+    /* Written even when nothing changed: a 0 exit means `out` IS the answer, so
+     * it has to exist either way -- an identical copy of `path` when no
+     * operation matched. wa_write_new creates it afresh from `path`'s mode,
+     * owner and xattrs and never touches `path`; WA_IS_INPUT can only happen if
+     * a path changed under us, since cli/macho9.c refuses `out` == `path` up
+     * front (see mr_apply_file's PRECONDITION in rewrite.h). `modified`, filled
+     * in by the drivers above, no longer decides anything here. */
+    if (rc == 0) {
+        int wr = wa_write_new(path, out, buf, fsize);
+        if (wr != 0) {
+            fprintf(stderr, "ERROR: %s not written\n", out);
             rc = MR_FAIL;
         } else {
-            printf("Updated %s (%zu bytes)\n", path, fsize);
+            printf("Wrote %s (%zu bytes)\n", out, fsize);
         }
-    }
-
-    /* After the write, not before: this is a report about which operations
-     * matched, and printing it ahead of "Updated ..." (or, worse, ahead of
-     * "left unmodified (atomic replace failed)") would read as a summary of
-     * a result that had not been written yet. Still gated on `processed_ok`,
-     * not the now-possibly-overwritten `rc`: a refused rewrite (the ORIGINAL
-     * rc != 0) errored out for its own reason, possibly before mr_build_lcs
-     * ever ran a single comparison, so the hit arrays in that case mean
-     * nothing -- reporting them would risk calling an operation "matched
-     * nothing" that never got a chance to match anything at all. */
-    if (processed_ok) {
-        int verdict = mr_unmatched_verdict(ops, &hits);
-        /* ops->fatal_unmatched turns that report into a refusal -- but only
-         * when the run otherwise succeeded (rc == 0): a failed atomic write
-         * (rc already MR_FAIL, above) is a genuine operational failure and
-         * stays one, rather than being overwritten by a DIFFERENT reason to be
-         * unhappy. THIS NEVER ROLLS BACK A WRITE IT MADE: if some other
-         * operation in the same run DID match, that write (or "Updated ..."
-         * line) already happened by the time this check runs, and this is a
-         * refusal about the miss just reported, not a rollback of it. But a
-         * refusing verdict does not by itself mean anything was written --
-         * if EVERY operation matched nothing, `modified` is still 0 (see
-         * mr_process_thin's own "nothing to change" early return, this
-         * file, above) and no write was attempted at all, so there is
-         * nothing here to roll back OR preserve; the file is untouched
-         * either way. */
-        if (rc == 0) rc = verdict;
     }
 
     free(buf);

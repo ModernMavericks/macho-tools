@@ -1,7 +1,7 @@
 #ifndef MACHO9_REWRITE_H
 #define MACHO9_REWRITE_H
 /*
- * mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs in place.
+ * mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs.
  *
  * This is change_dylib's whole operation set, lifted out of that tool's
  * main() so it is a library function rather than a program. cli/macho9.c's
@@ -152,16 +152,14 @@ typedef struct {
     mr_renumbering  *renumbering;
     /* If non-zero, mr_apply_file refuses (returns MR_REFUSED, below) when
      * mr_report_unmatched finds that any dylib_changes/rpath_changes/
-     * strip_cmds entry matched nothing -- the same report Task 1 already
-     * prints on stderr, promoted from an FYI to a refusal, the way `ld` and
-     * `gas`'s own --fatal-warnings promote a warning to an error. If
-     * anything else DID match, that write is NOT rolled back: this refuses
-     * after the rewrite has already happened. But when EVERY operation
-     * matched nothing, mr_process_thin's own "nothing to change" early
-     * return (src/rewrite.c, `if (modifications == 0)`) never sets
-     * *out_modified in the first place, so mr_apply_file never attempts the
-     * write at all -- there is nothing for this refusal to leave in place,
-     * and the file is untouched, same as any other all-miss run.
+     * strip_cmds entry matched nothing -- the same report that otherwise just
+     * goes to stderr, promoted from an FYI to a refusal, the way `ld` and
+     * `gas`'s own --fatal-warnings promote a warning to an error. NOTHING IS
+     * WRITTEN when it fires: mr_apply_file decides this verdict before its
+     * wa_write_new, so a refused run leaves `out` exactly as it was -- absent,
+     * if it was absent -- and `path`, which it never writes at all, likewise.
+     * That used to hold only by accident: the write came last, and an all-miss
+     * run had `modified == 0` and so wrote nothing.
      *
      * WHAT IT DOES NOT CATCH, and why the line is drawn there: this asks
      * "did anything in the image MATCH this operation", never "did this
@@ -180,9 +178,9 @@ typedef struct {
      * to an mr_ops when the edit script says `fatal-warnings`; `segment` and
      * `retag-swift` don't take a list of operations that could miss, so they
      * have nothing to parse a --fatal-warnings flag into. src/edit.c applies
-     * one statement at a time to an image it writes only at the end, so for
-     * it the write this refuses about has not happened yet -- a refusal there
-     * discards the whole run. Declared
+     * one statement at a time to an image it writes only at the end, so a
+     * refusal there discards the whole run -- the same "nothing written"
+     * answer mr_apply_file now gives. Declared
      * before allow_grow, not after, so allow_grow stays the LAST field --
      * see the layout tripwire next to mr_is_rename_only in rewrite.c, which
      * checks the last field's offset precisely so that inserting a new
@@ -246,7 +244,7 @@ typedef struct {
  * return; see its own comment below for the rest. Deliberately equal to
  * cli/macho9.c's own EX_REFUSED: that is the ONLY caller today, `dylib`/
  * `rpath`/`lc` all forward mr_apply_file's return value verbatim (`return
- * mr_apply_file(path, &ops);`), and this way that forwarding keeps meaning
+ * mr_apply_file(path, out, &ops);`), and this way that forwarding keeps meaning
  * what --capabilities documents without the caller having to translate a
  * rewrite-library code into its own exit-code vocabulary. cli/macho9.c
  * enforces this equality as a build failure, not just this comment -- see
@@ -286,17 +284,22 @@ typedef struct {
 #define MR_FAIL 2
 
 /*
- * Apply `ops` to the Mach-O at `path`, in place, and write it back atomically
- * if anything changed. Handles both a thin 64-bit Mach-O and a classic
+ * Apply `ops` to the Mach-O at `path` and write the result as the NEW file
+ * `out`. `path` is only ever read -- it is opened O_RDONLY and never written,
+ * whatever happens -- so the "in place" this function used to do is now the
+ * caller's business (compat/macho9-compat.sh's install path does it with a
+ * temp and an mv). Handles both a thin 64-bit Mach-O and a classic
  * (32-bit-offset fat_arch) fat container, whose slices are each rewritten and
  * then reassembled; a 64-bit fat container (fat_arch_64) is refused
  * explicitly, and a fat slice this rewriter does not understand is passed
  * through byte-for-byte.
  *
- * Returns 0 on success -- including the "nothing matched, file untouched"
- * case. On any failure the file on disk is left exactly as it was found:
- * every refusal happens before the single atomic replace at the end. Failure
- * is one of two codes, matching cli/macho9.c's own EX_REFUSED/EX_FAIL split
+ * Returns 0 on success -- including the "nothing matched" case, where `out` is
+ * written anyway, as a copy of `path`: a 0 exit means `out` IS the answer, so
+ * it has to exist either way. On any nonzero return `out` is as it was (or
+ * still absent) and nothing was written: every refusal, the unmatched verdict
+ * included, happens before the single wa_write_new at the end. Failure is one
+ * of two codes, matching cli/macho9.c's own EX_REFUSED/EX_FAIL split
  * (this function's caller forwards whichever one it gets verbatim, so the
  * split has to be made correctly here, not patched up one level out):
  *
@@ -320,18 +323,29 @@ typedef struct {
  *     that stays folded in rather than being split out to MR_FAIL,
  *     and for why it is not confined to --allow-grow runs.
  *   MR_FAIL (2) -- a genuine operational failure: open, fstat, read or write
- *     failing (this function's own, or mi_open's/mfat_parse's), or a
+ *     failing (this function's own, or mi_open's/mfat_parse's), wa_write_new
+ *     failing to produce `out`, or a
  *     checked allocation src/rewrite.c's own drivers make (see MR_FAIL's
  *     definition above) or mi_open/mfat_parse make for the file/table.
  *     Nothing about the INPUT was in question; the environment (a
  *     permission, a full disk, an exhausted heap) was.
  *
- * The one exception to "every refusal happens before the write": when
- * ops->fatal_unmatched is set and at least one operation matched nothing,
- * this returns MR_REFUSED (1) instead of 0 -- but only AFTER the rewrite it
- * examined has already been written to `path`, if anything changed. This
- * mode reports, on stderr, after the fact; it does not rewind the write it
- * is refusing about.
+ * THERE IS NO EXCEPTION to "every refusal happens before the write" any more,
+ * and that is deliberate: ops->fatal_unmatched's refusal used to arrive after
+ * the write, because the write was the last thing this function did and an
+ * all-miss run wrote nothing anyway (`modified` was 0). Now that `out` is
+ * written even when nothing changed, that ordering would create `out` and THEN
+ * return MR_REFUSED -- so the verdict is decided first and the write happens
+ * only when the run will return 0. The report itself is on stderr
+ * (mr_report_unmatched), so a successful run's stdout is unaffected by the
+ * move.
+ *
+ * PRECONDITION, unenforced here: `out` must not name `path`. cli/macho9.c
+ * refuses that up front, in each verb's own words, before any file is read
+ * (see m9_out_is_input there); this function does not check again, because
+ * wa_write_new does -- so an unchecked caller gets MR_FAIL and an unwritten
+ * input rather than a silently rewritten one, just later and in
+ * atomic_write.c's wording.
  *
  * PRECONDITION, unenforced here: `ops->n_dylib_changes` and
  * `ops->n_rpath_changes` must each be <= MR_MAX_OPS, and
@@ -345,7 +359,7 @@ typedef struct {
  * enforcement lives in the caller, not in this library, so a future or
  * different caller that skips it turns an over-long array into a stack
  * overflow here, not a diagnostic. */
-int mr_apply_file(const char *path, const mr_ops *ops);
+int mr_apply_file(const char *path, const char *out, const mr_ops *ops);
 
 /* Per-operation hit counts: how many load commands each entry of an mr_ops'
  * dylib_changes, rpath_changes and strip_cmds matched, index for index. They
@@ -374,7 +388,8 @@ typedef struct {
  * commands may already have been committed when a later check refused -- so
  * a caller that sees a refusal must discard the buffer, never write it.
  *
- * Prints exactly what mr_apply_file prints for a thin file, with `label` in
+ * Prints what mr_apply_file's own thin path prints apart from its closing
+ * "Wrote OUT" line (there is no file here to have written), with `label` in
  * place of the path: the header-pad and "updated"/"nothing to change"
  * progress lines on stdout, and each refusal's reason on stderr. It does NOT
  * report which operations matched nothing, and does not act on
@@ -402,8 +417,9 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
  * MR_REFUSED if at least one matched nothing and ops->fatal_unmatched is set,
  * otherwise 0. Only after a SUCCESSFUL rewrite: a refused one may have
  * stopped before a single comparison ran, and its hit counts mean nothing.
- * mr_apply_file calls this after its write; src/edit.c after each statement,
- * before anything is written. */
+ * Both callers ask BEFORE writing anything: mr_apply_file just before its
+ * wa_write_new, so a refusing verdict leaves `out` unwritten; src/edit.c after
+ * each statement, against an image it writes only at the end. */
 int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits);
 
 #endif /* MACHO9_REWRITE_H */

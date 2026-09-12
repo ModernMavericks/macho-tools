@@ -196,18 +196,25 @@ grep -q 'macho9 minos' "$T/out" \
 # printed for the C tool, which is the same thing `macho9 dylib` prints for
 # the same file and ops. Asserted by running both and comparing, rather than
 # by pinning a transcript that a different fixture would invalidate.
+# ONE LINE OF MACHO9'S IS RESHAPED, and this comparison accounts for it
+# exactly rather than loosening: `macho9 dylib` says "Wrote OUT (N bytes)"
+# about the output it wrote, and the wrapper -- which installed that output
+# over FILE -- says "Updated FILE (N bytes)" instead, which is the line
+# mr_apply_file itself printed while the verb still rewrote FILE. Every other
+# line, and the resulting bytes, must match.
 fresh
 run change_dylib f -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
 cdrc=$rc
 cp "$T/out" "$T/cd.out"
 cdsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/macho9" dylib f -replace /usr/lib/libSystem.B.dylib \
+( cd "$T" && "$BIN/macho9" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
     '@loader_path/../S.dylib' ) >"$T/m9.out" 2>/dev/null
-m9sha=$(sha "$T/f")
-[ "$cdrc" -eq 0 ] && cmp -s "$T/cd.out" "$T/m9.out" && [ "$cdsha" = "$m9sha" ] \
+m9sha=$(sha "$T/f.m9out")
+sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
+[ "$cdrc" -eq 0 ] && cmp -s "$T/cd.out" "$T/m9.want" && [ "$cdsha" = "$m9sha" ] \
     && ok "change_dylib: a single-family run is byte-identical to macho9's, stdout included" \
-    || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from macho9 dylib's"
+    || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from macho9 dylib's; wrapper said [$(cat "$T/cd.out")] want [$(cat "$T/m9.want")]"
 
 # MORE THAN ONE FAMILY is ONE `macho9 edit FILE -`, so everything it touches is
 # FILE itself. It used to be a sequence run against a copy beside FILE named
@@ -254,13 +261,22 @@ cdins=$( ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null )
 
 # AN UNWRITABLE FILE IS REFUSED, ON BOTH PATHS, WITH THE SAME ANSWER.
 # change_dylib open()ed FILE O_RDWR before it looked at anything, so mode 444
-# failed immediately having changed nothing. A single-family run still gets
-# that from mr_apply_file's own open(); a MULTI-family one would not, because
-# `macho9 edit` reads O_RDONLY and installs by mkstemp+rename beside FILE --
-# which needs the DIRECTORY writable and never consults FILE's mode, so
-# without the wrapper's guard a read-only binary is silently replaced (exit 0,
-# fresh inode). BYTES AND INODE, not just the exit code: a rename-based
-# rewrite preserves the mode, so mode alone would not show it happened.
+# failed immediately having changed nothing. NO macho9 COMMAND STILL DOES THAT:
+# a verb that writes an output opens FILE O_RDONLY, and `macho9 edit` installs
+# by mkstemp+rename beside FILE -- which needs the DIRECTORY writable and never
+# consults FILE's mode, so without the wrapper's check a read-only binary is
+# silently replaced (exit 0, fresh inode). mw_prepare is that check, on both
+# paths. BYTES AND INODE, not just the exit code: a rename-based rewrite
+# preserves the mode, so mode alone would not show it happened.
+#
+# EXIT 1, AND THESE TWO ASSERTIONS USED TO REQUIRE 2. The authority for a
+# compat wrapper's failure code is THE C TOOL, not macho9's numbering: every
+# change_dylib failure row in tests/compat-matrix.tsv -- the frozen measurement
+# of the six tools as C binaries -- is a flat 1. The 2 came from a narrow guard
+# added while the single-family path still inherited mr_apply_file's own
+# open(O_RDWR) failure, i.e. macho9's code for an operational failure; that
+# guard is gone and mw_prepare, which every other wrapper on this install path
+# already uses, answers with the C tool's 1.
 for cd_ro_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib"; do
     fresh
     chmod 444 "$T/f"
@@ -270,19 +286,91 @@ for cd_ro_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.
     cd_ro_rc=$rc
     chmod 644 "$T/f"
     case $cd_ro_args in *-change*) cd_ro_which="multi-family" ;; *) cd_ro_which="single-family" ;; esac
-    [ "$cd_ro_rc" -eq 2 ] && grep -qxF 'open: Permission denied' "$T/err" \
+    [ "$cd_ro_rc" -eq 1 ] && grep -qxF 'open: Permission denied' "$T/err" \
         && [ "$(sha "$T/f")" = "$cd_ro_sha" ] && [ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] \
-        && ok "change_dylib: a $cd_ro_which run on an unwritable FILE exits 2, saying so, having changed neither its bytes nor its inode" \
-        || bad "change_dylib unwritable ($cd_ro_which)" "exit $cd_ro_rc (want 2), bytes changed=$([ "$(sha "$T/f")" = "$cd_ro_sha" ] && echo no || echo YES), inode changed=$([ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] && echo no || echo YES), stderr: $(cat "$T/err")"
+        && ok "change_dylib: a $cd_ro_which run on an unwritable FILE exits 1 (the C tool's only failure code), saying so, having changed neither its bytes nor its inode" \
+        || bad "change_dylib unwritable ($cd_ro_which)" "exit $cd_ro_rc (want 1, the C tool's flat failure code), bytes changed=$([ "$(sha "$T/f")" = "$cd_ro_sha" ] && echo no || echo YES), inode changed=$([ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] && echo no || echo YES), stderr: $(cat "$T/err")"
 done
 
-# An ABSENT FILE is NOT that case and must keep reaching macho9, which reports
-# it from its own open failure. Guarding it in the wrapper too would answer for
-# a file macho9 is perfectly able to answer for.
+# An ABSENT FILE is refused by the same check, and for the same reason it is
+# now 1 rather than 2: that is what the C tool's open() failure exited with.
+# The message is the C tool's own perror("open") text, which mw_require_writable
+# reproduces -- so a caller cannot tell the two apart, which is the point.
 run change_dylib nosuchfile -strip-lc uuid -change A B
-[ "$rc" -eq 2 ] && ! grep -q 'Permission denied' "$T/err" \
-    && ok "change_dylib: an absent FILE still fails through macho9, not through the guard" \
-    || bad "change_dylib absent FILE" "exit $rc (want 2), stderr: $(cat "$T/err")"
+[ "$rc" -eq 1 ] && grep -qxF 'open: No such file or directory' "$T/err" \
+    && ok "change_dylib: an absent FILE exits 1 with the C tool's own open() message" \
+    || bad "change_dylib absent FILE" "exit $rc (want 1), stderr: $(cat "$T/err")"
+
+# THE CLOSING "Updated FILE (N bytes)" LINE, ON BOTH PATHS, AND ONLY WHEN THE
+# BYTES CHANGED. The C tool printed it from mr_apply_file, which no longer
+# writes FILE, so the wrapper prints it after installing the temp. Both paths
+# matter and for different reasons: a single-family run gets it where macho9
+# used to print it, and a multi-family `macho9 edit` never printed it at all
+# (nothing asserted the line at the time, which is how it went missing).
+for cd_up_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib"; do
+    fresh
+    case $cd_up_args in *-change*) cd_up_which="multi-family" ;; *) cd_up_which="single-family" ;; esac
+    # shellcheck disable=SC2086
+    run change_dylib f $cd_up_args
+    cd_up_rc=$rc
+    cd_up_size=$(wc -c < "$T/f" | tr -d ' ')
+    [ "$cd_up_rc" -eq 0 ] && has_line "$T/out" "Updated f ($cd_up_size bytes)" \
+        && ok "change_dylib: a $cd_up_which run that changed the file ends with the C tool's Updated line" \
+        || bad "change_dylib Updated ($cd_up_which)" "exit $cd_up_rc, stdout: $(cat "$T/out")"
+done
+# NOT PRINTED when nothing changed: the C tool wrote nothing and said nothing
+# in that case, and this is what keeps the wrapper from announcing an install
+# mw_finish decided against.
+fresh
+run change_dylib f -change /nope/absent.dylib /also/absent.dylib
+[ "$rc" -eq 0 ] && ! grep -q '^Updated ' "$T/out" \
+    && ok "change_dylib: a run that changed nothing prints no Updated line" \
+    || bad "change_dylib Updated (no-op)" "exit $rc, stdout: $(cat "$T/out")"
+
+# A HARD-LINKED FILE IS REFUSED (1) BY EVERY WRAPPER ON THE INSTALL PATH, which
+# for these three is new: their C tools wrote through their own descriptor, so
+# every name for the inode saw the change, while installing by mv would leave
+# the siblings on the old content. add_version_min's own case is asserted
+# above; these are the three whose verbs converted together. Each must refuse
+# before running anything, leave BOTH names byte-identical, and leave no temp.
+rm -rf "$T/hl"; mkdir "$T/hl"
+hl_case() {   # hl_case TOOL ARG...
+    hl_tool=$1; shift
+    cp "$FIXTURE" "$T/hl/f"; ln "$T/hl/f" "$T/hl/f2"
+    hl_sha=$(sha "$T/hl/f")
+    hl_rc=0
+    ( cd "$T/hl" && "$BIN/$hl_tool" f "$@" ) >"$T/hl.out" 2>"$T/hl.err" || hl_rc=$?
+    [ "$hl_rc" -eq 1 ] && grep -q 'hard link' "$T/hl.err" \
+        && [ "$(sha "$T/hl/f")" = "$hl_sha" ] && [ "$(sha "$T/hl/f2")" = "$hl_sha" ] \
+        && ok "$hl_tool: a hard-linked FILE is refused (1), both names untouched" \
+        || bad "$hl_tool hard link" "exit $hl_rc: $(cat "$T/hl.err")"
+    ls -a "$T/hl" | grep -q 'macho9-compat' \
+        && bad "$hl_tool hard link" "a temp file was left beside FILE" \
+        || ok "$hl_tool: ... and no temp was left beside it"
+    rm -f "$T/hl/f" "$T/hl/f2"
+}
+hl_case change_dylib -strip-lc uuid
+hl_case change_dylib -strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib
+hl_case fix_macho -change /usr/lib/libSystem.B.dylib /x/y.dylib
+hl_case rename_segment __DATA __DATA_HL
+rm -rf "$T/hl"
+
+# A RUN macho9 REFUSES LEAVES NO TEMP BESIDE FILE EITHER. The temp is made by
+# the wrapper and written by macho9; a refusal means macho9 never wrote it, and
+# the wrapper's EXIT trap is what keeps the name from surviving. Measured in a
+# directory of its own so "nothing new appeared" is exact, and with whole-
+# listing equality rather than a grep, for the reason the stray-file assertion
+# above gives.
+rm -rf "$T/refused"; mkdir "$T/refused"
+printf 'not a Mach-O at all, not even close\n' >"$T/refused/f"
+refused_before=$(ls -a "$T/refused")
+refused_rc=0
+( cd "$T/refused" && "$BIN/change_dylib" f -strip-lc uuid ) >"$T/ref.out" 2>"$T/ref.err" \
+    || refused_rc=$?
+[ "$refused_rc" -ne 0 ] && [ "$(ls -a "$T/refused")" = "$refused_before" ] \
+    && ok "change_dylib: a run macho9 refuses leaves no temp beside FILE" \
+    || bad "change_dylib refused strays" "exit $refused_rc; the directory holds [$(ls -a "$T/refused" | tr '\n' ' ')]"
+rm -rf "$T/refused"
 
 # THE CAPACITY CAPS. Both cap sites in cli/macho9.c say the wrapper has to
 # enforce them itself and print the ORIGIN wording, because macho9 names its
@@ -552,6 +640,12 @@ run rename_segment f __NOPE __ALSONOPE
 [ "$rc" -eq 2 ] && [ ! -s "$T/out" ] && [ "$(sha "$T/f")" = "$before" ] \
     && ok "rename_segment: nothing matched exits 2, silently, without writing" \
     || bad "rename_segment no match" "exit $rc (want 2), stdout: $(cat "$T/out")"
+# `macho9 segment` DID write its output here -- a 0 exit means OUT is the
+# answer even when the answer is a copy -- so this is the one path where the
+# wrapper deliberately skips mw_finish and lets the EXIT trap remove the temp.
+ls -a "$T" | grep -q 'macho9-compat' \
+    && bad "rename_segment no match" "the unused temp survived" \
+    || ok "rename_segment: ... and the output macho9 did write is not left behind"
 
 # A rename to the SAME name still MATCHED, so it is exit 0 with a count of 1 --
 # not exit 2. This is what rules out implementing "nothing matched" as
@@ -572,9 +666,13 @@ run rename_segment f __DATA __DATA
 # `macho9 segment: renamed=<N>`.
 #
 # The odd segnames are made with `macho9 segment` itself, which is how they are
-# reachable in the first place; both are legal in a char[16] field.
+# reachable in the first place; both are legal in a char[16] field. That verb
+# writes an OUT rather than the file it is given, so each of these
+# fixture-preparation runs installs its own result, the same way the wrappers
+# under test do.
 fresh
-( cd "$T" && "$BIN/macho9" segment f __DATA 1234567890123456 ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __DATA 1234567890123456 \
+    && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 12345678901234567 __X
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) 12345678901234567 -> __X' "$T/out" \
@@ -583,7 +681,7 @@ run rename_segment f 12345678901234567 __X
     || bad "rename_segment 17-byte OLD" "exit $rc, stdout: $(cat "$T/out")"
 
 fresh
-( cd "$T" && "$BIN/macho9" segment f __DATA 'A B' ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __DATA 'A B' && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 'A B' __Y
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) A B -> __Y' "$T/out" \
@@ -595,8 +693,8 @@ run rename_segment f 'A B' __Y
 # segment name the image carries TWICE (which is what this tool produces --
 # see src/segname.h on __DATA_CONST -> __DATA leaving two __DATAs).
 fresh
-( cd "$T" && "$BIN/macho9" segment f __TEXT __DUP ) >/dev/null 2>&1
-( cd "$T" && "$BIN/macho9" segment f __DATA __DUP ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __TEXT __DUP && mv -f f.seg f ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __DATA __DUP && mv -f f.seg f ) >/dev/null 2>&1
 run rename_segment f __DUP __ONE
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 2 segment(s) __DUP -> __ONE' "$T/out" \
     && ok "rename_segment: reports the real match count, not 1" \
@@ -651,7 +749,7 @@ fi
 "$T/mkimplausible" "$T/imp"
 
 # The fixture is refused for an ordinary operation, so the pass below is narrow.
-( cd "$T" && "$BIN/macho9" lc imp -delete uuid ) >/dev/null 2>"$T/imperr"
+( cd "$T" && "$BIN/macho9" lc imp imp.lc -delete uuid ) >/dev/null 2>"$T/imperr"
 [ $? -ne 0 ] && grep -q 'no known function' "$T/imperr" \
     && ok "rename_segment: the fixture really is one the gate rejects for other operations" \
     || bad "rename_segment mg_plausible" "lc -delete uuid was not refused: $(cat "$T/imperr")"
@@ -865,9 +963,11 @@ fmrc=$rc
 cp "$T/out" "$T/fm.out"
 fmsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/macho9" dylib f -replace /usr/lib/libSystem.B.dylib \
+( cd "$T" && "$BIN/macho9" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
     '@loader_path/../S.dylib' ) >"$T/m9.out" 2>/dev/null
-[ "$fmrc" -eq 0 ] && cmp -s "$T/fm.out" "$T/m9.out" && [ "$fmsha" = "$(sha "$T/f")" ] \
+# The same one-line reshape the change_dylib block above explains.
+sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
+[ "$fmrc" -eq 0 ] && cmp -s "$T/fm.out" "$T/m9.want" && [ "$fmsha" = "$(sha "$T/f.m9out")" ] \
     && ok "fix_macho: -change is byte-identical to macho9 dylib -replace, stdout included" \
     || bad "fix_macho -change" "exit $fmrc; stdout or bytes differ from macho9 dylib's"
 
@@ -901,7 +1001,7 @@ run fix_macho f -strip_build_version
 has_line "$T/err" 'macho9: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
-has_line "$T/err" '    macho9 lc f -delete build-version' \
+has_line "$T/err" '    macho9 lc f f.new -delete build-version' \
     && ok "fix_macho: -strip_build_version translates to lc -delete build-version" \
     || bad "fix_macho -strip_build_version translation" "stderr: $(cat "$T/err")"
 

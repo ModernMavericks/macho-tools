@@ -198,10 +198,12 @@ nothing in any selected slice.
 **The write replaces `FILE` by rename**, as `objcopy` does: the new image goes
 to a temporary file beside `FILE`, which is then renamed over it, keeping
 `FILE`'s mode. So a read-only (`0444`) `FILE` in a writable directory is
-replaced, and the run exits 0, where `macho9 dylib`, `rpath` and `lc` fail
-with a permission error. (A `FILE` with more than one hard link is written
-through in place instead, so that every name sees the change; see
-`src/atomic_write.h`.)
+replaced, and the run exits 0. (A `FILE` with more than one hard link is
+written through in place instead, so that every name sees the change; see
+`src/atomic_write.h`.) `macho9 dylib`, `rpath`, `lc` and `segment` do not do
+this at all any more: each takes `FILE OUT` and never writes `FILE`, so
+whether `FILE` is writable is not a question they ask. `edit` is the verb this
+section is about and still rewrites the file it is given.
 
 ### File format
 
@@ -234,7 +236,7 @@ rpath         insert    PATH
 ```
 
 The statements mirror `macho9`'s other rewriting verbs, most spelled as that
-verb with `FILE` dropped — `macho9 dylib FILE -replace A B` is the same edit
+verb with its `FILE OUT` dropped — `macho9 dylib FILE OUT -replace A B` is the same edit
 as the line `dylib replace A B`. Four are renamed: `lc` is `load-command`,
 `minos` is `version-min`, `retag-swift` is `swift-abi`, and `declassify` is
 `fixups`. One rewriting verb has no statement at all: `grow FILE N` (enlarge
@@ -246,7 +248,7 @@ is a different thing from naming a byte count directly.
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
 `dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal
-2, the reverse of `macho9 dylib FILE -insert A -insert B`, which gives A then
+2, the reverse of `macho9 dylib FILE OUT -insert A -insert B`, which gives A then
 B. `rpath insert` works the same way, so dyld searches B before A.
 
 ### Directives

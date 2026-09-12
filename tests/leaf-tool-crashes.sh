@@ -273,10 +273,10 @@ for grow in "" --allow-grow; do
         before=$(sha_of "$T/dy.macho")
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/dy.macho" -append /x $grow \
-                >"$T/dy.out" 2>"$T/dy.err" || rc=$?
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/dy.macho" "$T/dy.out.macho" \
+                -append /x $grow >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         else
-            "$BIN/macho9" dylib "$T/dy.macho" -append /x $grow \
+            "$BIN/macho9" dylib "$T/dy.macho" "$T/dy.out.macho" -append /x $grow \
                 >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then
@@ -308,22 +308,35 @@ done
 # a dylib append would still be refused, by mg_ensure_pad, if mr_process_thin
 # stopped checking. `grow` goes straight to mg_grow_header.
 "$T/mkfixture" sectionless "$T/sectionless.macho" 8192
-# sectionless_case NEEDLE VERB ARG... -- runs `macho9 VERB <copy> ARG...`
+# sectionless_case NEEDLE VERB TAKES-OUT ARG...
+#   -- runs `macho9 VERB <copy> [OUT] ARG...`
+#
+# TAKES-OUT is `out` for a verb that reads FILE and writes an output (dylib,
+# rpath, lc, segment) and `-` for one that still rewrites the file it is given
+# (grow, edit). For the first kind the OUT is removed beforehand and must still
+# be absent afterwards: a refusal writes nothing, which is a second fact worth
+# having here -- the input being untouched is no longer the whole of it.
 sectionless_case() {
-    needle="$1"; verb="$2"; shift 2
+    needle="$1"; verb="$2"; sl_takes_out="$3"; shift 3
+    sl_desc="$*"
+    case $sl_takes_out in
+        out) set -- "$T/sl.macho" "$T/sl.out.macho" "$@" ;;
+        *)   set -- "$T/sl.macho" "$@" ;;
+    esac
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="macho9 $verb $*: sectionless 8192-byte image${gm:+ (libgmalloc)}"
+        what="macho9 $verb $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
         fi
         cp "$T/sectionless.macho" "$T/sl.macho"
+        rm -f "$T/sl.out.macho"
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" "$verb" "$T/sl.macho" "$@" \
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" "$verb" "$@" \
                 >"$T/sl.out" 2>"$T/sl.err" || rc=$?
         else
-            "$BIN/macho9" "$verb" "$T/sl.macho" "$@" >"$T/sl.out" 2>"$T/sl.err" || rc=$?
+            "$BIN/macho9" "$verb" "$@" >"$T/sl.out" 2>"$T/sl.err" || rc=$?
         fi
         if [ "$rc" -eq 1 ] && grep -qF "$needle" "$T/sl.err"; then
             ok "$what: refuses (1), naming the missing section data"
@@ -335,16 +348,21 @@ sectionless_case() {
         else
             bad "$what" "the file changed: $(cmp -l "$T/sectionless.macho" "$T/sl.macho" | wc -l | tr -d ' ') byte(s) differ"
         fi
+        if [ "$sl_takes_out" = out ]; then
+            [ ! -e "$T/sl.out.macho" ] \
+                && ok "$what: writes no output either" \
+                || bad "$what" "a refused run left an output behind"
+        fi
     done
 }
-sectionless_case "$rewrite_refusal" dylib -append /x
-sectionless_case "$rewrite_refusal" dylib --allow-grow -append /x
-sectionless_case "$rewrite_refusal" rpath -append /x
-sectionless_case "$rewrite_refusal" lc -delete uuid
-sectionless_case "$rewrite_refusal" segment __TEXT __TEXX
-sectionless_case "$grow_refusal" grow 4096
+sectionless_case "$rewrite_refusal" dylib out -append /x
+sectionless_case "$rewrite_refusal" dylib out --allow-grow -append /x
+sectionless_case "$rewrite_refusal" rpath out -append /x
+sectionless_case "$rewrite_refusal" lc out -delete uuid
+sectionless_case "$rewrite_refusal" segment out __TEXT __TEXX
+sectionless_case "$grow_refusal" grow - 4096
 printf 'dylib append /x\n' >"$T/sl.edits"
-sectionless_case "$rewrite_refusal" edit "$T/sl.edits"
+sectionless_case "$rewrite_refusal" edit - "$T/sl.edits"
 
 info_rc=0
 "$BIN/macho9" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?
@@ -406,10 +424,10 @@ for grow in "" --allow-grow; do
         cp "$T/oobsection.macho" "$T/od.macho"
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/od.macho" -append /x $grow \
-                >"$T/od.out" 2>"$T/od.err" || rc=$?
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/od.macho" "$T/od.out.macho" \
+                -append /x $grow >"$T/od.out" 2>"$T/od.err" || rc=$?
         else
-            "$BIN/macho9" dylib "$T/od.macho" -append /x $grow \
+            "$BIN/macho9" dylib "$T/od.macho" "$T/od.out.macho" -append /x $grow \
                 >"$T/od.out" 2>"$T/od.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then

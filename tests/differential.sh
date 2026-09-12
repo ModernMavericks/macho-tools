@@ -135,19 +135,15 @@ record() {
     return 0
 }
 
-# macho9 VERB f ARGS...
-m9() {
-    verb="$1"; shift
-    total=$((total + 1))
-    cp "$SRC" "$T/A/f"; cp "$SRC" "$T/B/f"
-    ( cd "$T/A" && "$REF/macho9" "$verb" f "$@" ) >"$T/a.out" 2>"$T/a.err"; arc=$?
-    ( cd "$T/B" && "$NEW/macho9" "$verb" f "$@" ) >"$T/b.out" 2>"$T/b.err"; brc=$?
-    compare "macho9 $verb $SRC $*"
-}
-
 # macho9 VERB f o ARGS... -- for a verb that READS f and writes a named
 # output rather than rewriting f. What gets compared is `o`, plus the two
 # sides agreeing that they left `f` alone.
+#
+# EVERY macho9 VERB THIS SWEEP DRIVES IS ONE OF THOSE NOW. There used to be a
+# second helper, `m9`, for the verbs that rewrote the file they were given
+# (dylib, rpath, lc, segment); all four take FILE OUT, so it had no callers
+# left and is gone. A verb that still rewrites its argument -- grow, edit --
+# would need it back, and neither is in this sweep.
 m9out() {
     verb="$1"; shift
     total=$((total + 1))
@@ -249,16 +245,16 @@ while IFS= read -r SRC; do
     first=$("$REF/macho9" info "$T/probe" 2>/dev/null | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
     [ -n "$first" ] || first="/usr/lib/libSystem.B.dylib"
 
-    m9 dylib -replace "$first" "@loader_path/renamed.dylib"
-    m9 dylib -append "@loader_path/libspare.dylib"
-    m9 dylib -insert "@loader_path/libspare.dylib"
-    m9 dylib -delete "$first"
-    m9 dylib -reexport "$first"
-    m9 dylib --allow-grow -replace "$first" "$longpath"
-    m9 rpath -append /tmp/macho9diff
-    m9 rpath -replace /usr/lib /tmp/macho9diff2
-    m9 lc -delete uuid
-    m9 lc -delete codesig -delete uuid
+    m9out dylib -replace "$first" "@loader_path/renamed.dylib"
+    m9out dylib -append "@loader_path/libspare.dylib"
+    m9out dylib -insert "@loader_path/libspare.dylib"
+    m9out dylib -delete "$first"
+    m9out dylib -reexport "$first"
+    m9out dylib --allow-grow -replace "$first" "$longpath"
+    m9out rpath -append /tmp/macho9diff
+    m9out rpath -replace /usr/lib /tmp/macho9diff2
+    m9out lc -delete uuid
+    m9out lc -delete codesig -delete uuid
     m9out minos 10.9
     tool change_dylib -change "$first" "@loader_path/renamed.dylib"
     tool change_dylib -strip-lc uuid -add "@loader_path/libspare.dylib"
