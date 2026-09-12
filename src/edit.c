@@ -574,8 +574,9 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     mr_hits *hits = (mr_hits *)calloc(nst, sizeof *hits);
     int *renamed = (int *)calloc(nst, sizeof *renamed);
     if (!selected || !hits || !renamed) {
+        me_say(log, "macho9 edit: out of memory; ");
+        me_say_left(log, path, out);
         free(selected); free(hits); free(renamed); free(buf);
-        me_say(log, "macho9 edit: out of memory\n");
         return MR_FAIL;
     }
     char have[256] = "";
@@ -722,8 +723,9 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     mr_hits *hits = (mr_hits *)calloc(nst, sizeof *hits);
     int *renamed = (int *)calloc(nst, sizeof *renamed);
     if (!hits || !renamed) {
+        me_say(log, "macho9 edit: out of memory; ");
+        me_say_left(log, path, out);
         free(hits); free(renamed); free(buf);
-        me_say(log, "macho9 edit: out of memory\n");
         return MR_FAIL;
     }
     int rc = me_statements(&buf, &size, path, out, s, log, verbose, hits, renamed, 1, NULL);
