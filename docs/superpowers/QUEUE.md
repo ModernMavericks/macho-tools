@@ -526,6 +526,26 @@ by running that awk over a real multi-family stderr: only the two taught lines
 come back). But if a wrapper ever emits `target`, its expansion listing would
 be captured as taught commands. Either indentation is the thing to change then.
 
+## For shipyard: two gaps a self-upstream repo falls through
+
+Found 2026-09-12 while making this repo releasable. Both are shipyard's, not
+this repo's, and both are the same shape: machinery written for the **port**
+case that silently does nothing for a repo that is its own upstream.
+
+- **`previous-release-tag.sh` globs `*-mavericks.*`.** An `X.Y.Z` tag can never
+  match, so `PREV` is permanently empty here and **no release body will ever
+  carry its `[All changes since X](…/compare/…)` footer** — not just the first
+  one. Verified against a scratch repo tagged `0.1.0`, `0.2.0`, `backup/foo`:
+  every lookup returns empty. Teaching it the self-upstream shape would give
+  releases 2+ their compare link.
+- **`release-notes-file.sh` hardcodes "Requires Mac OS X 10.9.5 or later"** —
+  the `.pkg` floor — while these binaries target 10.9. Harmless for a repo that
+  ships a `.pkg`; wrong for one that ships bare binaries.
+
+Neither blocks a release. Both want a shipyard change rather than a local
+workaround, since a workaround here would be the fourth copy of a thing that
+should live in one place.
+
 ## Outstanding owner actions
 
 - Review the four specs above (items 2–5).
