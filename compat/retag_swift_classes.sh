@@ -13,9 +13,11 @@
 # GRAMMAR -- THE ONE VARIADIC TOOL. `macho9 retag-swift` takes exactly ONE
 # file; this tool takes any number. So the translation is a LOOP, one emitted
 # line per argument in argv order, and this wrapper runs them one at a time
-# rather than through mw_run: it needs each file's own exit code and its own
-# stdout, which mw_run's stop-at-the-first-failure contract deliberately
-# does not give. The lines it runs are still the translated ones, not
+# rather than through mw_run: mw_run evaluates a translation as ONE script and
+# hands back one exit code, and this tool needs each file's own code and each
+# file's own stdout to rebuild its per-file and total lines. It is also the
+# only translation that is still more than one command, which is why mw_run
+# does not loop. The lines it runs are still the translated ones, not
 # hand-built ones, so what ships is what tests/translate_test.sh pinned.
 #
 # EXIT CODES -- MAPPED, per cli/macho9.c's cmd_retag_swift ("TWO DELIBERATE

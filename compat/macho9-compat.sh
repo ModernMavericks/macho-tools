@@ -203,11 +203,10 @@ mw_teach() {
 # the loop: an old invocation that would have been a sequence of macho9
 # commands is now ONE `macho9 edit FILE -` with the operations as statements
 # on stdin, so a translation is at most one command and there is no sequence
-# left to step through or to stop part way. (compat/retag_swift_classes.sh is
-# the one
+# left to step through. (compat/retag_swift_classes.sh is the one
 # translation that is still several commands -- one per binary -- and it has
 # always run its own lines itself, because it needs each file's own exit code
-# and its own stdout, which a stop-at-the-first-failure loop cannot give it.)
+# and its own stdout, and one code for the whole script is not that.)
 #
 # The whole translation is eval'd as ONE script rather than line by line,
 # because a here-document only reaches `macho9`'s stdin if the shell running

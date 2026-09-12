@@ -52,8 +52,11 @@
 # EXIT CODES. Forwarded unchanged, and no mapping is added here: this
 # wrapper runs the emitted `macho9 dylib`/`rpath`/`lc`/`edit` command and
 # exits whatever it exits, PAST THEIR OWN ARGUMENT CHECKS -- see the
-# paragraph below for what those checks make unreachable here. The C tool
-# returned
+# paragraph below for what those checks make unreachable here. The one code
+# this wrapper produces itself is the unwritable-FILE guard's 2, and it is
+# chosen to be the code the same file would have got from the command it
+# stands in front of; "the unwritable-FILE guard" below has the reasoning.
+# The C tool returned
 # mr_apply_file's own 0/1 (0 ok, 1 the flat "something went wrong" that
 # rewriter had no finer answer than); mr_apply_file's vocabulary is no
 # longer that flat 0/1 (rewrite.h): 0 ok, MR_REFUSED (1) for a considered
@@ -127,6 +130,38 @@
 # every statement to it in memory, verifies, and writes once through
 # wa_write_atomic, so a refusal at any statement leaves FILE exactly as it
 # was. That is the C tool's shape, not an approximation of it.
+#
+# ---- the unwritable-FILE guard -------------------------------------------
+#
+# change_dylib open()ed FILE O_RDWR before it looked at anything, so a
+# mode-denied FILE failed immediately, having changed nothing. A `dylib`,
+# `rpath` or `lc` command still reproduces that for free -- mr_apply_file
+# opens O_RDWR up front and perror()s "open" -- so the ONE emitted command is
+# the whole story for an invocation touching one family.
+#
+# `macho9 edit` is the one that does not. me_run reads the image O_RDONLY and
+# installs its result through wa_write_atomic, which mkstemps BESIDE FILE and
+# renames over it -- an operation that needs the DIRECTORY writable and never
+# consults FILE's own mode. Measured: a mode-444 binary is replaced (fresh
+# inode, mode 444 carried onto it) and the run exits 0. That is a silent
+# rewrite of a file its owner marked read-only, and the exact shape of edit
+# this whole conversion exists to make visible rather than to introduce.
+#
+# So the wrapper refuses first, and refuses in the observable the other path
+# already produces: `open: Permission denied` on stderr and exit 2, the same
+# text and the same code mr_apply_file's own open failure gives, so the two
+# paths agree rather than each having its own answer. Deliberately NOT
+# mw_require_writable, which returns 1 (fix_macho's flat code, right there and
+# wrong here) and which also captures an ABSENT FILE -- that one has no such
+# problem and must keep reaching macho9, whose open failure reports it.
+#
+# `test -e`/`test -w` are not open(O_RDWR): they consult the real uid and do
+# not see ACLs, so they can disagree with it at the edges -- the same caveat
+# mw_require_writable's own header states, for the same reason. They agree on
+# the case that reaches a caller, a file whose MODE denies writing. Both
+# follow a symlink, which is what is wanted: wa_write_atomic resolves one and
+# rewrites the target, so it is the target's mode that decides, and a symlink
+# whose target does not exist is not `-e` and falls through to macho9.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
@@ -144,6 +179,13 @@ MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
 . "$MW_DIR/macho9-compat.sh"
 
 mw_translate change_dylib "$@" || exit $?
+
+# EXISTS and is not writable -- see "the unwritable-FILE guard" above. Both
+# halves matter: an absent FILE falls through to macho9 on purpose.
+if [ -e "$1" ] && [ ! -w "$1" ]; then
+    printf 'open: Permission denied\n' >&2
+    exit 2
+fi
 
 mw_run
 exit $?

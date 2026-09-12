@@ -14,11 +14,11 @@ The six original entry points, kept for compatibility. All six are now
 | installed name | what it is now |
 |---|---|
 | `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT` |
-| `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath` |
+| `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
 | `add_version_min` | `add_version_min.sh` → `macho9 minos FILE 10.9` |
 | `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE`, once per file |
-| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment` |
+| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE -` when more than one command's worth (two renames already are) |
 
 plus the two files every wrapper sources:
 
@@ -203,5 +203,6 @@ Its two repeated options are still capped, in `compat/translate.sh`'s
 `mt_room`, with the same wording — the fixed-size arrays they filled had no
 bounds check at all, which is the same stack smash `docs/PROPOSAL.md` records
 being fixed in `change_dylib` alone. The `-rename_seg` cap exists nowhere
-else: each pair becomes its own `macho9 segment` invocation, so nothing
-downstream would ever count them.
+else: `macho9` sees one rename at a time either way — its `segment` verb takes
+one pair, and an edit script's `segment rename` statement is one pair — so
+nothing downstream would ever count them.

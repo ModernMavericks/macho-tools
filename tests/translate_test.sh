@@ -415,9 +415,10 @@ refuses cap-shared 1 'too many -delete (max 32)' \
 # fix_macho's two caps, which came here when compat/fix_macho.c retired. Its
 # FM_ROOM printed change_dylib's exact wording with fix_macho's flag names in
 # it, so these are that same text. The -rename_seg cap has no macho9
-# counterpart at all -- each pair is its own `macho9 segment` invocation, so
-# nothing downstream would ever count them -- which makes this file the only
-# thing keeping that refusal alive.
+# counterpart at all -- macho9 sees one rename at a time either way, its
+# `segment` verb taking one pair and an edit script's `segment rename`
+# statement being one pair, so nothing downstream would ever count them --
+# which makes this file the only thing keeping that refusal alive.
 ok fm-cap-change-32-fits "macho9 dylib f$(mkcap '-replace A B' 32)" \
     -- fix_macho f $(mkcap '-change A B' 32)
 refuses fm-cap-change-33 1 'too many -change (max 32)' -- fix_macho f $(mkcap '-change A B' 33)

@@ -33,8 +33,14 @@
 #     statements, and the `MACHO9_EDIT` terminator. Counting commands means
 #     counting lines that START with the program word, not counting lines --
 #     which is what macho9-compat.sh's mw_translate does.
-#   * The commands are ORDERED. Run them in the order printed and stop at the
-#     first nonzero exit; see "ordering" below for why the order matters.
+#   * Every tool here but retag_swift_classes emits AT MOST ONE command: an
+#     invocation that would have needed more is one `macho9 edit FILE -`
+#     instead. So there is no sequence to run and nothing to stop part way
+#     through -- macho9-compat.sh's mw_run evaluates what is printed and
+#     returns its exit code. (retag_swift_classes is variadic over FILES and
+#     emits one `retag-swift` per file; its wrapper runs those itself, because
+#     it needs each file's own exit code and stdout.) The ORDER still matters
+#     within the one command -- see "ordering" below.
 #   * Exit 0 with ZERO lines means "this old invocation was a no-op on the
 #     file; there is no macho9 command to run." (change_dylib accepts
 #     `-grow` with no operations; it prints its header-pad line and changes
@@ -57,8 +63,10 @@
 #     own, which the old tools accepted: a -change chain on the edit-script
 #     path, refused by mt_chain_check, whose comment has the reasoning. It
 #     exits 1 rather than 2 because 1 is the only failure code change_dylib
-#     and fix_macho ever had, and fix_macho.sh folds every nonzero to 1
-#     anyway; 2 would invent a third outcome for a two-outcome grammar.
+#     and fix_macho ever had, and 2 would invent a third outcome for a
+#     two-outcome grammar. Both wrappers forward a translation's code raw --
+#     fix_macho.sh's fold of every nonzero to 1 applies to mw_run's code, not
+#     to this one -- so whatever this returns is what the caller sees.
 #
 # The one exception to "the old tool's message" is $MT_PROG, which stands in
 # for argv[0] in a usage line; mt_translate defaults it to the tool's own name.

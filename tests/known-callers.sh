@@ -212,9 +212,20 @@ got1=$(sha "$T/c1" 2>/dev/null || echo none)
 # only describing it.
 cp "$FIXTURE" "$T/atom"
 before=$(sha "$T/atom")
+# Every name in the caller's directory, so "and it left nothing behind" is a
+# question about the directory rather than about one temp-file spelling. The
+# wrapper used to make a `.NAME.macho9-compat.PID` copy and a grep for that
+# name was the check; nothing produces it now, so a grep for it can no longer
+# fail. macho9's own temp is `TARGET.XXXXXX`, and a refusal that left one
+# would show up here as surely as anything else.
+# Created first, so the redirection below does not itself count as something
+# the run left behind.
+: > "$T/eatom"
+atomls_before=$(ls -a "$T")
 rc=0
 "$BIN/change_dylib" "$T/atom" -strip-lc uuid \
     -delete /usr/lib/libSystem.B.dylib >/dev/null 2>"$T/eatom" || rc=$?
+atomls_after=$(ls -a "$T")
 after=$(sha "$T/atom")
 [ "$rc" -ne 0 ] \
     && ok "atomicity: a mixed-family invocation that must refuse still refuses (exit $rc)" \
@@ -225,6 +236,14 @@ after=$(sha "$T/atom")
 grep -q 'still binds to the dylib being deleted' "$T/eatom" \
     && ok "atomicity: the refusal gives the same reason the C tool gave" \
     || bad "atomicity" "refused for some other reason: $(cat "$T/eatom")"
+# Whole-listing equality, not a search for a name. Besides being the stronger
+# question, `grep -vxF` with a MULTI-LINE pattern list is not usable here: BSD
+# grep 2.5.1 (this platform's /usr/bin/grep) drops a pattern that another
+# pattern is a prefix of, so `.` in the list silently stops `..` from matching
+# and every run reports `..` as new.
+[ "$atomls_after" = "$atomls_before" ] \
+    && ok "atomicity: and left nothing new beside the caller's file" \
+    || bad "atomicity" "the directory changed: before [$(printf '%s\n' "$atomls_before" | tr '\n' ' ')] after [$(printf '%s\n' "$atomls_after" | tr '\n' ' ')]"
 
 # ---- the production pipeline, on a path with a space --------------------
 #
@@ -236,6 +255,7 @@ grep -q 'still binds to the dylib being deleted' "$T/eatom" \
 # the edit script's here-document.
 mkdir -p "$T/dir with space"
 cp "$FIXTURE" "$T/dir with space/REAL"
+spacels_before=$(ls -a "$T/dir with space")
 rc=0
 { "$BIN/patch_macho" "$T/dir with space/REAL" "$T/dir with space/t" >/dev/null 2>&1 &&
   "$BIN/add_version_min" "$T/dir with space/t"                      >/dev/null 2>&1 &&
@@ -248,16 +268,17 @@ got=$(sha "$T/dir with space/t" 2>/dev/null || echo none)
 [ "$rc" -eq 0 ] && [ "$got" = "$INSTALLSH_SHA" ] \
     && ok "install.sh: the whole pipeline works on a path containing a space" \
     || bad "install.sh spaced path" "exit $rc, sha256 $got, want $INSTALLSH_SHA"
-spaceleft=$(ls -a "$T/dir with space" | grep 'macho9-compat' || true)
-[ -z "$spaceleft" ] \
-    && ok "install.sh: and left no temp behind in that directory" \
-    || bad "install.sh spaced path" "left behind: $spaceleft"
-
-# And nothing may be left lying around next to the caller's file.
-leftovers=$(ls -a "$T" | grep 'macho9-compat' || true)
-[ -z "$leftovers" ] \
-    && ok "atomicity: no temporary file left beside the caller's file" \
-    || bad "atomicity" "left behind: $leftovers"
+# The whole pipeline creates exactly ONE file in that directory -- `t`, the
+# converted copy it was asked for -- and the assertion is that difference, not
+# the absence of one particular temp-file spelling: a grep for `macho9-compat`
+# names something no code produces any more, so it could no longer fail. The
+# two listings are sorted the same way and compared whole, for the reason the
+# atomicity block above gives.
+spacewant=$(printf '%s\nt\n' "$spacels_before" | LC_ALL=C sort)
+spacegot=$(ls -a "$T/dir with space" | LC_ALL=C sort)
+[ "$spacegot" = "$spacewant" ] \
+    && ok "install.sh: and created exactly the one file it was asked for in that directory" \
+    || bad "install.sh spaced path" "expected only 't' to appear; the directory holds [$(printf '%s\n' "$spacegot" | tr '\n' ' ')]"
 
 echo "known-callers: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

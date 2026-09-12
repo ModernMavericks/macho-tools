@@ -170,18 +170,27 @@ m9sha=$(sha "$T/f")
 # `.FILE.macho9-compat.PID`, which is what made these two worth asserting: the
 # copy is gone, so nothing may appear beside FILE, and every line macho9 prints
 # must name FILE rather than some temporary it was handed instead.
-fresh
-before_ls=$(ls -a "$T")
-run change_dylib f -strip-lc uuid -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
-cdmixrc=$rc
-# `out` and `err` are this harness's own captures, made by `run` itself.
-after_ls=$(ls -a "$T" | grep -v '^out$' | grep -v '^err$')
-[ "$cdmixrc" -eq 0 ] && [ "$after_ls" = "$(printf '%s\n' "$before_ls" | grep -v '^out$' | grep -v '^err$')" ] \
+# In a directory of its OWN, holding nothing but FILE, so "nothing new
+# appeared" is exact: run in $T and a stray left by one of the many earlier
+# change_dylib invocations here would already be in the before-listing and
+# this would see nothing. Whole-listing equality rather than a search for a
+# name -- it is the stronger question, and `grep -vxF` with a multi-line
+# pattern list is unusable on this platform's BSD grep 2.5.1, which drops a
+# pattern another pattern is a prefix of (so `.` in the list stops `..` from
+# matching).
+rm -rf "$T/stray"; mkdir "$T/stray"
+cp "$FIXTURE" "$T/stray/f"
+stray_before=$(ls -a "$T/stray")
+( cd "$T/stray" && "$BIN/change_dylib" f -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >"$T/out" 2>"$T/err"
+cdmixrc=$?
+[ "$cdmixrc" -eq 0 ] && [ "$(ls -a "$T/stray")" = "$stray_before" ] \
     && ok "change_dylib: a multi-family run leaves no stray file beside FILE" \
-    || bad "change_dylib multi-family strays" "exit $cdmixrc; appeared: $(printf '%s\n' "$after_ls" | grep -vxF "$before_ls" | tr '\n' ' ')"
+    || bad "change_dylib multi-family strays" "exit $cdmixrc; the directory holds [$(ls -a "$T/stray" | tr '\n' ' ')], was [$(printf '%s\n' "$stray_before" | tr '\n' ' ')]"
 [ -s "$T/out" ] && ! grep -q 'macho9-compat' "$T/out" && grep -q '^f: ' "$T/out" \
     && ok "change_dylib: a multi-family run's stdout names FILE, not a copy" \
     || bad "change_dylib multi-family stdout" "stdout: $(cat "$T/out")"
+rm -rf "$T/stray"
 
 # EVERY -insert GOES TO THE FRONT, so as ONE batch `-insert A -insert B` leaves
 # A at ordinal 1 and B at ordinal 2. Reaching that through a SEQUENCE of
@@ -198,6 +207,38 @@ cdins=$( ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null )
     && printf '%s\n' "$cdins" | grep -qxF '  ordinal=2 path=/B' \
     && ok "change_dylib: -insert A -insert B leaves A at ordinal 1 and B at ordinal 2" \
     || bad "change_dylib insert order" "exit $cdins_rc; ordinals: $(printf '%s\n' "$cdins" | sed -n 's/^  \(ordinal=[0-9]* path=.*\)$/\1/p' | tr '\n' ' ')"
+
+# AN UNWRITABLE FILE IS REFUSED, ON BOTH PATHS, WITH THE SAME ANSWER.
+# change_dylib open()ed FILE O_RDWR before it looked at anything, so mode 444
+# failed immediately having changed nothing. A single-family run still gets
+# that from mr_apply_file's own open(); a MULTI-family one would not, because
+# `macho9 edit` reads O_RDONLY and installs by mkstemp+rename beside FILE --
+# which needs the DIRECTORY writable and never consults FILE's mode, so
+# without the wrapper's guard a read-only binary is silently replaced (exit 0,
+# fresh inode). BYTES AND INODE, not just the exit code: a rename-based
+# rewrite preserves the mode, so mode alone would not show it happened.
+for cd_ro_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib"; do
+    fresh
+    chmod 444 "$T/f"
+    cd_ro_sha=$(sha "$T/f"); cd_ro_ino=$(stat -f '%i' "$T/f")
+    # shellcheck disable=SC2086
+    run change_dylib f $cd_ro_args
+    cd_ro_rc=$rc
+    chmod 644 "$T/f"
+    case $cd_ro_args in *-change*) cd_ro_which="multi-family" ;; *) cd_ro_which="single-family" ;; esac
+    [ "$cd_ro_rc" -eq 2 ] && grep -qxF 'open: Permission denied' "$T/err" \
+        && [ "$(sha "$T/f")" = "$cd_ro_sha" ] && [ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] \
+        && ok "change_dylib: a $cd_ro_which run on an unwritable FILE exits 2, saying so, having changed neither its bytes nor its inode" \
+        || bad "change_dylib unwritable ($cd_ro_which)" "exit $cd_ro_rc (want 2), bytes changed=$([ "$(sha "$T/f")" = "$cd_ro_sha" ] && echo no || echo YES), inode changed=$([ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] && echo no || echo YES), stderr: $(cat "$T/err")"
+done
+
+# An ABSENT FILE is NOT that case and must keep reaching macho9, which reports
+# it from its own open failure. Guarding it in the wrapper too would answer for
+# a file macho9 is perfectly able to answer for.
+run change_dylib nosuchfile -strip-lc uuid -change A B
+[ "$rc" -eq 2 ] && ! grep -q 'Permission denied' "$T/err" \
+    && ok "change_dylib: an absent FILE still fails through macho9, not through the guard" \
+    || bad "change_dylib absent FILE" "exit $rc (want 2), stderr: $(cat "$T/err")"
 
 # THE CAPACITY CAPS. Both cap sites in cli/macho9.c say the wrapper has to
 # enforce them itself and print the ORIGIN wording, because macho9 names its
@@ -855,7 +896,7 @@ fm_ro_rc=$rc
 chmod 644 "$T/f"
 [ "$fm_ro_rc" -eq 1 ] && has_line "$T/err" 'open: Permission denied' \
     && [ "$(sha "$T/f")" = "$before" ] \
-    && ok "fix_macho: an unwritable file fails before the multi-command copy-aside runs" \
+    && ok "fix_macho: an unwritable file fails before the multi-command rewrite runs" \
     || bad "fix_macho unwritable" "exit $fm_ro_rc, stderr: $(cat "$T/err")"
 
 # ---- hostile argv shapes -----------------------------------------------
@@ -909,7 +950,7 @@ rc=$?
 ( cd "$T" && "$BIN/change_dylib" f -strip-lc uuid \
     -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>&1
 [ "$rc" -eq 0 ] && cmp -s "$T/-dashy" "$T/f" \
-    && ok "change_dylib: and on the multi-command path, where cp and cat see it" \
+    && ok "change_dylib: and on the multi-command path, where it reaches macho9 edit as a positional" \
     || bad "change_dylib leading dash, mixed" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
 
