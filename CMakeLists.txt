@@ -48,8 +48,8 @@ endif()
 set(CMAKE_C_STANDARD_REQUIRED OFF)
 
 # The toolkit library the seven rewriters are being converged onto (docs/PROPOSAL.md
-# "Shape"; the plan that started this convergence, 2026-09-08). It starts with
-# the smallest shared thing and grows one extraction at a time.
+# "Shape"; docs/superpowers/plans/2026-09-08-macho9-toolkit.md). It starts with the
+# smallest shared thing and grows one extraction at a time.
 #
 # Target name is machotoolcore, not machotool, so Task 4 can add the `machotool`
 # CLI executable without a target-name collision. It is deliberately NOT linked

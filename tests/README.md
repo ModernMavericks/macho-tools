@@ -60,13 +60,20 @@ it are what outlive them — as are `known-callers.sh`'s pinned pipeline
 digests. Regenerate it only from a real 10.9 build of both families, and say
 in the commit why a row changed.
 
-**A grep for the tool's pre-rename name will hit 1,209 of its lines, and that
-is correct.** Those rows are a frozen measurement of what the historical C
-binaries did, taken while this repo's own binary still answered to that name.
-Renaming them now would falsify the record they exist to preserve rather than
-update it — so, alone among the documents this rename pass touched,
-`compat-matrix.tsv` (and its generator's own `refuser` column vocabulary in
+**A grep for `macho9` will hit 1,209 of its lines, and that is correct.**
+Those rows are a frozen measurement of what the historical C binaries did,
+taken while this repo's own binary still answered to that name. Renaming them
+now would falsify the record they exist to preserve rather than update it —
+so `compat-matrix.tsv` (and its generator's own `refuser` column vocabulary in
 `compat-sweep.sh`) keeps the old name on purpose.
+
+That grep will also hit a handful of other files, and that is expected too: a
+plan or spec that narrates the rename itself, quotes a command as it was
+actually run, or cites one of the plans above by its real (unrenamed)
+filename keeps saying `macho9` for the same reason a quotation keeps the
+words it quotes. The rename plan's own "What is deliberately NOT renamed"
+section has the reconciled list; treat any `macho9` hit outside it as a real
+miss, not as license to reword a passage until the grep goes quiet.
 
 ## `machotool`'s exit codes
 

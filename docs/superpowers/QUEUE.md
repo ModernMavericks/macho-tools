@@ -4,7 +4,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 
 | # | item | spec | plan | state |
 |---|---|---|---|---|
-| 1 | Report what the pre-rename build did | — | its own plan file, filename kept from before the rename (see item 3's "What is deliberately NOT renamed") | **done**, pushed, CI green at `77f076a` |
+| 1 | Report what macho9 did | — | `plans/2026-09-10-report-what-macho9-did.md` | **done**, pushed, CI green at `77f076a` |
 | 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | **done**, pushed, CI green at `36703e0` |
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | plan written; unblocked |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | plan written; shelved until item 3 merges |
@@ -21,7 +21,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 15 | Flat-namespace shim: satisfy missing symbols at runtime | — | — | not started; came out of item 14's spike |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
-written against the pre-rename names and today's
+written against today's names (`macho9`, `cli/macho9.c`) and today's
 `--verbose` flag. Item 3 renames the product by sweeping the tree, which
 picks up whatever 9–11 added, and its Task 6 ("always verbose, on stderr")
 deletes the flag -- turning every verbose-only line 9–11 add, such as the
@@ -33,8 +33,8 @@ first would mean rebasing all three plans onto the new names.
 **2 before 5.** Relations and verb lowering have nothing to attach to until
 `MS_TABLE`, `ms_script` and `me_run` exist.
 
-**3 before 4.** `release.yml`'s artifact list names the pre-rename binary and
-wrapper names; the rename changes all three. Landing release
+**3 before 4.** `release.yml`'s artifact list names `macho9`, `macho9-compat.sh`
+and `macho9-translate.sh`; the rename changes all three. Landing release
 conformance first would edit the same lines twice.
 
 **8 is split out of 4, and goes after 7.** The `.pkg` and the Sparkle updater.

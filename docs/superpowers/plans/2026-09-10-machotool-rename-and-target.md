@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rename the tool and the repo to `machotool`, add the `target 10.9` statement, and remove the option to be quiet.
+**Goal:** Rename the tool and the repo from `macho9` to `machotool`, add the `target 10.9` statement, and remove the option to be quiet.
 
 **Architecture:** The rename is four mechanically distinct passes with different risk profiles — include guards, build targets and the binary, the two shared wrapper scripts, and prose — done in that order so the riskiest lands against an already-green tree. `target 10.9` is then one new statement kind that expands, in place, into statements the language already has. Verbosity stops being a flag.
 
@@ -24,13 +24,14 @@
 
 ## What is deliberately NOT renamed
 
-Three categories, and an implementer who renames any of them has caused a defect:
+Four categories, and an implementer who renames any of them has caused a defect:
 
-1. **`tests/compat-matrix.tsv`.** 1,209 of its lines contain the tool's pre-rename name. They are a *measurement* taken against the six historical C tools, which no longer exist. Renaming them falsifies a record rather than updating one. The spec's "Execution note" is the long version.
-2. **Completed plans and specs** — the toolkit-convergence plan (`2026-09-08`), `plans/2026-09-09-finish-the-convergence.md`, `plans/2026-09-09-retire-the-compat-tools.md`, and the plan reporting what the pre-rename build did (`2026-09-10`). They describe work as it was actually done, under the name it was done with. Their filenames stay too.
+1. **`tests/compat-matrix.tsv`.** 1,209 of its lines contain `macho9`. They are a *measurement* taken against the six historical C tools, which no longer exist. Renaming them falsifies a record rather than updating one. The spec's "Execution note" is the long version.
+2. **Completed plans and specs** — `plans/2026-09-08-macho9-toolkit.md`, `plans/2026-09-09-finish-the-convergence.md`, `plans/2026-09-09-retire-the-compat-tools.md`, `plans/2026-09-10-report-what-macho9-did.md`. They describe work as it was actually done, under the name it was done with. Their filenames stay too.
 3. **The six wrapper names**, per the Global Constraints.
+4. **Any individual passage — in an otherwise-renamed document — that narrates the rename itself, quotes a command as it was actually run, or cites one of the plans above by its real filename.** A sentence like "it passed before the macho9 -> machotool rename began", a `git mv cli/macho9.c cli/machotool.c` shown as the command that was run, or a citation of `plans/2026-09-10-report-what-macho9-did.md` by name, is true only with the old name in it; rewording it away just to make a grep come up empty replaces an accurate sentence with an inaccurate or unrunnable one. The grep in Task 4 Step 2 is a diagnostic for finding misses, not a specification the prose must be contorted to satisfy — a hit on a passage like this is expected, not a defect.
 
-*Pending* plans and specs — the edit-scripts pair, the relations pair, the release-conformance spec, and this plan's own spec — describe work not yet done and **are** updated, in Task 4.
+*Pending* plans and specs — the edit-scripts pair, the relations pair, the release-conformance spec, and this plan's own spec — describe work not yet done and **are** updated, in Task 4, except where category 4 applies within them.
 
 ---
 
@@ -85,36 +86,36 @@ git commit -m "refactor: include guards become MACHOTOOL_*"
 ### Task 2: The binary, the CMake targets, and the release artifact list
 
 **Files:**
-- Rename: the CLI source file → `cli/machotool.c`
-- Modify: `CMakeLists.txt` — `project()`, the executable target, the library target, the wrapper staging block, the test invocations
+- Rename: `cli/macho9.c` → `cli/machotool.c`
+- Modify: `CMakeLists.txt` — `project()`, the `macho9` executable target, `macho9core`, the wrapper staging block, the test invocations
 - Modify: `.github/workflows/release.yml` — the artifact list
 - Modify: every test script that invokes the binary by name
 
 **Interfaces:**
 - Produces: a binary named `machotool`, a library target named `machotoolcore`. Every later task and every test harness consumes these.
 
-- [ ] **Step 1: Find every reference to the pre-rename target names**
+- [ ] **Step 1: Find every reference to the target names**
 
 ```bash
-grep -rn "<pre-rename library target>\|<pre-rename executable target>\b" CMakeLists.txt .github/workflows/release.yml | head -40
-grep -rln "<pre-rename name>" tests/ --exclude=compat-matrix.tsv
+grep -rn "macho9core\|macho9\b" CMakeLists.txt .github/workflows/release.yml | head -40
+grep -rln "macho9" tests/ --exclude=compat-matrix.tsv
 ```
 
 - [ ] **Step 2: Rename the source file and the targets**
 
 ```bash
-git mv cli/<pre-rename name>.c cli/machotool.c
+git mv cli/macho9.c cli/machotool.c
 ```
 
-Then in `CMakeLists.txt`: the `project()` name becomes `machotool`, the executable target becomes `machotool`, the library target becomes `machotoolcore`, and every `target_link_libraries` referencing either follows.
+Then in `CMakeLists.txt`: the `project()` name becomes `machotool`, `add_executable(macho9 …)` becomes `add_executable(machotool …)`, `macho9core` becomes `machotoolcore`, and every `target_link_libraries` referencing either follows.
 
 - [ ] **Step 3: Update the test harnesses**
 
-The shell suites take a bindir and build the binary path from it. Find where each names the pre-rename binary and change it. `tests/cli_test.sh`'s binary-path variable is the main one; rename the variable too, so a reader is not chasing a name that no longer exists.
+The shell suites take a bindir and build the binary path from it. Find where each names `macho9` and change it. `tests/cli_test.sh`'s `$MACHO9` variable is the main one; rename the variable too, so a reader is not chasing a name that no longer exists.
 
 - [ ] **Step 4: Update the release workflow's artifact list**
 
-`.github/workflows/release.yml` lists `build-cross/` paths by name. The binary's pre-rename name becomes `machotool`; the two wrapper scripts' pre-rename names are Task 3's and stay for now — leave them, and note in the report that Task 3 finishes this file.
+`.github/workflows/release.yml` lists `build-cross/` paths by name. `macho9` becomes `machotool`; `macho9-compat.sh` and `macho9-translate.sh` are Task 3's and stay for now — leave them, and note in the report that Task 3 finishes this file.
 
 - [ ] **Step 5: Build and run everything**
 
@@ -140,7 +141,7 @@ git commit -m "refactor: the binary is machotool, the library machotoolcore"
 The riskiest of the four rename passes, because the six wrappers are a shipped interface and `compat/translate.sh` emits command lines naming the binary.
 
 **Files:**
-- Rename: the shared compat script → `compat/machotool-compat.sh`
+- Rename: `compat/macho9-compat.sh` → `compat/machotool-compat.sh`
 - Modify: `compat/translate.sh` — the emitted grammar names the binary
 - Modify: all six `compat/*.sh` wrappers — they source the shared script by name
 - Modify: `CMakeLists.txt` — the staging block installs both under their new names
@@ -174,14 +175,14 @@ It should already pass — that is the point. It is a tripwire for Task 3, not a
 - [ ] **Step 3: Rename the shared script and fix its callers**
 
 ```bash
-git mv compat/<pre-rename name>-compat.sh compat/machotool-compat.sh
+git mv compat/macho9-compat.sh compat/machotool-compat.sh
 ```
 
 Each of the six wrappers locates the shared script by name; update all six. `compat/translate.sh` emits command lines beginning with the binary's name — update the emitted grammar, and check whether the tool's name appears in any *diagnostic* it prints, since those reach stderr and some are asserted.
 
 - [ ] **Step 4: Update the staging block and the workflow**
 
-`CMakeLists.txt` stages both scripts under their historical, pre-rename installed names; both become `machotool-*`. `.github/workflows/release.yml`'s artifact list follows.
+`CMakeLists.txt` stages both scripts under their historical installed names (`macho9-compat.sh`, `macho9-translate.sh`); both become `machotool-*`. `.github/workflows/release.yml`'s artifact list follows.
 
 - [ ] **Step 5: Run the wrapper gates, which are the real test**
 
@@ -223,14 +224,21 @@ Per the family conventions, and per the spec's table: app identity is **"Maveric
 Bound every substitution to the file list above. After the pass:
 
 ```bash
-grep -rIl "macho""9" . 2>/dev/null | grep -v "^./.git\|^./.superpowers"
+grep -rIl "macho9" . 2>/dev/null | grep -v "^./.git\|^./.superpowers"
 ```
 
-Expected output: exactly `tests/compat-matrix.tsv` and the four completed plans. Anything else is either a miss or a file that should have been excluded — investigate rather than adding it to one list or the other.
+Per "What is deliberately NOT renamed" above, category 4 means this grep is a
+diagnostic for finding misses, not a specification the prose must be
+contorted to satisfy. Expected output: `tests/compat-matrix.tsv`, the four
+completed plans, and every other document carrying a category-4 passage —
+a sentence that narrates the rename, a command shown as it was actually run,
+or a citation of one of the completed plans by its real filename. Anything
+else is either a miss or a file that should have been excluded — investigate
+rather than adding it to one list or the other.
 
 - [ ] **Step 3: Explain the exclusions where a reader will hit them**
 
-`tests/README.md` should say, in a sentence, why `compat-matrix.tsv` still names a binary that no longer exists. A reader who greps for the tool's pre-rename name, finds 1,209 hits, and has to reconstruct the reason has been failed by the documentation.
+`tests/README.md` should say, in a sentence, why `compat-matrix.tsv` still names a binary that no longer exists. A reader who greps for `macho9`, finds 1,209 hits, and has to reconstruct the reason has been failed by the documentation.
 
 - [ ] **Step 4: Run everything and commit**
 
