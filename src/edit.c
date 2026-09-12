@@ -224,13 +224,13 @@ static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path,
  * `version-min set`, and the room `fixups set classic` appends its opcode
  * streams into.
  *
- * Under `verbose`, a statement that succeeded logs, indented beneath its
- * statement line, the work it did beyond what it names: the ordinal
+ * A statement that succeeded logs, indented beneath its statement line, the
+ * work it did beyond what it names: the ordinal
  * renumbering of a dylib insert or delete, what `fixups set classic`
  * converted or that it passed the image through, what `swift-abi set
  * legacy` retagged, and the command `version-min set` appended. */
 static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
-                    const ms_script *s, const ms_stmt *st, FILE *log, int verbose,
+                    const ms_script *s, const ms_stmt *st, FILE *log,
                     me_verdict *v) {
     mr_ops ops;
     mr_change change;
@@ -318,7 +318,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * reexport or a delete that matched nothing logs no follow-up. */
         if (!rpath) ops.renumbering = &renum;
         int rc = me_rewrite(pbuf, psize, path, &ops, v);
-        if (rc == 0 && verbose && renum.done) me_log_renumbering(log, &renum);
+        if (rc == 0 && renum.done) me_log_renumbering(log, &renum);
         return rc;
     }
 
@@ -338,7 +338,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * call, so an append prints nothing on stdout -- unless it grew the
          * header pad, when mg_ensure_pad's two grow lines, labelled with
          * `path`, are there. */
-        if (rc == 0 && verbose && added)
+        if (rc == 0 && added)
             me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
         return rc;
     }
@@ -350,13 +350,11 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         mi_image im;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
         int retagged = mswift_retag_image(&im);
-        if (verbose) {
-            if (retagged > 0)
-                me_say(log, "      retagged %d class record%s\n", retagged,
-                       retagged == 1 ? "" : "s");
-            else
-                me_say(log, "      nothing to retag\n");
-        }
+        if (retagged > 0)
+            me_say(log, "      retagged %d class record%s\n", retagged,
+                   retagged == 1 ? "" : "s");
+        else
+            me_say(log, "      nothing to retag\n");
         return 0;
     }
 
@@ -385,14 +383,13 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * success. rep is filled only on CONVERTED. */
         if (rc == MDCL_CONVERTED) {
             *psize = newlen;
-            if (verbose) me_log_declassify(log, &rep);
+            me_log_declassify(log, &rep);
             return 0;
         }
         if (rc == MDCL_PASSTHROUGH) {
             *psize = newlen;
-            if (verbose)
-                me_say(log, "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): "
-                            "passed through unchanged\n");
+            me_say(log, "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): "
+                        "passed through unchanged\n");
             return 0;
         }
         if (rc == MDCL_REFUSED) return MR_REFUSED;   /* the reason is on stderr */
@@ -544,14 +541,14 @@ static void me_log_derived(FILE *log, const me_derived *d) {
  * the other side of this, and is not special-cased: the explicit one is
  * redundant, and fatal-warnings flags it. */
 static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
-                     const ms_script *s, const ms_stmt *st, FILE *log, int verbose) {
+                     const ms_script *s, const ms_stmt *st, FILE *log) {
     me_derived d[ME_TARGET_MAX];
     mi_image im;
     int n, i;
 
     if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
     n = me_expand_10_9(&im, d, st->line);
-    if (verbose && n == 0)
+    if (n == 0)
         me_say(log, "    nothing to do: this binary already targets 10.9\n");
 
     /* The same script, minus fatal-warnings: allow-grow and everything else
@@ -566,8 +563,8 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
             me_verdict v;
             memset(&hits, 0, sizeof hits);
             v.hits = &hits; v.renamed = &renamed; v.decide = 0; v.missed = 0;
-            if (verbose) me_log_derived(log, &d[i]);
-            rc = me_apply(pbuf, psize, path, &sub, &d[i].stmt, log, verbose, &v);
+            me_log_derived(log, &d[i]);
+            rc = me_apply(pbuf, psize, path, &sub, &d[i].stmt, log, &v);
             if (rc != 0) return rc;
         }
     }
@@ -590,19 +587,19 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
  * sequence. The cost is rebuilding the load-command table once per
  * statement: a few KB, against I/O that happens once either way. */
 static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const char *out,
-                         const ms_script *s, FILE *log, int verbose,
+                         const ms_script *s, FILE *log,
                          mr_hits *hits, int *renamed, int decide, const char *slice) {
     for (int i = 0; i < s->n; i++) {
         const ms_stmt *stmt = &s->stmts[i];
-        if (verbose) me_log_stmt(log, stmt);
+        me_log_stmt(log, stmt);
         me_verdict v = { &hits[i], &renamed[i], decide, 0 };
         /* `target` is not an operation, so it is not lowered to one: it
          * expands here, in place, into the statements this image needs, and
          * they run before the next statement in the script does. Its own
          * hits/renamed entries stay zero -- nothing it derived can miss. */
         int rc = stmt->kind == MS_TARGET
-            ? me_target(pbuf, psize, path, s, stmt, log, verbose)
-            : me_apply(pbuf, psize, path, s, stmt, log, verbose, &v);
+            ? me_target(pbuf, psize, path, s, stmt, log)
+            : me_apply(pbuf, psize, path, s, stmt, log, &v);
         if (rc != 0) {
             if (rc != MR_REFUSED) rc = MR_FAIL;
             me_say(log, "machotool edit: %s at statement %d of %d (line %d)",
@@ -624,7 +621,7 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
  * mode parameter for the same reason: the mode comes from the input, which
  * wa_write_new stats itself. */
 static int me_write_once(uint8_t *buf, size_t size, const char *path, const char *out,
-                         FILE *log, int verbose) {
+                         FILE *log) {
     char bytes[32];
     me_commas(bytes, size);
     int wr = wa_write_new(path, out, buf, size);
@@ -635,7 +632,7 @@ static int me_write_once(uint8_t *buf, size_t size, const char *path, const char
         me_say(log, "machotool edit: writing %s failed; %s left unmodified\n", out, path);
         return MR_FAIL;
     }
-    if (verbose) me_say(log, "%s: written (%s bytes)\n", out, bytes);
+    me_say(log, "%s: written (%s bytes)\n", out, bytes);
     return 0;
 }
 
@@ -654,7 +651,6 @@ typedef struct {
     const ms_script *s;
     const char *path, *out;
     FILE *log;
-    int verbose;
     const unsigned char *selected;   /* per slice: does the script apply to it? */
     uint32_t last;                   /* the last selected slice, in arch-table order */
     mr_hits *hits;
@@ -667,13 +663,12 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     char name[32];
     ma_describe(a->cputype, a->cpusubtype, name);
     if (!c->selected[index]) {
-        if (c->verbose)
-            me_say(c->log, "slice %s: %s; passed through unchanged\n", name,
-                   (a->cputype & CPU_ARCH_ABI64) ? "not selected by arch" : "32-bit");
+        me_say(c->log, "slice %s: %s; passed through unchanged\n", name,
+               (a->cputype & CPU_ARCH_ABI64) ? "not selected by arch" : "32-bit");
         return 0;
     }
-    if (c->verbose) me_say(c->log, "slice %s:\n", name);
-    int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log, c->verbose,
+    me_say(c->log, "slice %s:\n", name);
+    int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log,
                            c->hits, c->renamed, index == c->last, name);
     if (rc != 0) return rc;
     /* Each slice's own final verification: always, and never subject to
@@ -683,7 +678,7 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
         me_say_left(c->log, c->path, c->out);
         return MR_REFUSED;
     }
-    if (c->verbose) me_say(c->log, "slice %s: verified\n", name);
+    me_say(c->log, "slice %s: verified\n", name);
     *changed = 1;
     return 0;
 }
@@ -694,7 +689,7 @@ static void me_fat_placed(const mfat_arch *a, uint32_t index,
                           uint64_t off, uint64_t size, void *ctx_) {
     me_fat_ctx *c = (me_fat_ctx *)ctx_;
     (void)index; (void)size;
-    if (!c->verbose || off == a->offset) return;
+    if (off == a->offset) return;
     char name[32];
     ma_describe(a->cputype, a->cpusubtype, name);
     me_say(c->log, "slice %s: moved from offset 0x%llx to 0x%llx\n", name,
@@ -702,7 +697,7 @@ static void me_fat_placed(const mfat_arch *a, uint32_t index,
 }
 
 static int me_run_fat(const char *path, const char *out, const ms_script *s,
-                      FILE *log, int verbose) {
+                      FILE *log) {
     /* Read the whole container once. */
     int fd = open(path, O_RDONLY);
     struct stat st;
@@ -788,7 +783,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         return rc;
     }
 
-    me_fat_ctx ctx = { s, path, out, log, verbose, selected, last, hits, renamed };
+    me_fat_ctx ctx = { s, path, out, log, selected, last, hits, renamed };
     int modified = 0;
     rc = mfat_rewrite(&buf, &size, narch, swap, me_fat_slice, me_fat_placed, &ctx, &modified);
     /* me_fat_slice sets *changed for every selected slice, so *modified is
@@ -814,8 +809,8 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         free(buf);
         return MR_REFUSED;
     }
-    if (verbose) me_say(log, "%s: verified\n", path);
-    return me_write_once(buf, size, path, out, log, verbose);
+    me_say(log, "%s: verified\n", path);
+    return me_write_once(buf, size, path, out, log);
 }
 
 /* mi_open said MI_NOT_MACHO, and me_run has already dispatched every fat
@@ -828,7 +823,6 @@ static int me_refuse_input(const char *path, FILE *log) {
 
 int me_run(const char *path, const char *out, const ms_script *s, const me_opts *o) {
     FILE *log = (o && o->log) ? o->log : stderr;
-    int verbose = o ? o->verbose : 0;
 
     /* BEFORE ANYTHING IS READ. `out` is required, and it may not be `path` --
      * the same two mistakes cli/machotool.c's bad_out refuses for every verb
@@ -854,7 +848,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         return MR_REFUSED;
     }
     if (magic == FAT_MAGIC || magic == FAT_CIGAM)
-        return me_run_fat(path, out, s, log, verbose);
+        return me_run_fat(path, out, s, log);
 
     /* Read the image once. */
     mi_image im;
@@ -894,7 +888,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         free(hits); free(renamed); free(buf);
         return MR_FAIL;
     }
-    int rc = me_statements(&buf, &size, path, out, s, log, verbose, hits, renamed, 1, NULL);
+    int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL);
     free(hits); free(renamed);
     if (rc != 0) { free(buf); return rc; }
 
@@ -916,7 +910,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         free(buf);
         return MR_REFUSED;
     }
-    if (verbose) me_say(log, "%s: verified\n", path);
+    me_say(log, "%s: verified\n", path);
 
-    return me_write_once(buf, size, path, out, log, verbose);
+    return me_write_once(buf, size, path, out, log);
 }

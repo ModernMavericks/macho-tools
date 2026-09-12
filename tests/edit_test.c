@@ -432,8 +432,9 @@ static int has_segment(const char *path, const char *seg, const char *sect_segna
 static char g_log[8192];
 
 /* Parse `text` and run it, reading `path` and writing `out`; the report lands
- * in g_log. */
-static int run(const char *path, const char *out, const char *text, int verbose) {
+ * in g_log. There is no quiet mode to select, so there is no parameter for
+ * one: every run reports. */
+static int run(const char *path, const char *out, const char *text) {
     ms_script s;
     char err[256];
     if (ms_parse(text, strlen(text), &s, err, sizeof err) != 0) {
@@ -444,7 +445,6 @@ static int run(const char *path, const char *out, const char *text, int verbose)
     FILE *log = tmpfile();
     me_opts o;
     memset(&o, 0, sizeof o);
-    o.verbose = verbose;
     o.log = log;
     int rc = me_run(path, out, &s, &o);
     fflush(log);
@@ -471,7 +471,7 @@ static void test_statements_apply_in_order(void) {
     before.entries++;   /* OUT is the one expected newcomer */
     int rc = run(path, out,
                  "load-command delete uuid\n"
-                 "segment rename __DATA __DATX\n", 1);
+                 "segment rename __DATA __DATX\n");
     CHECK(rc == 0, "in order: a script that succeeds returns 0 (got %d; log: %s)", rc, g_log);
     check_untouched("in order: the input", path, &before);
     CHECK(count_lc(out, LC_UUID, NULL) == 0, "in order: LC_UUID was deleted");
@@ -521,7 +521,7 @@ static void test_a_failure_part_way_writes_nothing(void) {
              "dylib append %s\n", longpath);
 
     snap before = take(path);
-    int rc = run(path, out, script, 1);
+    int rc = run(path, out, script);
     CHECK(rc == MR_REFUSED, "part-way: a refused second statement returns MR_REFUSED (got %d)", rc);
     check_untouched("part-way", path, &before);
     CHECK(access(out, F_OK) != 0 && errno == ENOENT,
@@ -545,13 +545,6 @@ static void test_a_failure_part_way_writes_nothing(void) {
               "part-way: the refusal does not call OUT unmodified (log: %s)", g_log);
     }
 
-    /* Unconditional: the refusal line is not a --verbose detail. */
-    before = take(path);
-    rc = run(path, out, script, 0);
-    CHECK(rc == MR_REFUSED, "part-way, quiet: still MR_REFUSED (got %d)", rc);
-    check_untouched("part-way, quiet", path, &before);
-    CHECK(strstr(g_log, "refused at statement 2 of 2 (line 4)") != NULL,
-          "part-way, quiet: the refusal line prints without --verbose (log: %s)", g_log);
     rm_dir();
 }
 
@@ -569,7 +562,7 @@ static void test_out_that_is_the_input_is_refused(void) {
     free(img);
 
     snap before = take(path);
-    int rc = run(path, path, "load-command delete uuid\n", 0);
+    int rc = run(path, path, "load-command delete uuid\n");
     CHECK(rc == MR_FAIL, "out is the input: MR_FAIL (got %d; log: %s)", rc, g_log);
     check_untouched("out is the input", path, &before);
     CHECK(strstr(g_log, "never writes its input") != NULL,
@@ -582,7 +575,7 @@ static void test_out_that_is_the_input_is_refused(void) {
      * cli/machotool.c's parser requires the positional -- which is why it is
      * checked here. */
     before = take(path);
-    rc = run(path, NULL, "load-command delete uuid\n", 0);
+    rc = run(path, NULL, "load-command delete uuid\n");
     CHECK(rc == MR_FAIL, "no out: MR_FAIL (got %d; log: %s)", rc, g_log);
     check_untouched("no out", path, &before);
     CHECK(strstr(g_log, "no output file was named") != NULL,
@@ -604,7 +597,7 @@ static void test_an_empty_script_is_refused_sensibly(void) {
     free(img);
 
     snap before = take(path);
-    int rc = run(path, out, "# nothing but a comment\nfatal-warnings\n", 0);
+    int rc = run(path, out, "# nothing but a comment\nfatal-warnings\n");
     CHECK(rc == MR_REFUSED, "empty script: an implausible image is still refused (got %d)", rc);
     check_untouched("empty script", path, &before);
     CHECK(strstr(g_log, "refused at verification (the script has no statements); ") != NULL,
@@ -630,7 +623,7 @@ static void test_the_final_verify_ignores_MACHO_NO_VERIFY(void) {
 
     setenv("MACHO_NO_VERIFY", "1", 1);
     snap before = take(path);
-    int rc = run(path, out, "segment rename __DATA __DATX\n", 1);
+    int rc = run(path, out, "segment rename __DATA __DATX\n");
     unsetenv("MACHO_NO_VERIFY");
     CHECK(rc == MR_REFUSED, "no escape hatch: MACHO_NO_VERIFY=1 does not skip the final "
           "verify (got %d)", rc);
@@ -658,7 +651,7 @@ static void test_later_statements_see_earlier_ones(void) {
     int rc = run(path, out,
                  "fatal-warnings\n"
                  "dylib append /usr/lib/libfoo.dylib\n"
-                 "dylib replace /usr/lib/libfoo.dylib /usr/lib/libbar.dylib\n", 0);
+                 "dylib replace /usr/lib/libfoo.dylib /usr/lib/libbar.dylib\n");
     CHECK(rc == 0, "sequential: the replace matched the appended dylib (got %d)", rc);
     CHECK(count_lc(out, LC_LOAD_DYLIB, "/usr/lib/libbar.dylib") == 1,
           "sequential: the result loads libbar");
@@ -682,14 +675,14 @@ static void test_fatal_warnings_refuses_an_unmatched_operation(void) {
     int rc = run(path, out,
                  "fatal-warnings\n"
                  "load-command delete uuid\n"
-                 "dylib delete /definitely/not/linked.dylib\n", 0);
+                 "dylib delete /definitely/not/linked.dylib\n");
     CHECK(rc == MR_REFUSED, "fatal-warnings: an unmatched operation refuses (got %d)", rc);
     check_untouched("fatal-warnings", path, &before);
     CHECK(access(out, F_OK) != 0, "fatal-warnings: %s was not created", out);
 
     rc = run(path, out,
              "load-command delete uuid\n"
-             "dylib delete /definitely/not/linked.dylib\n", 0);
+             "dylib delete /definitely/not/linked.dylib\n");
     CHECK(rc == 0, "without fatal-warnings: the run continues and succeeds (got %d)", rc);
     CHECK(count_lc(out, LC_UUID, NULL) == 0,
           "without fatal-warnings: the statements that matched were applied");
@@ -713,7 +706,7 @@ static void test_fatal_warnings_refuses_an_unmatched_segment_rename(void) {
     int rc = run(path, out,
                  "fatal-warnings\n"
                  "load-command delete uuid\n"
-                 "segment rename __NOPE __X\n", 0);
+                 "segment rename __NOPE __X\n");
     CHECK(rc == MR_REFUSED, "fatal-warnings: a rename that matched nothing refuses (got %d)", rc);
     check_untouched("fatal-warnings, rename", path, &before);
     CHECK(access(out, F_OK) != 0, "fatal-warnings, rename: %s was not created", out);
@@ -722,7 +715,7 @@ static void test_fatal_warnings_refuses_an_unmatched_segment_rename(void) {
 
     rc = run(path, out,
              "load-command delete uuid\n"
-             "segment rename __NOPE __X\n", 0);
+             "segment rename __NOPE __X\n");
     CHECK(rc == 0, "without fatal-warnings: an unmatched rename is reported and the run "
           "succeeds (got %d)", rc);
     CHECK(count_lc(out, LC_UUID, NULL) == 0,
@@ -746,30 +739,30 @@ static void test_the_file_level_operations_run_in_memory(void) {
     int rc = run(path, out,
                  "fixups set classic\n"
                  "version-min set 10.9\n"
-                 "swift-abi set legacy\n", 1);
+                 "swift-abi set legacy\n");
     CHECK(rc == 0, "in memory: an already-classic image passes fixups set classic, "
           "then gains a version-min (got %d; log: %s)", rc, g_log);
     CHECK(count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 1,
           "in memory: LC_VERSION_MIN_MACOSX was appended");
     /* The append is the one trace the statement leaves: the stdout line
      * that reports it belongs to `machotool minos`, which edit does not call.
-     * So --verbose says so, beneath the statement, as a follow-up. */
+     * So the report says so, beneath the statement, as a follow-up. */
     {
         const char *stmt = strstr(g_log, "  version-min set 10.9\n");
         const char *app = strstr(g_log, "\n      appended LC_VERSION_MIN_MACOSX 10.9\n");
         const char *next = strstr(g_log, "  swift-abi set legacy\n");
         CHECK(stmt && app && next && stmt < app && app < next,
-              "in memory: --verbose logs the version-min append beneath its statement "
+              "in memory: the report logs the version-min append beneath its statement "
               "(log: %s)", g_log);
     }
     /* Run again over the result, which already has one: nothing appended,
      * nothing claimed. */
-    rc = run(out, out2, "version-min set 10.9\n", 1);
+    rc = run(out, out2, "version-min set 10.9\n");
     CHECK(rc == 0, "in memory: version-min set on an image that has one succeeds (got %d)", rc);
     CHECK(count_lc(out2, LC_VERSION_MIN_MACOSX, NULL) == 1,
           "in memory: a second version-min set appends no second command");
     CHECK(strstr(g_log, "appended") == NULL,
-          "in memory: --verbose claims no append when there was none (log: %s)", g_log);
+          "in memory: the report claims no append when there was none (log: %s)", g_log);
     {
         size_t len = 0;
         uint8_t *now = read_file(out, &len);
@@ -785,7 +778,7 @@ static void test_the_file_level_operations_run_in_memory(void) {
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
     snap before = take(path);
-    rc = run(path, out, "version-min set 10.9\nfixups set classic\n", 0);
+    rc = run(path, out, "version-min set 10.9\nfixups set classic\n");
     CHECK(rc == MR_REFUSED, "in memory: fixups set classic with nothing to lower refuses (got %d)", rc);
     check_untouched("fixups refused", path, &before);
     rm_dir();
@@ -805,7 +798,7 @@ static void test_out_takes_the_inputs_mode(void) {
 
     snap before = take(path);
     before.entries++;   /* OUT is the one expected newcomer */
-    int rc = run(path, out, "load-command delete uuid\n", 0);
+    int rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == 0, "OUT: returns 0 (got %d)", rc);
     check_untouched("OUT: the input", path, &before);
     CHECK(count_lc(out, LC_UUID, NULL) == 0, "OUT: the edit landed in the output");
@@ -834,7 +827,7 @@ static void test_what_edit_accepts(void) {
     free(fat);
 
     snap before = take(path);
-    int rc = run(path, out, "load-command delete uuid\n", 0);
+    int rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "accepts: a 64-bit fat input is refused (got %d)", rc);
     check_untouched("fat64 input", path, &before);
     CHECK(strstr(g_log, "64-bit fat") != NULL,
@@ -843,13 +836,13 @@ static void test_what_edit_accepts(void) {
     in_dir(path, sizeof path, "text");
     write_file(path, (const uint8_t *)"not a Mach-O at all\n", 20, 0644);
     before = take(path);
-    rc = run(path, out, "load-command delete uuid\n", 0);
+    rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "thin only: a non-Mach-O is refused (got %d)", rc);
     check_untouched("non-Mach-O input", path, &before);
 
     in_dir(path, sizeof path, "absent");
     int entries = dir_entries();
-    rc = run(path, out, "load-command delete uuid\n", 0);
+    rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == MR_FAIL, "thin only: an absent input is an error, MR_FAIL (got %d)", rc);
     CHECK(access(path, F_OK) != 0 && access(out, F_OK) != 0 && dir_entries() == entries,
           "thin only: neither the input nor OUT was created for an absent input");
@@ -864,7 +857,7 @@ static void test_fat_every_64bit_slice_by_default(void) {
     in_dir(s1, sizeof s1, "s1"); in_dir(s2, sizeof s2, "s2");
     write_fat(path, 0, 0, 1);
     size_t stub_len; uint8_t *stub = build_i386_stub(&stub_len);
-    int rc = run(path, out, "load-command delete uuid\n", 0);
+    int rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == 0, "fat, no arch: succeeds (got %d; log: %s)", rc, g_log);
     slice_to_file(out, 0, s0); slice_to_file(out, 1, s1); slice_to_file(out, 2, s2);
     CHECK(count_lc(s0, LC_UUID, NULL) == 0, "fat, no arch: the x86_64 slice lost LC_UUID");
@@ -883,7 +876,7 @@ static void test_fat_arch_selects_named_slices(void) {
     in_dir(s1, sizeof s1, "s1"); in_dir(orig1, sizeof orig1, "orig1");
     write_fat(path, 0, 0, 0);
     slice_to_file(path, 1, orig1);
-    int rc = run(path, out, "arch x86_64\nload-command delete uuid\n", 0);
+    int rc = run(path, out, "arch x86_64\nload-command delete uuid\n");
     CHECK(rc == 0, "fat, arch x86_64: succeeds (got %d; log: %s)", rc, g_log);
     slice_to_file(out, 0, s0); slice_to_file(out, 1, s1);
     CHECK(count_lc(s0, LC_UUID, NULL) == 0, "fat, arch x86_64: the named slice was edited");
@@ -901,7 +894,7 @@ static void test_arch_on_a_thin_file(void) {
     uint8_t *img = build_image(0);
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
-    int rc = run(path, out, "arch x86_64\nload-command delete uuid\n", 0);
+    int rc = run(path, out, "arch x86_64\nload-command delete uuid\n");
     CHECK(rc == 0, "thin, arch x86_64: runs on an x86_64 image (got %d; log: %s)", rc, g_log);
     /* Not just "returned 0": a match must let the statements RUN. */
     CHECK(count_lc(out, LC_UUID, NULL) == 0,
@@ -910,7 +903,7 @@ static void test_arch_on_a_thin_file(void) {
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
     snap before = take(path);
-    rc = run(path, out, "arch arm64\nload-command delete uuid\n", 0);
+    rc = run(path, out, "arch arm64\nload-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "thin, arch arm64: an x86_64 image is refused (got %d)", rc);
     check_untouched("thin, arch arm64", path, &before);
     CHECK(strstr(g_log, "x86_64") != NULL, "thin, arch arm64: the refusal names the image's arch (log: %s)", g_log);
@@ -924,13 +917,13 @@ static void test_fat_missing_or_32bit_arch_is_refused(void) {
     in_dir(out, sizeof out, "fat.out");
     write_fat(path, 0, 0, 1);
     snap before = take(path);
-    int rc = run(path, out, "arch arm64e\nload-command delete uuid\n", 0);
+    int rc = run(path, out, "arch arm64e\nload-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "fat, arch arm64e: a slice the file lacks is refused (got %d)", rc);
     check_untouched("fat, missing arch", path, &before);
     CHECK(strstr(g_log, "x86_64, arm64, i386") != NULL,
           "fat, missing arch: the refusal lists the file's slices (log: %s)", g_log);
     before = take(path);
-    rc = run(path, out, "arch i386\nload-command delete uuid\n", 0);
+    rc = run(path, out, "arch i386\nload-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "fat, arch i386: naming a 32-bit slice is refused (got %d)", rc);
     check_untouched("fat, 32-bit arch", path, &before);
     CHECK(strstr(g_log, "32-bit") != NULL, "fat, arch i386: the refusal says 32-bit (log: %s)", g_log);
@@ -956,7 +949,7 @@ static void test_fat_two_missing_arch_names_are_both_reported(void) {
     free(s[0]); free(fat);
 
     snap before = take(path);
-    int rc = run(path, out, "arch arm64\narch i386\nload-command delete uuid\n", 0);
+    int rc = run(path, out, "arch arm64\narch i386\nload-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "fat, two missing arches: refused (got %d)", rc);
     check_untouched("fat, two missing arches", path, &before);
     CHECK(strstr(g_log, "has no arm64 slice (it has: x86_64)") != NULL,
@@ -973,19 +966,19 @@ static void test_fat_fatal_warnings_counts_a_match_in_any_slice(void) {
     in_dir(path, sizeof path, "fat");
     in_dir(out, sizeof out, "fat.out");
     write_fat(path, 0, NO_UUID, 0);   /* only the x86_64 slice has LC_UUID */
-    int rc = run(path, out, "fatal-warnings\nload-command delete uuid\n", 0);
+    int rc = run(path, out, "fatal-warnings\nload-command delete uuid\n");
     CHECK(rc == 0, "fat, fatal-warnings: a match in one slice is not a miss (got %d; log: %s)", rc, g_log);
     /* The same, with the miss FIRST: the verdict has to wait for the last
      * selected slice. Deciding in each slice would refuse this one and not
      * the case above, where the counts a later slice reads already carry an
      * earlier slice's match. */
     write_fat(path, NO_UUID, 0, 0);   /* only the arm64 slice has LC_UUID */
-    rc = run(path, out, "fatal-warnings\nload-command delete uuid\n", 0);
+    rc = run(path, out, "fatal-warnings\nload-command delete uuid\n");
     CHECK(rc == 0, "fat, fatal-warnings: a match in a LATER slice is not a miss "
           "(got %d; log: %s)", rc, g_log);
     write_fat(path, NO_UUID, NO_UUID, 0);   /* neither has it */
     snap before = take(path);
-    rc = run(path, out, "fatal-warnings\nload-command delete uuid\n", 0);
+    rc = run(path, out, "fatal-warnings\nload-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "fat, fatal-warnings: matching in no slice refuses (got %d)", rc);
     check_untouched("fat, miss everywhere", path, &before);
     CHECK(strstr(g_log, "matched nothing in any selected slice") != NULL,
@@ -1015,7 +1008,7 @@ static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
     write_fat(path, 0, IMPLAUSIBLE, 0);   /* the arm64 slice is the implausible twin */
 
     snap before = take(path);
-    int rc = run(path, out, "load-command delete uuid\n", 0);
+    int rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "fat: a statement refused in the second slice refuses the "
           "run (got %d)", rc);
     check_untouched("fat, second slice refused", path, &before);
@@ -1023,7 +1016,7 @@ static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
           "fat: the refusal names the slice the statement was running in (log: %s)", g_log);
 
     before = take(path);
-    rc = run(path, out, "segment rename __DATA __DATX\n", 0);
+    rc = run(path, out, "segment rename __DATA __DATX\n");
     CHECK(rc == MR_REFUSED, "fat: the second slice's own verification refuses the run "
           "(got %d)", rc);
     check_untouched("fat, second slice failed verification", path, &before);
@@ -1092,7 +1085,7 @@ static void test_fat_reassembly_refusal_leaves_the_file_untouched(void) {
     snprintf(script, sizeof script, "arch x86_64\nallow-grow\ndylib append %s\n", longpath);
 
     snap before = take(path);
-    int rc = run(path, out, script, 0);
+    int rc = run(path, out, script);
     CHECK(rc == MR_REFUSED, "fat reassembly: a non-ascending grow that would overlap is "
           "refused (got %d; log: %s)", rc, g_log);
     check_untouched("fat reassembly", path, &before);
@@ -1124,7 +1117,7 @@ static void test_fat_with_no_64bit_slice_is_refused(void) {
     free(s[0]); free(s[1]); free(fat);
 
     snap before = take(path);
-    int rc = run(path, out, "load-command delete uuid\n", 0);
+    int rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == MR_REFUSED, "fat, all 32-bit: a container with no 64-bit slice is "
           "refused (got %d)", rc);
     check_untouched("fat, all 32-bit", path, &before);
@@ -1133,20 +1126,20 @@ static void test_fat_with_no_64bit_slice_is_refused(void) {
     rm_dir();
 }
 
-static void test_fat_verbose_accounts_for_every_slice(void) {
+static void test_fat_report_accounts_for_every_slice(void) {
     fresh_dir();
     char path[512], out[512];
     in_dir(path, sizeof path, "fat");
     in_dir(out, sizeof out, "fat.out");
     write_fat(path, 0, 0, 1);
-    int rc = run(path, out, "arch x86_64\nload-command delete uuid\n", 1);
-    CHECK(rc == 0, "fat, verbose: succeeds (got %d)", rc);
-    CHECK(strstr(g_log, "slice x86_64:\n") != NULL, "fat, verbose: the edited slice's header (log: %s)", g_log);
-    CHECK(strstr(g_log, "slice x86_64: verified") != NULL, "fat, verbose: the edited slice verified");
+    int rc = run(path, out, "arch x86_64\nload-command delete uuid\n");
+    CHECK(rc == 0, "fat, report: succeeds (got %d)", rc);
+    CHECK(strstr(g_log, "slice x86_64:\n") != NULL, "fat, report: the edited slice's header (log: %s)", g_log);
+    CHECK(strstr(g_log, "slice x86_64: verified") != NULL, "fat, report: the edited slice verified");
     CHECK(strstr(g_log, "slice arm64: not selected by arch; passed through unchanged") != NULL,
-          "fat, verbose: the unselected slice is accounted for (log: %s)", g_log);
+          "fat, report: the unselected slice is accounted for (log: %s)", g_log);
     CHECK(strstr(g_log, "slice i386: 32-bit; passed through unchanged") != NULL,
-          "fat, verbose: the 32-bit slice is accounted for (log: %s)", g_log);
+          "fat, report: the 32-bit slice is accounted for (log: %s)", g_log);
     rm_dir();
 }
 
@@ -1161,7 +1154,7 @@ static void test_fat_writes_out_and_not_the_input(void) {
     write_fat(path, 0, 0, 0);
     snap before = take(path);
     before.entries++;   /* OUT is the one expected newcomer */
-    int rc = run(path, out, "load-command delete uuid\n", 0);
+    int rc = run(path, out, "load-command delete uuid\n");
     CHECK(rc == 0, "fat, OUT: succeeds (got %d; log: %s)", rc, g_log);
     check_untouched("fat, OUT: the input", path, &before);
     {
@@ -1194,7 +1187,7 @@ int main(void) {
     test_fat_a_refusal_in_the_second_slice_writes_nothing();
     test_fat_reassembly_refusal_leaves_the_file_untouched();
     test_fat_with_no_64bit_slice_is_refused();
-    test_fat_verbose_accounts_for_every_slice();
+    test_fat_report_accounts_for_every_slice();
     test_fat_writes_out_and_not_the_input();
 
     printf("edit_test: %d failure(s)\n", fails);

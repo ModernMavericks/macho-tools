@@ -176,8 +176,8 @@ there, even when no statement changed anything: `OUT` is the answer. To see what
 a script would do without disturbing anything, give it a scratch `OUT` — that is
 the same run, and the result is a file you can inspect rather than a prediction.
 
-`--verbose` may appear anywhere among the arguments, not only after `SCRIPT`.
-There is no `--` to end flag parsing, so a `FILE` or `SCRIPT` whose real name
+`edit` takes no flags at all — its three arguments are `FILE`, `OUT` and
+`SCRIPT`, in that order. There is no `--` to end flag parsing, so a `FILE` or `SCRIPT` whose real name
 starts with `--` is refused as an unknown flag; reference it through a path that
 doesn't, e.g. `./--name`. One leading dash is a file name there, as it is for
 every other verb. Not for `OUT`, though: an `OUT` beginning with `-` is refused
@@ -192,16 +192,28 @@ is exactly as it was found. The finished image is verified — mandatorily, afte
 the last statement and before the write, with no opt-out — and only then
 written, once.
 
-**`--verbose` logs, on stderr, what the run did.** Each statement as it
-starts; beneath it, indented, the follow-up work it did that its line does
-not name — for `dylib insert` and `dylib delete` the ordinal renumbering (the
-old-to-new map, and how many nlist entries and `SET_DYLIB_ORDINAL` opcodes
-changed), for `fixups set classic` the conversion's figures (rebases and
-binds emitted, commands stripped, how far `__LINKEDIT` grew) or that an
+**Every run logs, on stderr, what it did — there is no quiet mode, so there
+is no flag.** A tool whose job is to make edits nobody can see afterwards
+should not have an option to say nothing about them, and anyone who wants
+silence has `2>/dev/null`, which needs no cooperation from `machotool`. The
+report is each statement as it starts; beneath it, indented, the follow-up
+work it did that its line does not name — for `dylib insert` and `dylib
+delete` the ordinal renumbering (the command inserted or removed and its
+ordinal, the old-to-new map, and how many nlist entries and
+`SET_DYLIB_ORDINAL` opcodes changed), for `fixups set classic` the
+conversion's figures (rebases and binds emitted, the bytes of opcodes and the
+bytes appended, the commands stripped, how far `__LINKEDIT` grew) or that an
 already-classic image passed through, for `swift-abi set legacy` how many
-class records it retagged, and for `version-min set` the
-`LC_VERSION_MIN_MACOSX` it appended; then `FILE: verified` and
+class records it retagged or that there was nothing to retag, for
+`version-min set` the `LC_VERSION_MIN_MACOSX` it appended, and for `target
+10.9` its whole expansion, line by line, each with the finding that produced
+it — or that this binary already targets 10.9; then `FILE: verified` and
 `OUT: written (N bytes)`.
+
+Stderr, not stdout, and that division is load-bearing: the operations' own
+progress lines go to stdout, where the compat wrappers' callers have always
+read them, so the report can be unconditional without changing a byte of what
+any wrapper prints.
 
 **On a fat file, each slice is accounted for too.** `slice NAME:` before an
 edited slice's statements and `slice NAME: verified` after; `slice NAME: not

@@ -126,7 +126,7 @@ build_main() {
 # Two dylibs ahead of the libSystem clang appends, in THIS link order:
 # libb (ordinal 1), which nothing binds to, then liba (ordinal 2), which
 # main's a_sym binds to; libSystem is 3. Both halves of that are needed by
-# the `edit --verbose` follow-up assertions below. Nothing may bind to libb,
+# the `edit` follow-up assertions below. Nothing may bind to libb,
 # or `dylib delete` refuses it outright. And libb must come BEFORE a dylib
 # with binds, or deleting it renumbers nothing and every count it reports is
 # a vacuous zero. libb gets no -install_name, so its install name is the path
@@ -403,14 +403,14 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
-# edit's own flags= line: every CLI flag `edit` accepts -- which is now just
-# --verbose. `--output` became the OUT positional and `--dry-run` went with it
-# (a scratch OUT is the same run), so advertising either would tell a wrapper it
-# may pass a flag this build refuses. Whole-line equality, because "not
-# advertised" is the claim.
-echo "$caps" | grep -qxF "verb edit flags=verbose" \
-    && ok "capabilities: edit advertises verbose, and nothing else" \
-    || bad "capabilities: edit flags" "expected 'verb edit flags=verbose': $(echo "$caps" | grep '^verb edit')"
+# edit's own line carries NO flags= field, because `edit` accepts no flags.
+# `--output` became the OUT positional, `--dry-run` went with it (a scratch OUT
+# is the same run), and `--verbose` went when the report stopped being optional:
+# advertising any of them would tell a wrapper it may pass a flag this build
+# refuses. Whole-line equality, because "not advertised" is the claim.
+echo "$caps" | grep -qxF "verb edit" \
+    && ok "capabilities: edit advertises no flags at all" \
+    || bad "capabilities: edit flags" "expected a bare 'verb edit': $(echo "$caps" | grep '^verb edit')"
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The spec's statement vocabulary
@@ -2578,8 +2578,8 @@ rc=0
 
 # AN OUT BEGINNING WITH '-' IS REFUSED, not created -- the same answer, from the
 # same place (bad_out), as the eight fixed-arity verbs get above. A single
-# dash, because every flag this verb takes has two and a double-dashed OUT is
-# caught as an unknown flag first.
+# dash, because a double-dashed OUT is caught as an unknown flag first: this
+# verb takes no flags, so every '--' token is refused by name.
 build_main "$T/edit_dashout"
 rm -f -- "$T/-edit-dashout"
 rc=0
@@ -2634,19 +2634,6 @@ otool -l "$T/edit_stdin_out" 2>/dev/null | grep -q LC_UUID \
     && bad "edit -" "LC_UUID survived the stdin script" \
     || ok "edit: reads a script from stdin"
 
-# --verbose may appear anywhere among the arguments, not just after SCRIPT.
-build_main "$T/edit_anywhere"
-"$MACHOTOOL" edit --verbose "$T/edit_anywhere" "$T/edit_anywhere_out" "$T/prod.edits" \
-    >"$T/edit_anywhere.out" 2>"$T/edit_anywhere.err" \
-    || bad "edit: flags before FILE" "$(cat "$T/edit_anywhere.err")"
-# me_run's verbose log goes to o.log (stderr), not stdout -- the rewrite's
-# own progress lines print to stdout whether or not --verbose is given, so
-# asserting on stdout alone would pass even if --verbose did nothing. Check
-# stderr for the statement echo that only --verbose produces.
-grep -q "  load-command delete uuid" "$T/edit_anywhere.err" \
-    && ok "edit: --verbose before FILE logs the statement to stderr" \
-    || bad "edit: flags before FILE" "no statement echo on stderr: $(cat "$T/edit_anywhere.err")"
-
 # A parse error is reported BEFORE anything is written, and names the line.
 # This is what makes a typo in statement 9 of 9 cost nothing.
 build_main "$T/edit_bad"
@@ -2693,9 +2680,9 @@ rc=0
 [ "$rc" -eq 2 ] && ok "edit: a fourth positional is a usage error (2)" \
     || bad "edit usage" "extra positional: expected 2, got $rc"
 
-# A FILE WHOSE NAME STARTS WITH A DASH IS A FILE NAME. Every flag this verb
-# takes has two dashes, and every other verb takes its FILE positionally
-# without examining it, so a single-dash token in FILE's place is a path, not a
+# A FILE WHOSE NAME STARTS WITH A DASH IS A FILE NAME. Only a double dash is
+# refused here, and every other verb takes its FILE positionally without
+# examining it, so a single-dash token in FILE's place is a path, not a
 # typo'd flag. The compat wrappers reach this: the historical tools open()ed
 # whatever argv[1] was, and tests/wrapper_test.sh pins `change_dylib -dashy
 # ...` for that reason. OUT is the one positional that refuses a leading dash
@@ -2719,7 +2706,7 @@ grep -q "no-such-script-for-edit" "$T/edit_noscript.err" \
     && ok "edit: names the unreadable script path" \
     || bad "edit: unreadable script" "path not named: $(cat "$T/edit_noscript.err")"
 
-# Verbose must report the FOLLOW-UP work, not just the statement. A dylib
+# The report must carry the FOLLOW-UP work, not just the statement. A dylib
 # delete renumbers every surviving ordinal in the nlist entries AND in the
 # SET_DYLIB_ORDINAL* opcodes; PROPOSAL defect #2 was exactly that work not
 # happening, and it surfaced as "dyld: library ordinal (4) too big" at
@@ -2727,29 +2714,29 @@ grep -q "no-such-script-for-edit" "$T/edit_noscript.err" \
 # place a user can see it.
 build_main_two_dylibs "$T/edit_verb"
 printf 'dylib delete %s\n' "$T/libb.dylib" >"$T/verb.edits"
-"$MACHOTOOL" edit --verbose "$T/edit_verb" "$T/edit_verb_out" "$T/verb.edits" \
-    >/dev/null 2>"$T/verb.err" || bad "edit --verbose" "$(cat "$T/verb.err")"
+"$MACHOTOOL" edit "$T/edit_verb" "$T/edit_verb_out" "$T/verb.edits" \
+    >/dev/null 2>"$T/verb.err" || bad "edit report" "$(cat "$T/verb.err")"
 grep -q "dylib delete" "$T/verb.err" \
-    && ok "edit --verbose: names the statement" \
-    || bad "edit --verbose" "no statement line: $(cat "$T/verb.err")"
+    && ok "edit: names the statement" \
+    || bad "edit report" "no statement line: $(cat "$T/verb.err")"
 grep -q "renumbered" "$T/verb.err" \
-    && ok "edit --verbose: reports the ordinal renumbering it did unasked" \
-    || bad "edit --verbose" "no renumbering report: $(cat "$T/verb.err")"
+    && ok "edit: reports the ordinal renumbering it did unasked" \
+    || bad "edit report" "no renumbering report: $(cat "$T/verb.err")"
 grep -q "nlist" "$T/verb.err" \
-    && ok "edit --verbose: counts the nlist entries it touched" \
-    || bad "edit --verbose" "no nlist count: $(cat "$T/verb.err")"
+    && ok "edit: counts the nlist entries it touched" \
+    || bad "edit report" "no nlist count: $(cat "$T/verb.err")"
 grep -q "SET_DYLIB_ORDINAL" "$T/verb.err" \
-    && ok "edit --verbose: counts the opcodes it rewrote" \
-    || bad "edit --verbose" "no opcode count: $(cat "$T/verb.err")"
+    && ok "edit: counts the opcodes it rewrote" \
+    || bad "edit report" "no opcode count: $(cat "$T/verb.err")"
 
 # What was removed and where every survivor went, which build_main_two_dylibs
 # fixed (and checked): libb was 1, liba 2, libSystem 3.
 grep -qF "      removed LC_LOAD_DYLIB (was ordinal 1)" "$T/verb.err" \
-    && ok "edit --verbose: names the removed command and its ordinal" \
-    || bad "edit --verbose" "no 'removed LC_LOAD_DYLIB (was ordinal 1)': $(cat "$T/verb.err")"
+    && ok "edit: names the removed command and its ordinal" \
+    || bad "edit report" "no 'removed LC_LOAD_DYLIB (was ordinal 1)': $(cat "$T/verb.err")"
 grep -qF "      renumbered 2 surviving ordinals: 2->1, 3->2" "$T/verb.err" \
-    && ok "edit --verbose: lists the renumbering map" \
-    || bad "edit --verbose" "no '2->1, 3->2' map: $(cat "$T/verb.err")"
+    && ok "edit: lists the renumbering map" \
+    || bad "edit report" "no '2->1, 3->2' map: $(cat "$T/verb.err")"
 
 # The counts, as numbers. A "nlist" line saying 0 would satisfy the greps
 # above, so these read the figures back: liba's a_sym and libSystem's
@@ -2759,29 +2746,29 @@ vb_nlist() { sed -n 's/^          \([0-9][0-9]*\) nlist entr[a-z]* updated$/\1/p
 vb_ops() { sed -n 's/^          \([0-9][0-9]*\) SET_DYLIB_ORDINAL opcodes\{0,1\} updated.*/\1/p' "$1"; }
 nl2=$(vb_nlist "$T/verb.err"); op2=$(vb_ops "$T/verb.err")
 [ -n "$nl2" ] && [ "$nl2" -gt 0 ] \
-    && ok "edit --verbose: a delete that moved bound ordinals counts nlist entries > 0 ($nl2)" \
-    || bad "edit --verbose" "nlist count '$nl2' should be > 0: $(cat "$T/verb.err")"
+    && ok "edit: a delete that moved bound ordinals counts nlist entries > 0 ($nl2)" \
+    || bad "edit report" "nlist count '$nl2' should be > 0: $(cat "$T/verb.err")"
 [ -n "$op2" ] && [ "$op2" -gt 0 ] \
-    && ok "edit --verbose: ... and SET_DYLIB_ORDINAL opcodes > 0 ($op2)" \
-    || bad "edit --verbose" "opcode count '$op2' should be > 0: $(cat "$T/verb.err")"
+    && ok "edit: ... and SET_DYLIB_ORDINAL opcodes > 0 ($op2)" \
+    || bad "edit report" "opcode count '$op2' should be > 0: $(cat "$T/verb.err")"
 
 # A count that does not move when the input does is not a count. The same
 # delete on a fixture with one more bound dylib after libb (libc3, whose
 # c_sym main also calls) renumbers one more ordinal, one more undefined
 # symbol, and one more ordinal opcode.
 build_main_three_dylibs "$T/edit_verb3"
-"$MACHOTOOL" edit --verbose "$T/edit_verb3" "$T/edit_verb3_out" "$T/verb.edits" \
-    >/dev/null 2>"$T/verb3.err" || bad "edit --verbose (3 dylibs)" "$(cat "$T/verb3.err")"
+"$MACHOTOOL" edit "$T/edit_verb3" "$T/edit_verb3_out" "$T/verb.edits" \
+    >/dev/null 2>"$T/verb3.err" || bad "edit report (3 dylibs)" "$(cat "$T/verb3.err")"
 grep -qF "      renumbered 3 surviving ordinals: 2->1, 3->2, 4->3" "$T/verb3.err" \
-    && ok "edit --verbose: a third dylib adds its ordinal to the map" \
-    || bad "edit --verbose (3 dylibs)" "no '2->1, 3->2, 4->3' map: $(cat "$T/verb3.err")"
+    && ok "edit: a third dylib adds its ordinal to the map" \
+    || bad "edit report (3 dylibs)" "no '2->1, 3->2, 4->3' map: $(cat "$T/verb3.err")"
 nl3=$(vb_nlist "$T/verb3.err"); op3=$(vb_ops "$T/verb3.err")
 [ -n "$nl3" ] && [ "$nl3" -gt "${nl2:-0}" ] \
-    && ok "edit --verbose: the nlist count follows the input ($nl2 -> $nl3)" \
-    || bad "edit --verbose (3 dylibs)" "nlist count '$nl3' not above '$nl2': $(cat "$T/verb3.err")"
+    && ok "edit: the nlist count follows the input ($nl2 -> $nl3)" \
+    || bad "edit report (3 dylibs)" "nlist count '$nl3' not above '$nl2': $(cat "$T/verb3.err")"
 [ -n "$op3" ] && [ "$op3" -gt "${op2:-0}" ] \
-    && ok "edit --verbose: the opcode count follows the input ($op2 -> $op3)" \
-    || bad "edit --verbose (3 dylibs)" "opcode count '$op3' not above '$op2': $(cat "$T/verb3.err")"
+    && ok "edit: the opcode count follows the input ($op2 -> $op3)" \
+    || bad "edit report (3 dylibs)" "opcode count '$op3' not above '$op2': $(cat "$T/verb3.err")"
 
 # dylib insert carries the same follow-up: the new command takes ordinal 1
 # and every existing one moves up (build_main: liba=1, libSystem=2). A short
@@ -2789,91 +2776,117 @@ nl3=$(vb_nlist "$T/verb3.err"); op3=$(vb_ops "$T/verb3.err")
 # modern cross runner's linker leaves (see the rpath -insert fixture above).
 build_main "$T/edit_verb_ins"
 printf 'dylib insert @loader_path/libn.dylib\n' >"$T/verb_ins.edits"
-"$MACHOTOOL" edit --verbose "$T/edit_verb_ins" "$T/edit_verb_ins_out" "$T/verb_ins.edits" \
-    >/dev/null 2>"$T/verb_ins.err" || bad "edit --verbose (insert)" "$(cat "$T/verb_ins.err")"
+"$MACHOTOOL" edit "$T/edit_verb_ins" "$T/edit_verb_ins_out" "$T/verb_ins.edits" \
+    >/dev/null 2>"$T/verb_ins.err" || bad "edit report (insert)" "$(cat "$T/verb_ins.err")"
 grep -qF "      inserted LC_LOAD_DYLIB as ordinal 1" "$T/verb_ins.err" \
-    && ok "edit --verbose: names the inserted command and its ordinal" \
-    || bad "edit --verbose (insert)" "no 'inserted ... as ordinal 1': $(cat "$T/verb_ins.err")"
+    && ok "edit: names the inserted command and its ordinal" \
+    || bad "edit report (insert)" "no 'inserted ... as ordinal 1': $(cat "$T/verb_ins.err")"
 grep -qF "      renumbered 2 existing ordinals: 1->2, 2->3" "$T/verb_ins.err" \
-    && ok "edit --verbose: an insert reports the ordinals it pushed up" \
-    || bad "edit --verbose (insert)" "no '1->2, 2->3' map: $(cat "$T/verb_ins.err")"
+    && ok "edit: an insert reports the ordinals it pushed up" \
+    || bad "edit report (insert)" "no '1->2, 2->3' map: $(cat "$T/verb_ins.err")"
 nli=$(vb_nlist "$T/verb_ins.err"); opi=$(vb_ops "$T/verb_ins.err")
 [ -n "$nli" ] && [ "$nli" -gt 0 ] && [ -n "$opi" ] && [ "$opi" -gt 0 ] \
-    && ok "edit --verbose: an insert counts the nlist entries and opcodes it moved ($nli, $opi)" \
-    || bad "edit --verbose (insert)" "counts '$nli'/'$opi' should be > 0: $(cat "$T/verb_ins.err")"
+    && ok "edit: an insert counts the nlist entries and opcodes it moved ($nli, $opi)" \
+    || bad "edit report (insert)" "counts '$nli'/'$opi' should be > 0: $(cat "$T/verb_ins.err")"
 
 # A replace keeps its command's position and ordinal, so it carries no
 # follow-up and must not claim one.
 build_main "$T/edit_verb_rep"
 printf 'dylib replace @loader_path/liba.dylib @loader_path/libz.dylib\n' >"$T/verb_rep.edits"
-"$MACHOTOOL" edit --verbose "$T/edit_verb_rep" "$T/edit_verb_rep_out" "$T/verb_rep.edits" \
-    >/dev/null 2>"$T/verb_rep.err" || bad "edit --verbose (replace)" "$(cat "$T/verb_rep.err")"
+"$MACHOTOOL" edit "$T/edit_verb_rep" "$T/edit_verb_rep_out" "$T/verb_rep.edits" \
+    >/dev/null 2>"$T/verb_rep.err" || bad "edit report (replace)" "$(cat "$T/verb_rep.err")"
 grep -q "renumbered" "$T/verb_rep.err" \
-    && bad "edit --verbose (replace)" "a replace reported a renumbering: $(cat "$T/verb_rep.err")" \
-    || ok "edit --verbose: a replace reports no renumbering"
+    && bad "edit report (replace)" "a replace reported a renumbering: $(cat "$T/verb_rep.err")" \
+    || ok "edit: a replace reports no renumbering"
 
 # fixups set classic rebuilds __LINKEDIT's opcode streams wholesale. On an
 # image that is already classic (build_main's, linked for 10.9) it passes
 # through, and says so rather than staying silent.
 build_main "$T/edit_verb_fx"
 printf 'fixups set classic\n' >"$T/verb_fx.edits"
-"$MACHOTOOL" edit --verbose "$T/edit_verb_fx" "$T/edit_verb_fx_out" "$T/verb_fx.edits" \
-    >/dev/null 2>"$T/verb_fx.err" || bad "edit --verbose (fixups)" "$(cat "$T/verb_fx.err")"
+"$MACHOTOOL" edit "$T/edit_verb_fx" "$T/edit_verb_fx_out" "$T/verb_fx.edits" \
+    >/dev/null 2>"$T/verb_fx.err" || bad "edit report (fixups)" "$(cat "$T/verb_fx.err")"
 grep -qF "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): passed through unchanged" \
     "$T/verb_fx.err" \
-    && ok "edit --verbose: fixups on a classic image reports the pass-through" \
-    || bad "edit --verbose (fixups)" "no pass-through report: $(cat "$T/verb_fx.err")"
+    && ok "edit: fixups on a classic image reports the pass-through" \
+    || bad "edit report (fixups)" "no pass-through report: $(cat "$T/verb_fx.err")"
 # ... and on mkchained's hand-built chained-fixups image (declassify's
 # fixture, above: one rebase, one bind, and LC_DYLD_CHAINED_FIXUPS,
 # LC_DYLD_EXPORTS_TRIE and LC_BUILD_VERSION to strip) it converts, and the
 # report carries the conversion's own figures.
 "$T/mkchained" make "$T/edit_verb_chained"
-"$MACHOTOOL" edit --verbose "$T/edit_verb_chained" "$T/edit_verb_chained_out" "$T/verb_fx.edits" \
-    >/dev/null 2>"$T/verb_cf.err" || bad "edit --verbose (chained)" "$(cat "$T/verb_cf.err")"
+"$MACHOTOOL" edit "$T/edit_verb_chained" "$T/edit_verb_chained_out" "$T/verb_fx.edits" \
+    >/dev/null 2>"$T/verb_cf.err" || bad "edit report (chained)" "$(cat "$T/verb_cf.err")"
 grep -qF "      chained fixups -> LC_DYLD_INFO_ONLY" "$T/verb_cf.err" \
-    && ok "edit --verbose: fixups on a chained image reports the conversion" \
-    || bad "edit --verbose (chained)" "no conversion line: $(cat "$T/verb_cf.err")"
+    && ok "edit: fixups on a chained image reports the conversion" \
+    || bad "edit report (chained)" "no conversion line: $(cat "$T/verb_cf.err")"
 grep -qF "      1 rebase and 1 bind emitted" "$T/verb_cf.err" \
-    && ok "edit --verbose: reports the rebases and binds the conversion emitted" \
-    || bad "edit --verbose (chained)" "no '1 rebase and 1 bind': $(cat "$T/verb_cf.err")"
+    && ok "edit: reports the rebases and binds the conversion emitted" \
+    || bad "edit report (chained)" "no '1 rebase and 1 bind': $(cat "$T/verb_cf.err")"
 grep -qF "      stripped LC_DYLD_CHAINED_FIXUPS, LC_DYLD_EXPORTS_TRIE, LC_BUILD_VERSION" \
     "$T/verb_cf.err" \
-    && ok "edit --verbose: names the commands the conversion stripped, in load order" \
-    || bad "edit --verbose (chained)" "no stripped list: $(cat "$T/verb_cf.err")"
+    && ok "edit: names the commands the conversion stripped, in load order" \
+    || bad "edit report (chained)" "no stripped list: $(cat "$T/verb_cf.err")"
 grep -q "^      __LINKEDIT extended by [1-9][0-9,]* bytes" "$T/verb_cf.err" \
-    && ok "edit --verbose: reports extending __LINKEDIT" \
-    || bad "edit --verbose (chained)" "no __LINKEDIT line: $(cat "$T/verb_cf.err")"
+    && ok "edit: reports extending __LINKEDIT" \
+    || bad "edit report (chained)" "no __LINKEDIT line: $(cat "$T/verb_cf.err")"
 
 # swift-abi set legacy reports its retag count: mkswift's fixture has one
 # class and its metaclass on the stable-ABI bit, and build_main's has none.
 "$T/mkswift" make "$T/edit_verb_swift"
 printf 'swift-abi set legacy\n' >"$T/verb_sw.edits"
-"$MACHOTOOL" edit --verbose "$T/edit_verb_swift" "$T/edit_verb_swift_out" "$T/verb_sw.edits" \
-    >/dev/null 2>"$T/verb_sw.err" || bad "edit --verbose (swift-abi)" "$(cat "$T/verb_sw.err")"
+"$MACHOTOOL" edit "$T/edit_verb_swift" "$T/edit_verb_swift_out" "$T/verb_sw.edits" \
+    >/dev/null 2>"$T/verb_sw.err" || bad "edit report (swift-abi)" "$(cat "$T/verb_sw.err")"
 grep -qF "      retagged 2 class records" "$T/verb_sw.err" \
-    && ok "edit --verbose: swift-abi reports the class records it retagged" \
-    || bad "edit --verbose (swift-abi)" "no 'retagged 2 class records': $(cat "$T/verb_sw.err")"
+    && ok "edit: swift-abi reports the class records it retagged" \
+    || bad "edit report (swift-abi)" "no 'retagged 2 class records': $(cat "$T/verb_sw.err")"
 build_main "$T/edit_verb_noswift"
-"$MACHOTOOL" edit --verbose "$T/edit_verb_noswift" "$T/edit_verb_noswift_out" "$T/verb_sw.edits" \
-    >/dev/null 2>"$T/verb_nosw.err" || bad "edit --verbose (swift-abi)" "$(cat "$T/verb_nosw.err")"
+"$MACHOTOOL" edit "$T/edit_verb_noswift" "$T/edit_verb_noswift_out" "$T/verb_sw.edits" \
+    >/dev/null 2>"$T/verb_nosw.err" || bad "edit report (swift-abi)" "$(cat "$T/verb_nosw.err")"
 grep -qF "      nothing to retag" "$T/verb_nosw.err" \
-    && ok "edit --verbose: swift-abi with no Swift classes says nothing to retag" \
-    || bad "edit --verbose (swift-abi)" "no 'nothing to retag': $(cat "$T/verb_nosw.err")"
+    && ok "edit: swift-abi with no Swift classes says nothing to retag" \
+    || bad "edit report (swift-abi)" "no 'nothing to retag': $(cat "$T/verb_nosw.err")"
 
-# Follow-ups are verbose output: without --verbose, none of it is printed.
-build_main_two_dylibs "$T/edit_quiet"
-"$MACHOTOOL" edit "$T/edit_quiet" "$T/edit_quiet_out" "$T/verb.edits" >/dev/null 2>"$T/quiet.err" \
-    || bad "edit (quiet)" "$(cat "$T/quiet.err")"
-[ -s "$T/quiet.err" ] \
-    && bad "edit (quiet)" "a successful run without --verbose logged: $(cat "$T/quiet.err")" \
-    || ok "edit: without --verbose, no follow-up report"
+# THERE IS NO QUIET MODE, so there is no flag. A tool whose job is to make
+# edits nobody can see afterwards should not have an option to say nothing
+# about them. Anyone who wants silence has 2>/dev/null, which needs no flag
+# of ours.
+build_main "$T/noverb"
+printf 'load-command delete uuid\n' >"$T/nv.edits"
+rm -f "$T/noverb_out"
+nv_rc=0
+"$MACHOTOOL" edit --verbose "$T/noverb" "$T/noverb_out" "$T/nv.edits" \
+    >/dev/null 2>"$T/nv.err" || nv_rc=$?
+[ "$nv_rc" -ne 0 ] && ok "edit: --verbose is not a flag any more" \
+    || bad "no quiet mode" "--verbose was accepted; the flag survives"
+
+# And the report happens anyway, with no flag asked for.
+build_main "$T/noverb2"
+rm -f "$T/noverb2_out"
+"$MACHOTOOL" edit "$T/noverb2" "$T/noverb2_out" "$T/nv.edits" \
+    >"$T/nv2.out" 2>"$T/nv2.err" || bad "no quiet mode" "$(cat "$T/nv2.err")"
+grep -q "load-command delete" "$T/nv2.err" \
+    && ok "edit: reports without being asked" \
+    || bad "no quiet mode" "no report on stderr: $(cat "$T/nv2.err")"
+# AND IT GOES TO STDERR, which is what makes the report unconditional safe:
+# stdout belongs to the operations' own progress lines, and the six compat
+# wrappers' stdout is a byte-identical contract with the C tools they replaced.
+# So this checks that no report line is on stdout, rather than that stdout is
+# empty -- `load-command delete uuid` reaches mr_apply_image, which has always
+# printed its own "header pad" and "updated" lines there.
+grep -q "load-command delete" "$T/nv2.out" \
+    && bad "no quiet mode" "the statement echo went to stdout: $(cat "$T/nv2.out")" \
+    || ok "edit: the statement echo is on stderr, not stdout"
+grep -q "written (" "$T/nv2.out" \
+    && bad "no quiet mode" "the written line went to stdout: $(cat "$T/nv2.out")" \
+    || ok "edit: the written line is on stderr, so a wrapper's stdout is untouched"
 
 # Statements run one at a time, so each `dylib insert` goes to the front of
 # the image the statement before it left: two insert lines land in the
 # REVERSE of the order written, where `machotool dylib -insert A -insert B`
 # keeps its order. The README and src/edit.h disclose that; this pins it.
 # Two 32-byte commands overflow the 56-byte pad the modern cross runner's
-# linker leaves (as the `edit --verbose` insert case above notes), so both
+# linker leaves (as the `edit` insert case above notes), so both
 # runs free LC_UUID's 24 bytes first.
 build_main "$T/edit_ins2"
 printf 'load-command delete uuid\ndylib insert /A\ndylib insert /B\n' >"$T/ins2.edits"
@@ -3074,7 +3087,7 @@ printf 'target 10.9\n' >"$T/tgt.edits"
 # what this verb offers in place of a prediction.
 tgt_run() {
     rm -f "$2"
-    "$MACHOTOOL" edit --verbose "$1" "$2" "${3:-$T/tgt.edits}" \
+    "$MACHOTOOL" edit "$1" "$2" "${3:-$T/tgt.edits}" \
         >"$T/tgt.out" 2>"$T/tgt.err"
 }
 
@@ -3154,11 +3167,17 @@ echo "$tgt_chk" | grep -q "^chained=0" && echo "$tgt_chk" | grep -q "^dyldinfo=1
 # would pass vacuously, together, for the one reason that ought to fail them.
 build_main_without_build_version "$T/tgt_nobv"
 tgt_run "$T/tgt_nobv" "$T/tgt_nobv.out" || bad "target (no build-version)" "$(cat "$T/tgt.err")"
-if grep -qF "  target 10.9" "$T/tgt.err" &&
-   ! grep -q "load-command delete build-version" "$T/tgt.err"; then
-    ok "target: an image without LC_BUILD_VERSION derives no delete for it"
+# Written as a nested `if` with no `!` anywhere: a !-negated command never
+# trips errexit, so the shape is a hazard wherever it is not a test's last
+# line, and the family's shell-portability gate refuses it outright.
+if grep -qF "  target 10.9" "$T/tgt.err"; then
+    if grep -q "load-command delete build-version" "$T/tgt.err"; then
+        bad "target (no build-version)" "a delete was derived for an image with no LC_BUILD_VERSION: $(cat "$T/tgt.err")"
+    else
+        ok "target: an image without LC_BUILD_VERSION derives no delete for it"
+    fi
 else
-    bad "target (no build-version)" "expected a report with no build-version line: $(cat "$T/tgt.err")"
+    bad "target (no build-version)" "no report at all, so the absent build-version line proves nothing: $(cat "$T/tgt.err")"
 fi
 
 # ROW 3: no LC_VERSION_MIN_MACOSX -> version-min set 10.9. strip_version_min
@@ -3386,7 +3405,7 @@ rc=0
 # container, the second labelled arm64 in its fat_arch entry (edit names a
 # slice by that entry). allow-grow on the x86_64 slice alone grows it by a
 # page, so the arm64 slice after it has to move -- the one consequence a
-# passed-through slice can have, and --verbose must say so. The appended
+# passed-through slice can have, and the report must say so. The appended
 # path is sized from the slice's own pad, not hard-coded, because each
 # host's linker leaves a different pad.
 build_main "$T/fat_s0"
@@ -3397,15 +3416,15 @@ fat_pad=$("$MACHOTOOL" info "$T/fat_s0" | sed -n 's/^header pad: \([0-9][0-9]*\)
 fat_path="/$(printf "%${fat_pad}s" '' | tr ' ' f)"
 printf 'arch x86_64\nallow-grow\ndylib append %s\n' "$fat_path" >"$T/fat.edits"
 rc=0
-"$MACHOTOOL" edit --verbose "$T/fat_edit" "$T/fat_edit_out" "$T/fat.edits" \
+"$MACHOTOOL" edit "$T/fat_edit" "$T/fat_edit_out" "$T/fat.edits" \
     >/dev/null 2>"$T/fat.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: a fat file's x86_64 slice is edited, growing it" \
     || bad "edit fat" "expected 0, got $rc: $(cut -c1-200 "$T/fat.err")"
 grep -q "slice arm64: not selected by arch; passed through unchanged" "$T/fat.err" \
-    && ok "edit: --verbose accounts for the unselected arm64 slice" \
+    && ok "edit: the report accounts for the unselected arm64 slice" \
     || bad "edit fat" "no pass-through line: $(cut -c1-300 "$T/fat.err")"
 grep -q "slice arm64: moved from offset" "$T/fat.err" \
-    && ok "edit: --verbose says the arm64 slice moved when the x86_64 slice grew" \
+    && ok "edit: the report says the arm64 slice moved when the x86_64 slice grew" \
     || bad "edit fat" "no moved line: $(cut -c1-300 "$T/fat.err")"
 "$BIN/fatcheck" dump "$T/fat_edit_out" 0 "$T/fat_out0"
 "$BIN/fatcheck" dump "$T/fat_edit_out" 1 "$T/fat_out1"
@@ -3429,7 +3448,7 @@ cmp -s "$T/fat_out1" "$T/fat_s1" \
 "$BIN/makefat" "$T/fat_tgt" "$T/tgt_plain" 0x1000007 3 12 "$T/fat_tgt1" 0x100000c 0 12
 rm -f "$T/fat_tgt.out"
 rc=0
-"$MACHOTOOL" edit --verbose "$T/fat_tgt" "$T/fat_tgt.out" "$T/tgt.edits" \
+"$MACHOTOOL" edit "$T/fat_tgt" "$T/fat_tgt.out" "$T/tgt.edits" \
     >/dev/null 2>"$T/fat_tgt.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "target: a fat file's slices are each expanded" \
     || bad "target fat" "expected 0, got $rc: $(cat "$T/fat_tgt.err")"

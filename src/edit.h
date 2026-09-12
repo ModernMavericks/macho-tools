@@ -21,10 +21,13 @@
 
 #include "script.h"
 
+/* THERE IS NO QUIET MODE, so there is no field that asks for one. Every run
+ * logs each statement and the follow-up work it did (see REPORT, below): a
+ * tool whose job is to make edits nobody can see afterwards should not have
+ * an option to say nothing about them. The report goes to `log`, which is
+ * stderr, so a caller who wants silence has `2>/dev/null` and needs no
+ * cooperation from us. */
 typedef struct {
-    int   verbose;        /* log each statement to `log` as it runs, and
-                           * beneath it any follow-up work it did (see
-                           * REPORT, below) */
     FILE *log;            /* where the report goes; stderr in the CLI, and
                            * stderr when NULL */
 } me_opts;
@@ -59,7 +62,7 @@ typedef struct {
  * the selected slices: it has matched if it matched in any of them, and the
  * verdict is taken when the last selected slice has run it.
  *
- * Under --verbose each slice is accounted for: "slice NAME:" before an
+ * Every slice is accounted for in the report: "slice NAME:" before an
  * edited slice's statements and "slice NAME: verified" after; "slice NAME:
  * not selected by arch; passed through unchanged" or "slice NAME: 32-bit;
  * passed through unchanged" for the rest; and, after the slices are laid out
@@ -172,12 +175,12 @@ typedef struct {
  *   "machotool edit: OUT is PATH; machotool never writes its input".
  * The write line is the same whether `path` names a thin file or a fat one: the
  * write happens once, to the whole container, after every slice's own verify has
- * passed. Under o->verbose, each statement is also logged as "  <kind> <op>
- * <operands>" before it runs, and a run that gets that far logs
- * "PATH: verified" and "OUT: written (N bytes)" -- on a fat run "PATH:
- * verified" is the reassembled container's own verdict, once, after every
- * selected slice's "slice NAME: verified" (see FAT FILES, above, for the
- * rest of the per-slice verbose lines). me_run flushes stdout before each line
+ * passed. Each statement is also logged as "  <kind> <op> <operands>" before
+ * it runs, and a run that gets that far logs "PATH: verified" and "OUT:
+ * written (N bytes)" -- on a fat run "PATH: verified" is the reassembled
+ * container's own verdict, once, after every selected slice's "slice NAME:
+ * verified" (see FAT FILES, above, for the rest of the per-slice lines).
+ * me_run flushes stdout before each line
  * it writes and before each "matched nothing" report, so those land after any
  * stdout line printed before them; an operation's own stderr message, written
  * while it runs, is not ordered this way.
@@ -215,9 +218,9 @@ typedef struct {
  * later statement, or at the final verify, writes nothing, and o->log's
  * refusal line and the return code are what say so.
  *
- * FOLLOW-UPS, also under o->verbose: a statement that succeeds logs,
- * indented beneath its statement line, the work it did beyond what it names
- * -- the part a user cannot see for themselves. Every figure is one the
+ * FOLLOW-UPS: a statement that succeeds logs, indented beneath its statement
+ * line, the work it did beyond what it names -- the part a user cannot see
+ * for themselves. Every figure is one the
  * operation computed while doing the work and handed back, never a second
  * look at the image:
  *   `dylib insert` and `dylib delete`: the command inserted or removed and
