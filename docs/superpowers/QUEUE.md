@@ -14,7 +14,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
 | 9 | `macho9` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | plan written; runs after 10 and 11 |
 | 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | **done**, pushed, `b76ddf1..9ae6835` |
-| 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | plan written |
+| 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -90,9 +90,9 @@ against `src/edit.c`, the buffer-level seams item 2 exposed (`mr_apply_image`,
   `edit`'s `allow-grow` directive nor the CLI's `--allow-grow`.
 
 **Limits of `edit` as shipped**, each refused rather than wrong:
-- thin 64-bit input only; a fat file is refused;
+- thin 64-bit input only; a fat file is refused — *closed by item 11*;
 - `allow-grow` reaches `dylib` and `rpath` only; `version-min set` refuses
-  "no room" even under it;
+  "no room" even under it — *closed by item 10*;
 - statement order is execution order, so two `dylib insert` lines give the
   reverse of `-insert A -insert B`. A generator that emits scripts from verb
   lines (`compat/translate.sh`, per the spec's "Consumers") must reverse them.
@@ -139,6 +139,35 @@ happened on large images). Still open: `README.md:300` and `src/edit.h:153`
 ("Nor does the conversion need it" needs the same "on a modern chained binary"
 qualifier as the sentence after it); `src/edit.h:108-114` (omits the grow line
 printed before a refusal on a non-PIE image).
+
+## Carried out of item 11
+
+Item 11 shipped `8f17001..956b4f6`. Its final review found nothing critical or
+important; what it left deliberately:
+
+**For item 9** (`macho9` never writes its input). `me_fat_slice` sets
+`*changed` for every selected slice, so a fat `edit` always reassembles and
+rewrites the container even when no statement changed a byte — and reassembly
+sizes the output from the furthest slice end, so bytes trailing the last slice
+are dropped (a 16613-byte input with a no-op script gives a 16600-byte output).
+The verb path drops them too, but only when something actually changed, so this
+is not a regression in `mr_process_fat` — it is new only in that `edit` reaches
+the reassembly unconditionally. Item 9's "skip the write when nothing changed"
+closes both halves.
+
+**For item 6** (documentation and review): `--capabilities` advertises
+`statement` rows but no directives at all, so the `translate.sh` emitter the
+edit-scripts spec names cannot discover `arch` — nor `allow-grow` nor
+`fatal-warnings`. Consistent with the existing protocol rather than a gap item
+11 opened, but worth deciding once.
+
+**Pre-existing, not touched:** `src/fat.c:189` truncates a slice's offset and
+size to `uint32_t`, so a container larger than 4 GiB is silently mis-laid-out.
+The line moved verbatim out of `mr_process_fat` into `mfat_rewrite`, which is
+now the one place a bound on `max_end` would go. `edit`'s post-reassembly
+`mfat_parse` would likely catch the result; the verb path has no such re-parse.
+`src/edit.c`'s `char have[256]` slice list, printed by the "no such slice"
+refusals, truncates silently — unreachable with five arch names.
 
 ## Outstanding owner actions
 
