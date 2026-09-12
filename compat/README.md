@@ -95,7 +95,13 @@ for why they would be rare:
     `OUT`'s other HARD LINKS, so an `OUT` carrying any is refused (exit 1)
     instead of being silently split, exactly as `FILE` is for the other five;
     a dangling symlink at `OUT` is refused as well, where the C tool created
-    the link's target. `compat/patch_macho.sh`'s header has all of it.
+    the link's target, and an `OUT` that exists but is not a regular file (a
+    directory, a fifo, a device) is refused where the C tool's `open()` either
+    wrote to it or failed with `EISDIR`. Those `OUT` pre-checks also answer
+    BEFORE the input is diagnosed, so when IN **and** OUT are both bad it is now
+    OUT that is named — the same shape as `retag_swift_classes`' pre-check
+    below, and exit 1 on both sides either way.
+    `compat/patch_macho.sh`'s header has all of it.
   * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and

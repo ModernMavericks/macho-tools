@@ -70,6 +70,18 @@
 # dangling symlink at OUT is refused too (mw_prepare wants a writable OUT or no
 # OUT at all), where the C tool created the link's target.
 #
+# THE OUT PRE-CHECKS NOW ANSWER BEFORE THE IN DIAGNOSIS, which only shows when
+# IN and OUT are BOTH bad. The C tool ran md_declassify to completion and only
+# then opened OUT, so a bad IN was always what it complained about; these checks
+# have to come before macho9 runs, because they decide where macho9 writes. So
+# `patch_macho notmacho unwritable_out` says `open: Permission denied` where the
+# C tool said `notmacho: not a readable 64-bit Mach-O`, and `patch_macho
+# notmacho adir` says `create output: Is a directory`. Exit 1 either way, on both
+# sides, so no caller's control flow changes -- only which of two real problems
+# is named first. compat/README.md's retag_swift_classes bullet records the same
+# shape for the same reason: a wrapper's own pre-check answering ahead of the
+# tool it wraps.
+#
 # The temp path is reached by re-translating the same argv with it in place
 # of OUT, never by string-editing the emitted line: the file name reaches
 # that line through mt_qargs' quoting, and unpicking that would be a second,
@@ -92,11 +104,25 @@
 # A pass-through is recognized by md_declassify's own "Already patched" line --
 # macho9's stable stdout, the same oracle tests/cli_test.sh asserts against,
 # and explicitly not otool/nm text (tests/README.md's second lesson).
-# tests/wrapper_test.sh pins both paths' stdout and every mode case.
 #
-# 10.9's linker cannot emit chained fixups, so the CONVERTING path is exercised
-# by tests/chained-fixups.sh on a modern host (it SKIPs here) rather than
-# natively; the mode assertions do not depend on which path ran.
+# WHAT IS ACTUALLY COVERED, exactly, because a comment claiming more than that
+# is the kind of defect this repo treats as a defect. tests/wrapper_test.sh pins
+# the PASS-THROUGH path's stdout as a negative (no "Wrote " line at all) and the
+# CONVERTING path's as the exact last line `Wrote OUT (N bytes)`, as EXACTLY ONE
+# "Wrote " line -- so neither macho9's temp-naming line nor a doubled one can
+# slip through -- and alongside md_declassify's own progress lines. Every mode
+# case is pinned on both paths, and the IN == OUT install on both: the
+# pass-through installing NOTHING (inode stands) and the conversion installing
+# for real (new inode, converted bytes). Three mutations of that converting path
+# -- installing the unconverted bytes, deleting the `Wrote OUT (N bytes)` line
+# below, skipping the install when IN == OUT -- were each measured to leave
+# every suite in this repo green before those assertions existed.
+#
+# 10.9's linker cannot emit chained fixups, so the CONVERTING path is reached
+# with a HAND-BUILT fixture: tests/mkchained.c, shared by tests/wrapper_test.sh
+# and tests/cli_test.sh, which is why that path runs natively here rather than
+# only where tests/chained-fixups.sh -- whose fixture comes from the host linker,
+# and which therefore SKIPs on 10.9 -- can run it.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}

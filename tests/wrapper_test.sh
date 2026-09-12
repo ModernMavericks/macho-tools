@@ -87,6 +87,28 @@ mkswift_fixture() {
     return 0
 }
 
+# mkchained_fixture FILE -- write a Mach-O that really uses CHAINED FIXUPS to
+# FILE, so patch_macho's CONVERTING path can be reached. `fresh`'s
+# tests/fixture.macho is a real 10.9 binary, which predates the format by a
+# decade: every patch_macho assertion built on it exercises the PASS-THROUGH,
+# where nothing is converted, no `Wrote OUT` line is printed and (for IN == OUT)
+# nothing is installed. Three mutations of the converting path -- installing the
+# unconverted bytes, deleting the wrapper's own `Wrote OUT (N bytes)` line, and
+# skipping the install when IN == OUT -- went unnoticed by every suite in this
+# repo while that was the only input available here.
+#
+# The program is tests/mkchained.c, shared with tests/cli_test.sh exactly the
+# way strip_version_min.c and mkswift.c are, and built on first use. It needs
+# src/ on the include path (mach_compat.h) as cli_test's build of it does.
+mkchained_fixture() {
+    [ -x "$T/mkchained" ] \
+        || "$CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" 2>"$T/mkchained.out" \
+        || { bad "mkchained_fixture" "cannot build $HERE/mkchained.c: $(cat "$T/mkchained.out")"; return 1; }
+    "$T/mkchained" make "$1" >"$T/mkchained.out" 2>&1 \
+        || { bad "mkchained_fixture" "$1: $(cat "$T/mkchained.out")"; return 1; }
+    return 0
+}
+
 # firstline_is <file> <exact text> -- string equality, never a regex. The
 # usage lines below embed $BIN, a path this test does not choose, and a `grep`
 # pattern containing one would treat whatever punctuation the build directory
@@ -620,8 +642,10 @@ chmod 755 "$T/ro"; rm -rf "$T/ro"
 #     Neither layer below would refuse it: macho9 writes a temp BESIDE OUT and
 #     never looks at OUT, and `mv` given a directory destination moves the temp
 #     INTO it and succeeds -- exit 0, with `adir/.adir.macho9-compat.PID`
-#     created and nothing the caller asked for. Measured before the guard
-#     existed, which is why this assertion is here.
+#     created and nothing the caller asked for. Measured before these guards
+#     existed -- BOTH of them, since either one alone still refuses a directory
+#     (the `-e && ! -f` check catches it; what the `-d` check adds is the C
+#     tool's own EISDIR wording, which is what this asserts).
 fresh
 rm -rf "$T/adir"; mkdir "$T/adir"
 adir_before=$(ls -a "$T/adir")
@@ -661,6 +685,135 @@ pmdir_want=$(printf '%s\nout\n' "$pmdir_before" | LC_ALL=C sort)
     && ok "patch_macho: a successful run creates OUT and nothing else" \
     || bad "patch_macho strays" "exit $pmdir_rc; the directory holds [$(ls -a "$T/pmdir" | tr '\n' ' ')]"
 rm -rf "$T/pmdir"
+
+# ---- patch_macho, THE CONVERTING PATH -----------------------------------
+#
+# Everything above hands patch_macho tests/fixture.macho, a real 10.9 binary
+# that is already converted -- so all of it exercises the PASS-THROUGH, where
+# md_declassify copies its input, the wrapper prints no `Wrote OUT` line (the C
+# tool printed none either) and, for IN == OUT, mw_finish installs nothing
+# because the bytes match. Two things patch_macho exists to do were therefore
+# asserted nowhere at all, and each was measured to leave EVERY suite in this
+# repo green when deleted: the wrapper's own `Wrote OUT (N bytes)` line, and the
+# IN == OUT install. mkchained_fixture is what closes that -- an input that
+# really carries chained fixups, on any host, so the conversion runs here on
+# 10.9 rather than only where tests/chained-fixups.sh does not SKIP.
+#
+# The install's own mechanics -- OUT's mode, its new inode, the hard-link
+# refusal, no strays -- are the same wrapper code on either path and are already
+# covered above (cases 1, 2, 3b and 6, all of which really chmod and mv, since
+# case 2's OUT is empty and so differs from what macho9 wrote). What follows is
+# only what the pass-through cannot reach.
+
+# A. THE CONVERTING PATH'S STDOUT. `Wrote OUT (N bytes)` is patch_macho's own
+#    closing line, printed by the wrapper because macho9's names the temp; N is
+#    OUT's size. Asserted as the LAST line, as EXACTLY ONE `Wrote ` line (so
+#    mw_run_to_tmp's filter cannot leak `Wrote <temp> (...)` and the wrapper's
+#    own line cannot double), and alongside md_declassify's own progress lines,
+#    which must still come through untouched.
+mkchained_fixture "$T/cf"
+run patch_macho cf cfout
+cf_n=$(wc -c < "$T/cfout" 2>/dev/null | tr -d ' ')
+[ "$rc" -eq 0 ] \
+    && ok "patch_macho: the converting path exits 0" \
+    || bad "patch_macho converting" "exit $rc: $(cat "$T/err")"
+[ "$(sed -n '$p' "$T/out")" = "Wrote cfout ($cf_n bytes)" ] \
+    && ok "patch_macho: ... and its last stdout line names OUT and OUT's size" \
+    || bad "patch_macho converting stdout" "last line is [$(sed -n '$p' "$T/out")], want [Wrote cfout ($cf_n bytes)]"
+[ "$(grep -c '^Wrote ' "$T/out" | tr -d ' ')" = 1 ] \
+    && ok "patch_macho: ... and exactly one 'Wrote ' line, so macho9's cannot leak" \
+    || bad "patch_macho converting stdout" "$(grep -c '^Wrote ' "$T/out") 'Wrote ' lines: $(cat "$T/out")"
+grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T/out" \
+    && ok "patch_macho: ... and md_declassify's own lines still come through" \
+    || bad "patch_macho converting stdout" "not the converting transcript: $(cat "$T/out")"
+
+# THE INSTALLED BYTES ARE THE CONVERTED ONES. tests/cli_test.sh compares the two
+# FRONT-ENDS' output for the same input (its byte-identity assertion); these two
+# are about the INSTALL -- that what lands at OUT is what macho9 wrote, and is
+# not the input copied through. That cli_test assertion was the ONLY thing in the
+# repo that noticed a wrapper installing the unconverted bytes, which is a lot to
+# rest on one front-end-parity check.
+( cd "$T" && "$BIN/macho9" declassify cf cf.m9 ) >/dev/null 2>&1
+cmp -s "$T/cfout" "$T/cf.m9" \
+    && ok "patch_macho: the bytes installed at OUT are macho9's converted output" \
+    || bad "patch_macho converting bytes" "OUT differs from macho9 declassify's output"
+! cmp -s "$T/cfout" "$T/cf" \
+    && ok "patch_macho: ... and not the input copied through" \
+    || bad "patch_macho converting bytes" "OUT is byte-identical to the unconverted input"
+
+# B. IN == OUT ON THE CONVERTING PATH, the historical form the C tool allowed
+#    and `macho9 declassify` now refuses -- so the wrapper is the whole of it.
+#    Here the bytes DO change, so mw_finish really installs: the complement of
+#    case 3's pass-through, where it must install nothing. A run that skipped the
+#    install would leave IN unconverted and pass every other assertion here.
+rm -rf "$T/csdir"; mkdir "$T/csdir"
+mkchained_fixture "$T/csdir/cs"
+# What the conversion of THIS file is, from the other front-end, so the
+# comparison below does not lean on two mkchained runs producing equal bytes.
+( cd "$T/csdir" && "$BIN/macho9" declassify cs cs.want ) >/dev/null 2>&1
+chmod 640 "$T/csdir/cs"
+cs_ino=$(ino_of "$T/csdir/cs")
+cs_rc=0
+( cd "$T/csdir" && "$BIN/patch_macho" cs cs ) >"$T/cs.out" 2>"$T/cs.err" || cs_rc=$?
+cs_n=$(wc -c < "$T/csdir/cs" | tr -d ' ')
+[ "$cs_rc" -eq 0 ] && cmp -s "$T/csdir/cs" "$T/csdir/cs.want" \
+    && ok "patch_macho: IN == OUT converts IN in place, to macho9's own bytes" \
+    || bad "patch_macho IN == OUT converting" "exit $cs_rc, or IN was not converted: $(cat "$T/cs.err")"
+[ "$(ino_of "$T/csdir/cs")" != "$cs_ino" ] \
+    && ok "patch_macho: ... installed by rename, so the inode is new when the bytes change" \
+    || bad "patch_macho IN == OUT converting" "the inode stands -- the install did not happen"
+[ "$(mode_of "$T/csdir/cs")" = 640 ] \
+    && ok "patch_macho: ... and IN keeps its mode across the in-place conversion" \
+    || bad "patch_macho IN == OUT converting" "mode $(mode_of "$T/csdir/cs"), want 640"
+[ "$(sed -n '$p' "$T/cs.out")" = "Wrote cs ($cs_n bytes)" ] \
+    && ok "patch_macho: ... and names the file it wrote, which is IN" \
+    || bad "patch_macho IN == OUT converting" "last line is [$(sed -n '$p' "$T/cs.out")]"
+ls -a "$T/csdir" | grep -q 'macho9-compat' \
+    && bad "patch_macho IN == OUT converting" "a temp file was left beside IN" \
+    || ok "patch_macho: ... and left no temp beside it"
+rm -rf "$T/csdir"
+
+# C. REFUSALS WITH REAL WORK TO DISCARD. The hard-link and unwritable-OUT cases
+#    above use a pass-through IN, so no run that actually CONVERTED has ever had
+#    its output thrown away. Both refusals are made before macho9 runs, so what
+#    these add is that a converting run cannot sneak past them.
+rm -rf "$T/cfhl"; mkdir "$T/cfhl"
+mkchained_fixture "$T/cfhl/in"
+cp "$FIXTURE" "$T/cfhl/o"; ln "$T/cfhl/o" "$T/cfhl/o2"
+cfhl_sha=$(sha "$T/cfhl/o")
+cfhl_rc=0
+( cd "$T/cfhl" && "$BIN/patch_macho" in o ) >"$T/cfhl.out" 2>"$T/cfhl.err" || cfhl_rc=$?
+[ "$cfhl_rc" -eq 1 ] && grep -q 'hard link' "$T/cfhl.err" \
+    && [ "$(sha "$T/cfhl/o")" = "$cfhl_sha" ] && [ "$(sha "$T/cfhl/o2")" = "$cfhl_sha" ] \
+    && ok "patch_macho: a hard-linked OUT is refused (1) even when IN converts" \
+    || bad "patch_macho converting hard link" "exit $cfhl_rc: $(cat "$T/cfhl.err")"
+ls -a "$T/cfhl" | grep -q 'macho9-compat' \
+    && bad "patch_macho converting hard link" "a temp file was left beside OUT" \
+    || ok "patch_macho: ... and the discarded conversion left no temp"
+rm -rf "$T/cfhl"
+
+mkchained_fixture "$T/cfu_in"
+: > "$T/cfu_out"; chmod 444 "$T/cfu_out"
+run patch_macho cfu_in cfu_out
+[ "$rc" -eq 1 ] && [ "$(wc -c < "$T/cfu_out" | tr -d ' ')" = 0 ] \
+    && ok "patch_macho: an unwritable OUT is refused (1), untouched, even when IN converts" \
+    || bad "patch_macho converting unwritable OUT" "exit $rc, size $(wc -c < "$T/cfu_out" | tr -d ' ')"
+chmod 644 "$T/cfu_out"; rm -f "$T/cfu_out"
+
+# D. AND THE MODE CASES ONCE ON THIS PATH, because a converting run is the one
+#    where the temp's own mode (macho9 gave it IN's) is not already OUT's.
+mkchained_fixture "$T/cfm"; chmod 640 "$T/cfm"
+rm -f "$T/cfm_out"
+( cd "$T" && umask 077 && "$BIN/patch_macho" cfm cfm_out ) >/dev/null 2>&1
+[ "$(mode_of "$T/cfm_out")" = 700 ] \
+    && ok "patch_macho: a converting run's fresh OUT is 0755 & ~umask too" \
+    || bad "patch_macho converting fresh mode" "mode $(mode_of "$T/cfm_out"), want 700"
+: > "$T/cfm_out2"; chmod 741 "$T/cfm_out2"; cfm_ino=$(ino_of "$T/cfm_out2")
+run patch_macho cfm cfm_out2
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/cfm_out2")" = 741 ] \
+    && [ "$(ino_of "$T/cfm_out2")" != "$cfm_ino" ] \
+    && ok "patch_macho: a converting run's existing OUT keeps its mode, with a new inode" \
+    || bad "patch_macho converting existing mode" "exit $rc, mode $(mode_of "$T/cfm_out2")"
 
 # ---- add_version_min ----------------------------------------------------
 #

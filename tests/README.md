@@ -161,9 +161,10 @@ reproducing the failure in new shapes:
   doesn't already provide, write a tiny throwaway C program that reads the
   Mach-O structure directly (`ordinal_of.c`, `has_lc.c`, `has_bytes.c`,
   `mk2fat_overlap.c`, and others in `change_dylib_test.sh`;
-  `tests/strip_version_min.c` and `tests/mkswift.c`, both shared by
-  `cli_test.sh` and `wrapper_test.sh`, are the same idiom pointed the other
-  way — they write the structure, to build a fixture, rather than reading it).
+  `tests/strip_version_min.c`, `tests/mkswift.c` and `tests/mkchained.c`, all
+  three shared by `cli_test.sh` and `wrapper_test.sh`, are the same idiom
+  pointed the other way — they write the structure, to build a fixture, rather
+  than reading it).
   It asks the same question on a 10.9 host and a 2020s one because it depends
   only on the file format, not on any tool's text formatting.
 
