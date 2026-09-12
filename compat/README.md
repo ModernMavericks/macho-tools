@@ -3,8 +3,8 @@
 The six original entry points, kept for compatibility. All six are now
 `/bin/sh` wrappers around `machotool`. There is no C left in this directory.
 
-> **The goal is met.** The retirement plan's headline was that the rewritten
-> binary becomes the only Mach-O rewriting binary this repo ships. It is: `compat/` holds
+> **The goal is met.** The retirement plan's headline was "`macho9` becomes
+> the only Mach-O rewriting binary this repo ships." It is: `compat/` holds
 > six shell wrappers and two shell support files, and `machotool` is the only
 > binary `CMakeLists.txt` builds or installs. `fix_macho` was the holdout —
 > see "Why `fix_macho` could not be wrapped, and what changed" below, which is

@@ -265,7 +265,7 @@ sed 's|^Wrote f\.mtout (|Updated f (|' "$T/mt.out" >"$T/mt.want"
 # these two assert is that NOTHING IS LEFT beside FILE afterwards and that every
 # line machotool printed names FILE. Not that no temp is created -- one is, and
 # always was: it used to be a copy of FILE that a SEQUENCE of commands was run
-# against (`.FILE.machotool-compat.PID`), and it is now the output the one command
+# against (`.FILE.macho9-compat.PID`), and it is now the output the one command
 # writes and mw_finish installs, under that same name. The difference the first
 # assertion is about is that the name must not SURVIVE; the difference the
 # second is about is that machotool is handed FILE as its input and so labels its
@@ -385,8 +385,8 @@ run change_dylib nosuchfile -strip-lc uuid -change A B
 # THE CLOSING "Updated FILE (N bytes)" LINE, ON BOTH PATHS, AND ONLY WHEN THE
 # BYTES CHANGED. The C tool printed it from mr_apply_file, which no longer
 # writes FILE, so the wrapper prints it after installing the temp. Both paths
-# matter and for different reasons: a single-family run gets it where machotool
-# used to print it, and a multi-family `machotool edit` never printed it at all
+# matter and for different reasons: a single-family run gets it where macho9
+# used to print it, and a multi-family `macho9 edit` never printed it at all
 # (nothing asserted the line at the time, which is how it went missing).
 for cd_up_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib"; do
     fresh
@@ -1649,7 +1649,7 @@ rm -f "$T/-dashy"
 # leading-dash FILE with no directory part, FILE.new begins with '-' too, and
 # machotool deliberately refuses an OUT spelled that way -- so before
 # mt_out_for/mt_install_line learned to write OUT as ./FILE.new here, the
-# printed machotool line looked right but failed the moment it was copied and
+# printed macho9 line looked right but failed the moment it was copied and
 # run on its own, even though the wrapper's own real run (its temp is always
 # dot-prefixed, mw_prepare) went through fine. Pin it end to end: run the
 # wrapper for real in one directory, pull the taught block back out of its

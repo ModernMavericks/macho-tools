@@ -7,7 +7,7 @@
 #
 # This is the check that a refactor which is supposed to change NOTHING really
 # changed nothing. It was written for Task 0.5 (moving change_dylib's rewrite
-# into src/rewrite.c so machotool stops fork/exec'ing it) and it is expected to be
+# into src/rewrite.c so macho9 stops fork/exec'ing it) and it is expected to be
 # useful for every later task in the compat-retirement plan, which are all the
 # same shape: replace how the work is reached without changing what it does.
 #

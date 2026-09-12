@@ -24,7 +24,7 @@
  * How far that generalises is bounded by what has been swept, and this
  * comment used to overclaim it as "nothing to use on ANY host". What was
  * actually measured: the old scan's own filter (`grep -q 'no known
- * function'`, over `machotool lc COPY -delete uuid`) run RECURSIVELY over every
+ * function'`, over `macho9 lc COPY -delete uuid`) run RECURSIVELY over every
  * thin 64-bit .dylib/.so/.bundle under /usr/lib, /usr/libexec and
  * /System/Library/PrivateFrameworks on this 10.9 host -- 131 files -- turns
  * up no usable victim. It DID turn one up until src/grow.c's mg_plausible

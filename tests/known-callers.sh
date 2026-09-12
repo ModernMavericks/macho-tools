@@ -214,7 +214,7 @@ cp "$FIXTURE" "$T/atom"
 before=$(sha "$T/atom")
 # Every name in the caller's directory, so "and it left nothing behind" is a
 # question about the directory rather than about one temp-file spelling. The
-# wrapper used to make a `.NAME.machotool-compat.PID` copy and a grep for that
+# wrapper used to make a `.NAME.macho9-compat.PID` copy and a grep for that
 # name was the check; nothing produces it now, so a grep for it can no longer
 # fail. machotool's own temp is `TARGET.XXXXXX`, and a refusal that left one
 # would show up here as surely as anything else.

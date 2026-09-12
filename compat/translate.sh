@@ -630,7 +630,7 @@ $3
             # PRESERVE its behaviour, and the two answers differ -- fix_macho
             # applies every pair in ONE pass and gives each segment its FIRST
             # match, so the second pair never fires and it produces B, while
-            # separate `machotool segment` passes chain and produce C. Measured on
+            # separate `macho9 segment` passes chain and produce C. Measured on
             # tests/fixture.macho with the real binaries: different bytes, both
             # exiting 0. Emitting the sequence anyway would have been exactly
             # the "plausible-looking command that would do something else" the

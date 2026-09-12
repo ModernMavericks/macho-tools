@@ -336,8 +336,8 @@ mw_prepare() {
         # this gate `add_version_min somedir` would be refused as a hard-link
         # problem, with a remedy -- break the link -- that means nothing. A
         # directory is not something this check has an opinion about at all:
-        # it falls through to machotool. Measured (both `machotool minos d out 10.9`
-        # and `machotool retag-swift d out`): `d: cannot open or read` -- open()
+        # it falls through to machotool. Measured (both `macho9 minos d out 10.9`
+        # and `macho9 retag-swift d out`): `d: cannot open or read` -- open()
         # O_RDONLY succeeds on a directory, so the failure is mi_open's own
         # read, not an open() rejecting it the way the C tools' open(O_RDWR)
         # did.

@@ -909,10 +909,10 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * for it was. This comment used to say mg_plausible's heuristic has false
      * positives on real, untouched 10.9 system dylibs, naming
      * libSystem.B.dylib, libc++.1.dylib, libicucore.A.dylib and libz.1.dylib
-     * as refused by `machotool lc -delete uuid` where /bin/ls, /bin/cat,
+     * as refused by `macho9 lc -delete uuid` where /bin/ls, /bin/cat,
      * /usr/bin/grep and /usr/bin/awk passed, and 14 of the 16 thin binaries
      * in a 120-file /usr/lib corpus (tests/differential.sh) as refused by
-     * `machotool segment`. That split -- every dylib refused, every executable
+     * `macho9 segment`. That split -- every dylib refused, every executable
      * passed -- was not the heuristic at all: mg_plausible read its image
      * base from mi_text_base, whose 0 means BOTH "no segment maps the header"
      * and "the base is 0", and a dylib is linked at base 0. It bailed at the

@@ -132,7 +132,7 @@ write shifted content.
 `src/grow.h` called that "a real, if unusual, answer". It was not: on a
 sectionless image of 4096 bytes or more, `mr_process_thin` took it as the
 header-pad boundary, and its commit zeroed everything up to it. Reproduced on
-an 8192-byte image: `machotool dylib F -append /x` exited 0 having zeroed bytes
+an 8192-byte image: `macho9 dylib F -append /x` exited 0 having zeroed bytes
 200..4095, with or without `MACHO_NO_VERIFY`, because `mg_plausible` accepts
 that image. (An earlier version of this note said `mg_plausible` happened to
 refuse the fixture without the variable; it does not, so it was never a
@@ -142,10 +142,10 @@ sectionless image shorter than 4096 bytes, which wrote past the buffer -- was
 fixed in item 10 (`34a3187`). `66ca5ce` stops treating "no sections" as
 "4096": `mg_first_sect_off` answers `MG_NO_SECTION_DATA`, every caller that
 writes into the pad refuses it (declassify also refuses a first section past
-the end of the image), and `machotool info` reports the pad as unknown.
+the end of the image), and `macho9 info` reports the pad as unknown.
 `7ea664a` makes `mg_grow_header` refuse a first section whose file offset lies
 past the end of the image, the bound every other caller already had; before
-it, `machotool grow` on such an image died of SIGSEGV.
+it, `macho9 grow` on such an image died of SIGSEGV.
 
 **Four wording overclaims for item 6's documentation pass**, two of them
 resolved by `66ca5ce`, which rewrote both passages: `src/grow.h:99-101` (an

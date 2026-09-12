@@ -42,7 +42,7 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # not one they compile themselves. Compile from source ONLY as the standalone
 # fallback (`sh tests/change_dylib_test.sh`, no arguments, clang + otool only).
 #
-# The standalone build used to hand-enumerate machotoolcore's source list right
+# The standalone build used to hand-enumerate macho9core's source list right
 # here -- a SECOND place deciding what the library contains, independent of
 # CMakeLists.txt's own `add_library(machotoolcore ...)` list (still a hand
 # enumeration itself, CMakeLists.txt:57), which had already needed

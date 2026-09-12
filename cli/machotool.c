@@ -37,7 +37,7 @@
  * however it is reached.
  *
  * Those last four verbs used to be delegated by RUNNING change_dylib and
- * add_version_min as subprocesses, found next to machotool on disk. That made
+ * add_version_min as subprocesses, found next to macho9 on disk. That made
  * this binary depend at runtime on the very binaries the compat-retirement
  * plan replaces with wrappers around it -- a cycle. Task 0.5 lifted the
  * rewrite out of change_dylib.c's main() into src/rewrite.c and
@@ -98,10 +98,10 @@
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
- * supported -- see below) could not tell "machotool examined FILE and declined,
+ * supported -- see below) could not tell "macho9 examined FILE and declined,
  * on purpose, because of what it found" (not a Mach-O, not plausible, a
  * KIND/version/segment name this build doesn't support, mg_grow_header's own
- * designed refusal) apart from "something actually went wrong running machotool itself"
+ * designed refusal) apart from "something actually went wrong running macho9 itself"
  * (couldn't open/read/write, malloc failed, a usage error). Refusal is
  * load-bearing throughout this codebase -- "-grow refuses rather than
  * guesses" is a global rule, not an incidental behavior -- so a
@@ -370,10 +370,10 @@ static void print_ops_csv(int is_rpath) {
  *
  * Every verb listed below is unconditional now. dylib/rpath/lc/minos used to
  * be gated on a sibling binary (change_dylib / add_version_min) being present
- * and executable next to machotool, because that is what they ran to do the
+ * and executable next to macho9, because that is what they ran to do the
  * work: advertising them when the sibling was missing would have violated
  * this function's own contract ("never advertise one that errors out") the
- * moment machotool was packaged apart from them. Task 0.5 removed the
+ * moment macho9 was packaged apart from them. Task 0.5 removed the
  * subprocess -- the rewrite is linked in from src/rewrite.c and
  * src/version_min.c now -- so there is no external file left whose absence
  * could make an advertised verb fail, and nothing left to probe. */
@@ -1245,8 +1245,8 @@ static int cmd_edit(int argc, char **argv) {
              * left: every other verb takes its FILE positionally without
              * examining it -- the historical tools open()ed whatever argv
              * handed them, so a file really named "-dashy" is a file name.
-             * Rejecting a single dash here made `machotool edit -dashy o -` fail
-             * where `machotool dylib -dashy ...` succeeds, which
+             * Rejecting a single dash here made `macho9 edit -dashy o -` fail
+             * where `macho9 dylib -dashy ...` succeeds, which
              * tests/wrapper_test.sh's leading-dash case caught the moment the
              * compat wrappers started emitting `edit`. "-" alone stays the
              * stdin marker for SCRIPT. `--output` and `--dry-run` land here

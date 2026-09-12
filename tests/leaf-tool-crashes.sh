@@ -18,7 +18,7 @@
 #                      first section" check never found a bound and wrote
 #                      LC_VERSION_MIN_MACOSX 16 bytes past a buffer whose
 #                      allocation was exactly file-sized. The load-command
-#                      rewriter (`machotool dylib`) had the same blind spot: it
+#                      rewriter (`macho9 dylib`) had the same blind spot: it
 #                      took 4096 as the first-section offset of an image with
 #                      no section data, and its commit cleared the pad up to
 #                      4096, past the end of this 104-byte buffer.
@@ -27,10 +27,10 @@
 #                      point entirely past this 184-byte file --
 #                      retag_swift_classes indexed the class list at that
 #                      offset directly, with no check against the file's
-#                      actual size. `machotool dylib` cleared its load-command
-#                      area up to that same 0x7000, and `machotool info`
+#                      actual size. `macho9 dylib` cleared its load-command
+#                      area up to that same 0x7000, and `macho9 info`
 #                      measured a pad against it.
-#   oobgrow.macho      oobsection's out-of-bounds offset in an image `machotool
+#   oobgrow.macho      oobsection's out-of-bounds offset in an image `macho9
 #                      grow` accepts until it uses it: a PIE MH_EXECUTE with
 #                      __PAGEZERO and a __TEXT at file offset 0 whose one
 #                      section lies at 0x7000, in 256 bytes. grow moved
@@ -179,7 +179,7 @@ int main(int argc, char **argv) {
         s->size   = 0x8000;
         fsize = sizeof(*h) + seg->cmdsize;
     } else if (strcmp(argv[1], "oobgrow") == 0) {
-        /* oobsection's out-of-bounds section, in an image `machotool grow`
+        /* oobsection's out-of-bounds section, in an image `macho9 grow`
          * accepts up to the point where it uses that offset: a PIE executable
          * with a __PAGEZERO to donate from, and a __TEXT at file offset 0
          * whose one section lies at 0x7000, past the end of this 256-byte
@@ -301,7 +301,7 @@ done
 # an LC_UUID, with 0xAB in every byte from 200 on. No section has file data,
 # so nothing in the file says where the header pad ends. mg_first_sect_off
 # used to answer 4096 anyway, and here 4096 lies inside the buffer, so no
-# bounds check caught it: `machotool dylib F -append /x` exited 0 having zeroed
+# bounds check caught it: `macho9 dylib F -append /x` exited 0 having zeroed
 # bytes 200..4095, with or without MACHO_NO_VERIFY, because mg_plausible
 # accepts this image. Each verb below must refuse (1), saying so, and leave
 # every byte as it was.
@@ -375,7 +375,7 @@ fi
 # mg_grow_header inserts its new page at the first section's file offset and
 # moves everything from there to the end of the file up by a page. With that
 # offset past the end, the length of that move (fsize - insert, a size_t)
-# wraps around: `machotool grow` on oobgrow.macho died of SIGSEGV (exit 139),
+# wraps around: `macho9 grow` on oobgrow.macho died of SIGSEGV (exit 139),
 # with or without libgmalloc. It must refuse (1), saying why, and leave every
 # byte as it was.
 for gm in "" /usr/lib/libgmalloc.dylib; do

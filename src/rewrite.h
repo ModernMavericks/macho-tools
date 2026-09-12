@@ -13,10 +13,10 @@
  * -change/-delete/-reexport/-add/-insert/-strip-lc and the -*-rpath twins --
  * reaches exactly this code through compat/change_dylib.sh, the /bin/sh
  * wrapper that replaced compat/change_dylib.c, and compat/translate.sh, which
- * maps one grammar onto the other. machotool used to fork and exec change_dylib
+ * maps one grammar onto the other. macho9 used to fork and exec change_dylib
  * to get this work done; that made `change_dylib` a runtime dependency of
- * `machotool`, which is a cycle once change_dylib becomes a wrapper around
- * machotool. Sharing the code instead of the binary broke it, and is what made
+ * `macho9`, which is a cycle once change_dylib becomes a wrapper around
+ * macho9. Sharing the code instead of the binary broke it, and is what made
  * the wrapper possible.
  *
  * The parsing stays in each front-end -- the two grammars are genuinely
