@@ -12,7 +12,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 6 | **Human code review + excellent documentation** | — | — | not started |
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
-| 9 | `macho9` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | plan written; runs after 10 and 11 |
+| 9 | `macho9` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | **done**, pushed, `bccd008..1c0c38c` |
 | 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | **done**, pushed, `b76ddf1..9ae6835` |
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
 | 12 | An `insert_dylib` wrapper | — | — | not started; not yet designed |
