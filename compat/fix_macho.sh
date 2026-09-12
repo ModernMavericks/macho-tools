@@ -18,7 +18,10 @@
 #     -change O N           macho9 dylib   FILE -replace O N
 #     -rename_seg O N       macho9 segment FILE O N        (one line per pair)
 #
-# -- emitted in the order lc, dylib, segment, because deleting a load command
+# -- when the invocation is ONE command's worth. Anything more than that --
+# which includes two -rename_seg pairs, since `macho9 segment` takes one --
+# becomes a single `macho9 edit FILE -` with the operations as statements on
+# stdin, ordered load-command, dylib, segment, because deleting a load command
 # hands header pad back and the dylib rewrite consumes it. A rename changes no
 # sizes, so it can only go last. `argc < 3`, a trailing `-change`/`-rename_seg`
 # with a missing operand, an unknown flag, a NEW segment name longer than the
@@ -33,9 +36,10 @@
 # C file grew an FM_ROOM check before it retired; mt_room in
 # compat/translate.sh is where that check lives now, printing the same "too
 # many -change (max 32)" / "too many -rename_seg (max 16)" and refusing before
-# anything runs. The -rename_seg cap in particular exists NOWHERE ELSE: each
-# pair becomes its own `macho9 segment` invocation, so macho9 sees one rename
-# at a time and has no cap of its own to hit.
+# anything runs. The -rename_seg cap in particular exists NOWHERE ELSE: macho9
+# sees one rename at a time either way -- its `segment` verb takes one pair,
+# and an edit script's `segment rename` statement is one pair -- so it has no
+# cap of its own to hit.
 #
 # ---- DELIBERATE DIVERGENCES FROM fix_macho -------------------------------
 #
@@ -61,8 +65,9 @@
 #   2. A CHAINED -rename_seg now CHAINS. `-rename_seg __DATA __X -rename_seg
 #      __X __Y` produced __X under fix_macho, which applied every pair in ONE
 #      pass and gave each segment its FIRST match, so the second pair never
-#      fired. Each pair is its own `macho9 segment` pass here, and the second
-#      reads the first's output, so it produces __Y.
+#      fired. Each pair is its own pass here -- its own `segment rename`
+#      statement in the emitted edit script -- and the second reads the
+#      first's result, so it produces __Y.
 #      WHY ADOPTING IT IS RIGHT: doing what was asked. compat/translate.sh
 #      REFUSED this shape outright until now -- correctly, while a wrapper had
 #      to preserve fix_macho's answer -- and its -rename_seg arm records why
@@ -75,13 +80,12 @@
 #      target, preserving xattrs, and writing in place when st_nlink > 1.
 #      WHY ADOPTING IT IS RIGHT: these tools exist to make binaries loadable;
 #      a half-written one is the failure they are supposed to prevent.
-#      ONE CAVEAT, and it is this wrapper's own: an invocation that touches
-#      MORE THAN ONE family is a SEQUENCE of macho9 commands, and mw_run_atomic
-#      (compat/macho9-compat.sh) covers that with a copy-aside-and-install
-#      dance whose final `cat COPY > FILE` is NOT itself atomic. Its header
-#      says exactly what that does and does not preserve. A single-command
-#      invocation -- which is every invocation touching one family -- gets
-#      wa_write_atomic directly.
+#      NO CAVEAT ANY MORE. An invocation worth more than one command is one
+#      `macho9 edit FILE -`, and me_run (src/edit.c) reads the image once,
+#      applies every statement to it in memory, verifies, and writes once
+#      through wa_write_atomic -- so a refusal at any statement leaves FILE
+#      exactly as it was, and there is no second write to be caught between.
+#      A one-command invocation reaches wa_write_atomic directly, as before.
 #
 #   4. A FAT SLICE WHOSE EDIT FAILS now REFUSES THE WHOLE FILE.
 #      fix_macho's fat loop treated EVERY per-slice failure the same way: its
@@ -184,7 +188,8 @@
 # invent a third outcome for a grammar that has two. (EX_REFUSED, 1, is not
 # the problem -- it already coincides with fix_macho's own flat failure
 # code, for any of the ordinary considered refusals this translation's
-# `dylib`/`lc`/`segment` lines CAN reach -- bad magic, no room to grow, and
+# `dylib`/`lc`/`segment`/`edit` commands CAN reach -- bad magic, no room to
+# grow, and
 # the rest of rewrite.h's list, none of which need --fatal-warnings. The
 # ONE mr_apply_file refusal genuinely unreachable here is the
 # --fatal-warnings-specific one, "an operation matched nothing" promoted
@@ -198,11 +203,11 @@
 # fix_macho opened the file O_RDWR before it looked at it, so an absent or
 # unwritable file failed immediately, with no analysis and no write.
 # mr_apply_file opens O_RDWR up front too and perror()s "open" identically --
-# so a SINGLE-command invocation needs nothing here. A MULTI-command one does:
-# mw_run_atomic copies the file aside first and runs macho9 against the COPY,
-# which is writable by construction, so an unwritable original would get all
-# the way to the install step before failing, with a different message. The
-# check below keeps both shapes failing where fix_macho did. `test -w` is not
+# so an invocation that emits one of its verbs needs nothing here. One that
+# emits `macho9 edit` does: me_run reads the image O_RDONLY and finds out it
+# cannot write only when it writes, at the END of the run, with a different
+# message. The check below keeps both shapes failing where fix_macho did, and
+# for the absent case it is the only thing that does. `test -w` is not
 # open(O_RDWR) -- it consults the real uid and does not see ACLs -- so it can
 # disagree at the edges; it agrees on the two cases that actually reach a
 # caller (absent, and mode-denied), and both sides exit 1 either way.
@@ -228,7 +233,7 @@ mw_file=$1
 
 mw_require_writable "$mw_file" || exit $?
 
-mw_run_atomic fix_macho "$@"
+mw_run
 mw_frc=$?
 # Every nonzero becomes 1: see "exit codes" above. Named mw_frc rather than
 # reusing mw_rc, which macho9-compat.sh owns.

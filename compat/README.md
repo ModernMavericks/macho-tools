@@ -25,7 +25,7 @@ plus the two files every wrapper sources:
 | file | installed as | what it does |
 |---|---|---|
 | `translate.sh` | `macho9-translate.sh` | old argv → the `macho9` command line(s) it means. Pure text; runs nothing. |
-| `macho9-compat.sh` | `macho9-compat.sh` | finds `macho9`, prints the teaching message, runs the command lines, and keeps a multi-command sequence from leaving a half-converted binary behind. |
+| `macho9-compat.sh` | `macho9-compat.sh` | finds `macho9`, prints the teaching message, and runs the translation. |
 
 ## Why the names are unchanged
 
@@ -106,31 +106,31 @@ for why it would be rare:
     (open, fstat, read or write failing, `mv_add_version_min`'s race guard,
     or a checked allocation that `src/rewrite.c`'s drivers or
     `mi_open`/`mfat_parse` make -- `src/rewrite.h`'s `MR_FAIL` comment
-    names them) now exits 2, where the C tool always exited a flat 1. Two
-    exceptions, both `change_dylib`'s only. First, an allocation failure
-    INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) exits 1, the
-    same as every other reason either one refuses -- and it needs no
-    `-grow`. `change_dylib` reaches `mg_grow_header` only through
-    `--allow-grow`, but `src/rewrite.c` runs `mg_plausible` on every
-    rewrite that is not a pure segment rename -- every rewrite
-    `change_dylib` can ask for -- unless `MACHO_NO_VERIFY` is set.
-    `src/rewrite.c`'s own comment on that fold has the reasoning. Second, a
-    `change_dylib` run that emits more than one `macho9` line goes through
-    `mw_run_atomic`, whose own hardcoded `return 1`s (a failed copy aside,
-    for one, which is what an absent FILE produces) are not `macho9`'s
-    code at all. `compat/change_dylib.sh` and `compat/add_version_min.sh`'s
-    own headers have the rest of the detail.
+    names them) now exits 2, where the C tool always exited a flat 1. One
+    exception, `change_dylib`'s only: an allocation failure INSIDE
+    `mg_grow_header` or `mg_plausible` (`src/grow.c`) exits 1, the same as
+    every other reason either one refuses -- and it needs no `-grow`.
+    `change_dylib` reaches `mg_grow_header` only through `--allow-grow`,
+    but `src/rewrite.c` runs `mg_plausible` on every rewrite that is not a
+    pure segment rename -- every rewrite `change_dylib` can ask for --
+    unless `MACHO_NO_VERIFY` is set. `src/rewrite.c`'s own comment on that
+    fold has the reasoning. An invocation touching more than one family is
+    no longer a sequence of `macho9` lines with shell steps between them:
+    it is one `macho9 edit FILE -`, whose exit code is `me_run`'s own, from
+    the same `MR_REFUSED`/`MR_FAIL` vocabulary. `compat/change_dylib.sh`
+    and `compat/add_version_min.sh`'s own headers have the rest of the
+    detail.
 
 There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 `mg_grow_header` (`grep -c "grew header pad" tests/compat-matrix.tsv` is 0)
 -- `tests/fixture.macho`'s header pad is large enough, and the sweep's
 argument vocabulary short enough, that nothing in it ever needs to grow. 72
-of those rows DO emit two `--allow-grow` macho9 invocations for one old
-mixed-family `-grow` (compat/change_dylib.c issued one grow call for the
-whole operation set; the emitted sequence issues one dylib-family call and
-one rpath-family call, each capable of growing on its own), and no row forces
-either of those to actually grow. `tests/change_dylib_test.sh`'s "mixed-family
+of those rows DO give one old mixed-family `-grow` two chances to grow
+(compat/change_dylib.c issued one grow call for the whole operation set; the
+emitted `macho9 edit` script runs a dylib statement and an rpath statement as
+separate passes under one `allow-grow`, each capable of growing on its own),
+and no row forces either of those to actually grow. `tests/change_dylib_test.sh`'s "mixed-family
 double grow" case closes that gap directly (not through the sweep) with
 inputs sized to force a real double grow, and compares the result byte-for-
 byte against a single combined `mr_apply_file` call built the way

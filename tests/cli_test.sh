@@ -2804,6 +2804,20 @@ rc=0
     && bad "edit usage" "a repeated --output still wrote a file" \
     || ok "edit: a repeated --output writes neither OUT"
 
+# A FILE WHOSE NAME STARTS WITH A DASH IS A FILE NAME. Every flag this verb
+# takes has two dashes -- which the --output check above already relies on --
+# and every other verb takes its FILE positionally without examining it, so a
+# single-dash token here is a path, not a typo'd flag. The compat wrappers
+# reach this: the historical tools open()ed whatever argv[1] was, and
+# tests/wrapper_test.sh pins `change_dylib -dashy ...` for that reason.
+build_main "$T/-edit_dashy"
+rc=0
+(cd "$T" && "$MACHO9" edit -edit_dashy "$T/prod.edits") \
+    >/dev/null 2>"$T/edit_dash.err" || rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "edit: a FILE whose name starts with a dash is a file name, not a flag" \
+    || bad "edit dash FILE" "expected 0, got $rc: $(head -1 "$T/edit_dash.err")"
+
 # A script file that cannot be read at all -- as opposed to one that parses
 # badly -- is also EX_FAIL, reported with the path.
 rc=0

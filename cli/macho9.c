@@ -1164,7 +1164,17 @@ static int cmd_edit(int argc, char **argv) {
             verbose = 1;
         } else if (strcmp(tok, "--dry-run") == 0) {
             dry_run = 1;
-        } else if (tok[0] == '-' && strcmp(tok, "-") != 0) {
+        } else if (strncmp(tok, "--", 2) == 0) {
+            /* Only a DOUBLE dash is a flag here. Every flag this verb takes
+             * has two, which the --output check above already relies on ("an
+             * OUT such as '-x' is still taken as a file name"), and every
+             * other verb takes its FILE positionally without examining it --
+             * the historical tools open()ed whatever argv handed them, so a
+             * file really named "-dashy" is a file name. Rejecting a single
+             * dash here made `macho9 edit -dashy -` fail where `macho9 dylib
+             * -dashy ...` succeeds, which tests/wrapper_test.sh's leading-dash
+             * case caught the moment the compat wrappers started emitting
+             * `edit`. "-" alone stays the stdin marker for SCRIPT. */
             fprintf(stderr, "macho9 edit: unknown flag '%s'\n", tok);
             return EX_FAIL;
         } else if (npos == 0) {

@@ -12,10 +12,10 @@
 # old-grammar-to-macho9 translation in ONE file (compat/translate.sh) so that
 # "the translation that was tested is literally the translation that ships".
 # The same argument applies to everything AROUND the translation -- finding
-# macho9, printing the teaching message, running a sequence and stopping at
-# the first failure, and the temp-file dance that keeps a multi-command
-# sequence from leaving a half-converted binary behind. Those are one
-# implementation here, not six.
+# macho9, printing the teaching message, running what was translated, and the
+# pre-checks a wrapper has to make for itself because the command it is about
+# to run would report them differently. Those are one implementation here, not
+# six.
 #
 # ---- what lives WHERE, and why -------------------------------------------
 #
@@ -119,6 +119,9 @@ MW_T=$(mktemp -d "${TMPDIR:-/tmp}/macho9-compat.XXXXXX") || {
     printf '%s: cannot create a temporary directory\n' "$0" >&2
     exit 1
 }
+# A single temporary a wrapper has made BESIDE the caller's file, rather than
+# inside MW_T -- so that whatever creates one does not also have to remember
+# every exit path. Empty when there is none, which is every path today.
 MW_TMPFILE=''
 mw_cleanup() {
     rm -rf "$MW_T"
@@ -157,8 +160,12 @@ mw_translate() {
     mw_trc=$?
     unset MT_PROG0
     [ "$mw_trc" -eq 0 ] || return "$mw_trc"
-    MW_NCMDS=0
-    [ -n "$MW_CMDS" ] && MW_NCMDS=$(printf '%s\n' "$MW_CMDS" | wc -l | tr -d ' ')
+    # COMMANDS, not lines. `macho9 edit FILE -` carries its statements in a
+    # here-document, so one command can be six lines; a command is a line that
+    # STARTS with the program word (compat/translate.sh's output contract says
+    # so, and mt_pre_word is where that word comes from). A statement line
+    # cannot be mistaken for one -- every statement begins with its kind.
+    MW_NCMDS=$(printf '%s\n' "$MW_CMDS" | awk -v p="$(mt_pre_word) " 'index($0, p) == 1 { n++ } END { print n + 0 }')
     mw_teach
     return 0
 }
@@ -178,29 +185,38 @@ mw_teach() {
         printf '%s: deprecated -- macho9 does this now. The equivalent commands, in this order, are:\n' \
             "$MW_TOOL" >&2
     fi
-    printf '%s\n' "$MW_CMDS" | sed 's/^/    /' >&2
+    # Indent the COMMAND lines only. A here-document's body and its terminator
+    # have to start where they start: `MACHO9_EDIT` with four spaces in front
+    # of it does not end the here-document, so an indented block would teach a
+    # command that hangs when it is pasted. Leading whitespace before the
+    # command itself is harmless, so the block still reads as a block.
+    printf '%s\n' "$MW_CMDS" \
+        | awk -v p="$(mt_pre_word) " '{ if (index($0, p) == 1) print "    " $0; else print }' >&2
     return 0
 }
 
 # ---- run -----------------------------------------------------------------
 #
-# mw_run -- run MW_CMDS in order, stopping at the first nonzero exit and
-# returning that exit code. This is compat/translate.sh's stated output
-# contract ("Run them in the order printed and stop at the first nonzero
-# exit"), in the one place the wrappers need it executed.
+# mw_run -- run the translation, and return its exit code.
 #
-# The commands are fed from a here-document rather than a pipe so the loop
-# runs in THIS shell (a pipe's subshell would lose mw_rc), and each command's
-# own stdin is /dev/null so it cannot eat the rest of the list.
+# THIS NO LONGER LOOPS, and that is the whole point of the change that removed
+# the loop: an old invocation that would have been a sequence of macho9
+# commands is now ONE `macho9 edit FILE -` with the operations as statements
+# on stdin, so a translation is at most one command and there is no sequence
+# left to step through or to stop part way. (compat/retag_swift_classes.sh is
+# the one
+# translation that is still several commands -- one per binary -- and it has
+# always run its own lines itself, because it needs each file's own exit code
+# and its own stdout, which a stop-at-the-first-failure loop cannot give it.)
+#
+# The whole translation is eval'd as ONE script rather than line by line,
+# because a here-document only reaches `macho9`'s stdin if the shell running
+# the command also reads the lines that follow it. `</dev/null` is the default
+# stdin for the script, so a command with no redirection of its own -- every
+# verb line -- still cannot eat anything; the `edit` line's own here-document
+# redirection overrides it, which is exactly what it is for.
 mw_run() {
-    mw_rc=0
-    while IFS= read -r mw_line; do
-        [ -n "$mw_line" ] || continue
-        eval "$mw_line" </dev/null || { mw_rc=$?; break; }
-    done <<MW_RUN_EOF
-$MW_CMDS
-MW_RUN_EOF
-    return "$mw_rc"
+    eval "$MW_CMDS" </dev/null
 }
 
 # mw_require_writable FILE
@@ -211,15 +227,14 @@ MW_RUN_EOF
 # perror("open"): `open: No such file or directory` or `open: Permission
 # denied` -- no program name, on stderr, exit 1.
 #
-# A single macho9 command reproduces that for free, from mr_apply_file's own
-# O_RDWR. The paths that do NOT are the ones that put something else first:
-# mw_run_atomic (below) copies the file aside and runs macho9 against the
-# COPY, which it just created and can always write, so the original's mode is
-# never consulted; rename_segment gates on `macho9 info`, which opens
-# O_RDONLY. Either way the caller's first diagnostic would be a different
-# message at a different time. It lives here, next to mw_run_atomic, because
-# that is the path that most clearly needs it -- and because two byte-for-byte
-# copies of it in two wrappers is the thing this file exists not to have.
+# A `dylib`/`rpath`/`lc`/`segment` command reproduces that for free, from
+# mr_apply_file's own O_RDWR. The paths that do NOT are the ones that open the
+# file some other way first: `macho9 edit` reads the image O_RDONLY and only
+# discovers it cannot write when it writes, and rename_segment gates on
+# `macho9 info`, which is O_RDONLY too. Either way the caller's first
+# diagnostic would be a different message at a different time. It lives here
+# rather than in a wrapper because two byte-for-byte copies of it in two
+# wrappers is the thing this file exists not to have.
 #
 # Returns 1 rather than exiting, so the caller keeps the decision; both call
 # sites read `mw_require_writable "$mw_file" || exit $?`. The two strings are
@@ -235,112 +250,4 @@ mw_require_writable() {
         return 1
     fi
     return 0
-}
-
-# mw_run_atomic TOOL FILE ARG...   (TOOL FILE ARG... is the OLD argv)
-#
-# THE MIXED-FAMILY SPLIT, AND WHAT IT COSTS. change_dylib applies every
-# operation in ONE pass over the load commands and writes ONCE, atomically.
-# macho9 has a verb per family, so an invocation touching more than one family
-# becomes a SEQUENCE -- and tests/compat-sweep.sh measured what that costs:
-# two rows came back where the C tool refused ATOMICALLY while the translated
-# sequence refused AFTER ALREADY WRITING (the matrix marks them "+partial").
-# install.sh's production line is exactly that shape: it strips uuid and
-# codesig to reclaim header bytes and then rewrites three dylib paths.
-#
-# So a sequence never touches the caller's file. It runs against a COPY, and
-# the copy is installed over the original only if every command succeeded. A
-# failure anywhere leaves the original exactly as it was -- which is the C
-# tool's behaviour, and the whole point.
-#
-# The copy is made by re-translating the SAME argv with the temp path in place
-# of FILE, never by string-editing the emitted lines: the file name reaches
-# those lines through mt_qargs' quoting, and unpicking that would be a second,
-# worse parser.
-#
-# WHAT THIS DOES NOT PRESERVE THAT wa_write_atomic DOES (src/atomic_write.h):
-#
-#   * ATOMICITY OF THE FINAL REPLACEMENT. The result is installed with
-#     `cat COPY > FILE`, which truncates and rewrites in place. wa_write_atomic
-#     renames a fully-written temp file over the target, so the target is
-#     always either wholly old or wholly new; here a crash, a full disk or a
-#     kill DURING that last copy leaves FILE truncated. This is the one thing
-#     given up, and it is given up knowingly: writing in place is what
-#     preserves everything in the next paragraph.
-#   * Nothing else. Writing THROUGH the existing path keeps the inode, so the
-#     mode, the owner, the xattrs and every hard link to the file survive
-#     unchanged, and a FILE that is a symlink is followed to its target rather
-#     than replaced -- the three things wa_write_atomic goes out of its way to
-#     arrange (realpath first, xattrs copied, ftruncate+write when st_nlink>1)
-#     come free from not renaming at all.
-#
-# A SINGLE command needs none of this: macho9 already writes it atomically,
-# through wa_write_atomic itself. So mw_run_atomic runs it directly, which
-# also keeps the common case's stdout naming the caller's own path.
-#
-# AND ONE MORE THING IT COSTS, ON STDOUT: every line mr_apply_file prints is
-# labelled with the path it was handed, so a sequence run against the copy
-# prints the COPY's name -- `.f.macho9-compat.4711: header pad ...` rather
-# than `f: header pad ...`. That only ever happens on invocations whose stdout
-# already cannot match the C tool's (a sequence prints one header-pad/updated
-# pair PER PASS where one invocation printed one pair), which is why it is
-# accepted rather than papered over by rewriting macho9's own output: a line
-# that named `f` would be claiming macho9 had been run on a file it was not.
-mw_run_atomic() {
-    mw_tool=$1
-    mw_file=$2
-    shift 2
-
-    if [ "$MW_NCMDS" -le 1 ]; then
-        mw_run
-        return $?
-    fi
-
-    # Beside the original, not in $TMPDIR: the copy is about to be rewritten
-    # by macho9, which writes atomically via a temp file of its OWN in the
-    # same directory, so the directory has to be writable either way. Failing
-    # here, before anything has run, is the earliest that can be found out.
-    # Split with parameter expansion rather than dirname/basename: those two
-    # would take a FILE beginning with `-` for an option, and the C tools
-    # simply open()ed whatever they were handed. `cp` and `rm` get `--` for
-    # the same reason.
-    case $mw_file in
-        */*) mw_dirpart=${mw_file%/*}; mw_basepart=${mw_file##*/} ;;
-        *)   mw_dirpart=.;             mw_basepart=$mw_file ;;
-    esac
-    [ -n "$mw_dirpart" ] || mw_dirpart=/
-    MW_TMPFILE="$mw_dirpart/.$mw_basepart.macho9-compat.$$"
-    rm -f -- "$MW_TMPFILE"
-    if ! cp -p -- "$mw_file" "$MW_TMPFILE"; then
-        printf '%s: cannot copy %s aside; refusing to run a multi-step rewrite in place\n' \
-            "$mw_tool" "$mw_file" >&2
-        rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
-        return 1
-    fi
-
-    MT_PROG0=$0
-    MW_CMDS=$(mt_translate "$mw_tool" "$MW_TMPFILE" "$@")
-    mw_rc=$?
-    unset MT_PROG0
-    if [ "$mw_rc" -ne 0 ]; then
-        # The first translation of this same argv succeeded, and the only
-        # thing that changed is the file name -- which no refusal in
-        # translate.sh looks at. Reaching here means the two disagreed, so
-        # stop rather than run something that was never shown to be equivalent.
-        printf '%s: internal error: the translation is not stable under a change of file name\n' \
-            "$mw_tool" >&2
-        rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
-        return 1
-    fi
-
-    mw_run
-    mw_rc=$?
-    if [ "$mw_rc" -eq 0 ]; then
-        if ! cat -- "$MW_TMPFILE" > "$mw_file"; then
-            printf '%s: %s: the rewrite succeeded but installing it failed\n' "$mw_tool" "$mw_file" >&2
-            mw_rc=1
-        fi
-    fi
-    rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
-    return "$mw_rc"
 }

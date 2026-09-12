@@ -59,14 +59,14 @@
 #   the wrapper creates it and chmods it to `0755 & ~umask` -- the mode the C
 #   tool's open() would have produced -- before writing a byte into it.
 #
-#   What that gives up is the same one thing mw_run_atomic gives up
-#   (compat/macho9-compat.sh): the final copy is not atomic. Neither was the C
-#   tool's open(O_TRUNC)+write, so this matches it rather than diverging from
-#   it -- macho9's atomic write happens, but into the temp.
+#   What that gives up is atomicity of the final copy. Neither was the C
+#   tool's open(O_TRUNC)+write atomic, so this matches it rather than
+#   diverging from it -- macho9's atomic write happens, but into the temp.
 #
 #   The temp path is reached by re-translating the same argv with it in place
-#   of OUT, never by string-editing the emitted line -- same rule
-#   mw_run_atomic follows and for the same reason.
+#   of OUT, never by string-editing the emitted line: the file name reaches
+#   that line through mt_qargs' quoting, and unpicking that would be a second,
+#   worse parser.
 #
 # STDOUT. Everything md_declassify itself prints is identical on both sides (it
 # is the same function). Two adjustments:

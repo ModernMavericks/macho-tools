@@ -121,8 +121,12 @@ grep -q 'macho9 declassify ' "$T/e1" \
 grep -q 'macho9 minos ' "$T/e2" \
     && ok "install.sh: add_version_min taught its macho9 equivalent on stderr" \
     || bad "install.sh: add_version_min stderr" "no macho9 equivalent: $(cat "$T/e2")"
-grep -q 'macho9 lc ' "$T/e3" && grep -q 'macho9 dylib ' "$T/e3" \
-    && ok "install.sh: change_dylib taught both macho9 equivalents on stderr" \
+# This one invocation mixes families, so its equivalent is one `macho9 edit`
+# with the operations as statements -- the command, and both kinds of
+# statement it carries.
+grep -q 'macho9 edit ' "$T/e3" && grep -q 'load-command delete uuid' "$T/e3" \
+    && grep -q 'dylib replace' "$T/e3" \
+    && ok "install.sh: change_dylib taught its macho9 equivalent on stderr" \
     || bad "install.sh: change_dylib stderr" "missing an equivalent: $(cat "$T/e3")"
 
 # IDEMPOTENCY. install.sh's wrapper decides whether to run the pipeline at all
@@ -201,9 +205,11 @@ got1=$(sha "$T/c1" 2>/dev/null || echo none)
 # and tests/compat-sweep.sh measured it as a regression when it is run as a
 # raw sequence: the C tool refused ATOMICALLY, while `macho9 lc` followed by
 # `macho9 dylib` refused only AFTER the first command had already rewritten
-# the file (the matrix marks those rows "both-refuse+partial"). The wrapper's
-# temp-copy dance exists to close exactly this, so it is asserted here rather
-# than only described.
+# the file (the matrix marks those rows "both-refuse+partial"). A mixed-family
+# invocation is one `macho9 edit` now, which reads the image once, applies
+# every statement to it in memory and writes once at the end -- so a refusal
+# at any statement writes nothing. That is what this asserts, rather than
+# only describing it.
 cp "$FIXTURE" "$T/atom"
 before=$(sha "$T/atom")
 rc=0
@@ -226,8 +232,8 @@ grep -q 'still binds to the dylib being deleted' "$T/eatom" \
 # to a temporary beside it, so a space in either is a user's directory name
 # away, not a hypothetical. The whole pipeline is replayed on one, and must
 # produce the same bytes as the ordinary run above -- which is also the
-# end-to-end check on translate.sh's quoting and on the temp-file split's
-# parameter-expansion path handling.
+# end-to-end check on translate.sh's quoting, through both the verb form and
+# the edit script's here-document.
 mkdir -p "$T/dir with space"
 cp "$FIXTURE" "$T/dir with space/REAL"
 rc=0

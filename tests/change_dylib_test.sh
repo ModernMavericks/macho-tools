@@ -1631,15 +1631,18 @@ GROW_RPATH=$(printf 'R%.0s' $(seq 1 9000))
 build_main "$T/g_two"
 cp "$T/g_two" "$T/g_one"
 
-# Route A: the SHIPPED sequence -- the real compat/change_dylib.sh wrapper,
+# Route A: the SHIPPED route -- the real compat/change_dylib.sh wrapper,
 # exactly as a caller invokes it. This is not a simulation of what
-# compat/translate.sh emits; it is that emission, run.
+# compat/translate.sh emits; it is that emission, run. It is ONE macho9
+# command now (`edit`, with `allow-grow` and one statement per family), but
+# still two rewrites of the image, which is what this case is about: each
+# statement is its own pass and so its own chance to grow.
 rc=0
 "$CHANGE_DYLIB" "$T/g_two" -grow -change "@loader_path/liba.dylib" "$GROW_DYLIB" -add-rpath "$GROW_RPATH" \
     >"$T/g_two.out" 2>"$T/g_two.err" || rc=$?
 [ "$rc" -eq 0 ] \
-    && ok "mixed-family double grow: the shipped two-call route succeeds" \
-    || bad "mixed-family double grow" "the shipped two-call route failed (exit $rc): $(cat "$T/g_two.err")"
+    && ok "mixed-family double grow: the shipped two-pass route succeeds" \
+    || bad "mixed-family double grow" "the shipped two-pass route failed (exit $rc): $(cat "$T/g_two.err")"
 two_grows=$(grep -c "grew header pad" "$T/g_two.out")
 [ "$two_grows" -eq 2 ] \
     && ok "mixed-family double grow: the shipped route grows the header TWICE (measured, not assumed)" \
@@ -1662,23 +1665,24 @@ one_grows=$(grep -c "grew header pad" "$T/g_one.out")
 # still have to be images macho9 itself accepts, and both have to actually
 # carry what was asked for.
 "$MACHO9" verify "$T/g_two" >/dev/null 2>"$T/g_two_verify.err" \
-    && ok "mixed-family double grow: the two-call route's result still verifies" \
-    || bad "mixed-family double grow" "the two-call route's result failed macho9 verify: $(cat "$T/g_two_verify.err")"
+    && ok "mixed-family double grow: the two-pass route's result still verifies" \
+    || bad "mixed-family double grow" "the two-pass route's result failed macho9 verify: $(cat "$T/g_two_verify.err")"
 "$MACHO9" verify "$T/g_one" >/dev/null 2>"$T/g_one_verify.err" \
     && ok "mixed-family double grow: the one-call route's result still verifies" \
     || bad "mixed-family double grow" "the one-call route's result failed macho9 verify: $(cat "$T/g_one_verify.err")"
 "$T/has_bytes" "$T/g_two" "$GROW_RPATH" && "$T/has_bytes" "$T/g_two" "$GROW_DYLIB" \
-    && ok "mixed-family double grow: the two-call route's result carries both new strings" \
-    || bad "mixed-family double grow" "the two-call route's result is missing the new dylib path and/or rpath"
+    && ok "mixed-family double grow: the two-pass route's result carries both new strings" \
+    || bad "mixed-family double grow" "the two-pass route's result is missing the new dylib path and/or rpath"
 "$T/has_bytes" "$T/g_one" "$GROW_RPATH" && "$T/has_bytes" "$T/g_one" "$GROW_DYLIB" \
     && ok "mixed-family double grow: the one-call route's result carries both new strings" \
     || bad "mixed-family double grow" "the one-call route's result is missing the new dylib path and/or rpath"
 
 # THE QUESTION ITSELF: does growing twice cost, and produce, what growing
 # once would have? Recorded either way -- neither answer would be a bug in
-# this branch, since no macho9 CLI invocation can combine both families into
-# one call today (that is what compat/README.md now says instead of
-# "identical bytes"). Full byte comparison, not just size: mg_grow_header
+# this branch, since nothing macho9 offers combines both families into one
+# mr_apply_file call today. `macho9 edit` puts them in one INVOCATION, and
+# one write, but still runs a pass per statement (src/edit.c says why it does
+# not batch), so both grows still happen. Full byte comparison, not just size: mg_grow_header
 # grows by the EXCESS over the pad IT SEES AT THAT MOMENT, rounded up to a
 # whole page ("load commands need N more bytes than the M-byte pad" above),
 # not by a fixed page count computed from the operation's own delta alone.
@@ -1698,9 +1702,9 @@ if cmp -s "$T/g_two" "$T/g_one"; then
 elif [ "$two_size" -eq "$one_size" ]; then
     bad "mixed-family double grow" "same size ($two_size bytes) but the bytes differ -- same total growth, different layout"
 elif [ "$two_size" -gt "$one_size" ]; then
-    ok "mixed-family double grow: RESULT -- the two-call route is $((two_size - one_size)) bytes LARGER ($two_size vs $one_size); growing twice cost a whole extra page here, the ceil(a/P)+ceil(b/P) > ceil((a+b)/P) case made concrete rather than theoretical"
+    ok "mixed-family double grow: RESULT -- the two-pass route is $((two_size - one_size)) bytes LARGER ($two_size vs $one_size); growing twice cost a whole extra page here, the ceil(a/P)+ceil(b/P) > ceil((a+b)/P) case made concrete rather than theoretical"
 else
-    bad "mixed-family double grow" "the two-call route ($two_size bytes) is SMALLER than the one-call route ($one_size bytes) -- growing twice should never cost less than growing once for the same total delta"
+    bad "mixed-family double grow" "the two-pass route ($two_size bytes) is SMALLER than the one-call route ($one_size bytes) -- growing twice should never cost less than growing once for the same total delta"
 fi
 
 echo

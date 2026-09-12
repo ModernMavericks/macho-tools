@@ -23,12 +23,17 @@
 #
 # ---- output contract -----------------------------------------------------
 #
-#   * Zero or more lines on stdout. Each line is a COMPLETE, `eval`-safe
-#     command beginning with $MACHO9 (default: the bare word `macho9`).
-#     Arguments are single-quoted only when they contain something outside
-#     [A-Za-z0-9_@%+=:,./-], so the common case stays readable and the
+#   * Zero or more COMMANDS on stdout, as `eval`-safe shell text. A command
+#     begins with $MACHO9 (default: the bare word `macho9`) at the start of a
+#     line. Arguments are single-quoted only when they contain something
+#     outside [A-Za-z0-9_@%+=:,./-], so the common case stays readable and the
 #     hostile case stays correct.
-#   * The lines are ORDERED. Run them in the order printed and stop at the
+#   * A command is USUALLY one line, but `macho9 edit FILE -` carries its
+#     statements in a here-document, so it spans several: the `edit` line, the
+#     statements, and the `MACHO9_EDIT` terminator. Counting commands means
+#     counting lines that START with the program word, not counting lines --
+#     which is what macho9-compat.sh's mw_translate does.
+#   * The commands are ORDERED. Run them in the order printed and stop at the
 #     first nonzero exit; see "ordering" below for why the order matters.
 #   * Exit 0 with ZERO lines means "this old invocation was a no-op on the
 #     file; there is no macho9 command to run." (change_dylib accepts
@@ -43,12 +48,17 @@
 #     rather than to preserve.) Nothing goes to stdout; emitting a
 #     plausible-looking command that would do something else is exactly what
 #     the plan forbids.
-#   * Exit 1 means the OLD TOOL ITSELF would have refused this argv --
-#     a usage error, an unknown flag, an unknown -strip-lc kind, a capacity
-#     cap, an over-long segment name. The origin tool's exact message goes to
-#     stderr and nothing goes to stdout. A wrapper can therefore refuse by
-#     just forwarding this exit code, and it never runs a half-translated
-#     command.
+#   * Exit 1 means REFUSED, with a message on stderr and nothing on stdout, so
+#     a wrapper can refuse by just forwarding this exit code and never runs a
+#     half-translated command. Almost every case is one the OLD TOOL ITSELF
+#     would have refused -- a usage error, an unknown flag, an unknown
+#     -strip-lc kind, a capacity cap, an over-long segment name -- and carries
+#     the origin tool's exact message. There is ONE refusal of this file's
+#     own, which the old tools accepted: a -change chain on the edit-script
+#     path, refused by mt_chain_check, whose comment has the reasoning. It
+#     exits 1 rather than 2 because 1 is the only failure code change_dylib
+#     and fix_macho ever had, and fix_macho.sh folds every nonzero to 1
+#     anyway; 2 would invent a third outcome for a two-outcome grammar.
 #
 # The one exception to "the old tool's message" is $MT_PROG, which stands in
 # for argv[0] in a usage line; mt_translate defaults it to the tool's own name.
@@ -62,11 +72,13 @@
 # to enforce the caps here and print the origin text. That is what mt_room does.
 #
 # fix_macho's two caps come here for a second reason as well: its -rename_seg
-# array has NO macho9 counterpart at all (each pair is its own `macho9 segment`
-# invocation, so nothing downstream counts them), and its `changes[32]` /
-# `renames[16]` were the same unbounded fixed-size arrays docs/PROPOSAL.md
-# records smashing the stack in change_dylib -- "Repeated options wrote past
-# their fixed-size arrays; 33 -change flags smashed the stack -- fixed, PR #9",
+# array has NO macho9 counterpart at all (macho9 sees one rename at a time --
+# its own `segment` verb takes one pair, and an edit script's `segment rename`
+# statement is one pair too -- so nothing downstream counts them), and its
+# `changes[32]` / `renames[16]` were the same unbounded fixed-size arrays
+# docs/PROPOSAL.md records smashing the stack in change_dylib -- "Repeated
+# options wrote past their fixed-size arrays; 33 -change flags smashed the
+# stack -- fixed, PR #9",
 # a fix that only ever covered change_dylib. compat/fix_macho.c grew a bounds
 # check of its own before it was retired; mt_room below is where that check
 # lives now, in fix_macho's own words, so retiring the C file did not take the
@@ -74,22 +86,28 @@
 #
 # ---- the grammar mapping -------------------------------------------------
 #
-#   change_dylib FILE ...            macho9 ...
-#     -change O N                      dylib FILE -replace O N
-#     -delete P                        dylib FILE -delete P
-#     -reexport P                      dylib FILE -reexport P
-#     -add P                           dylib FILE -append P
-#     -insert P                        dylib FILE -insert P
-#     -change-rpath O N                rpath FILE -replace O N
-#     -delete-rpath P                  rpath FILE -delete P
-#     -add-rpath P                     rpath FILE -append P
-#     -strip-lc KIND                   lc    FILE -delete KIND
-#     -grow                            --allow-grow on the dylib/rpath lines
+# Each row gives the VERB form, which is what an invocation needing only that
+# row's family emits. An invocation needing more than one row's worth emits
+# one `macho9 edit FILE -` instead, whose statements are in the third column.
+#
+#   change_dylib FILE ...            macho9 ...                  statement
+#     -change O N                      dylib FILE -replace O N     dylib replace O N
+#     -delete P                        dylib FILE -delete P        dylib delete P
+#     -reexport P                      dylib FILE -reexport P      dylib reexport P
+#     -add P                           dylib FILE -append P        dylib append P
+#     -insert P                        dylib FILE -insert P        dylib insert P
+#     -change-rpath O N                rpath FILE -replace O N     rpath replace O N
+#     -delete-rpath P                  rpath FILE -delete P        rpath delete P
+#     -add-rpath P                     rpath FILE -append P        rpath append P
+#     -strip-lc KIND                   lc    FILE -delete KIND     load-command delete KIND
+#     -grow                            --allow-grow on the         allow-grow
+#                                      dylib/rpath lines
 #
 #   fix_macho FILE ...
-#     -change O N                      dylib   FILE -replace O N
+#     -change O N                      dylib   FILE -replace O N   dylib replace O N
 #     -strip_build_version             lc      FILE -delete build-version
-#     -rename_seg O N                  segment FILE O N          (one per pair)
+#                                                                  load-command delete build-version
+#     -rename_seg O N                  segment FILE O N            segment rename O N
 #
 #   add_version_min FILE               minos      FILE 10.9
 #   patch_macho IN OUT                 declassify IN OUT
@@ -98,14 +116,18 @@
 #                                      retag-swift F2
 #                                      retag-swift F3
 #
-# ---- ordering, and what splitting one call into several costs ------------
+# ---- ordering, and the one command an old invocation becomes -------------
 #
 # change_dylib and fix_macho each apply EVERY operation in ONE pass over the
-# load-command table. macho9 has a verb per family, so a single old invocation
-# that touches more than one family becomes a SEQUENCE. The order emitted is:
+# load-command table, and write ONCE. macho9 has a verb per family, so an
+# invocation touching more than one family has no single verb to become. It
+# becomes ONE `macho9 edit FILE -` instead, with the operations as statements
+# on stdin -- which is again one read, one pass per statement over an image
+# held in memory, and one write. The order emitted is:
 #
-#   1. lc       -- deleting load commands SHRINKS the table and hands header
-#                  pad back. Anything that needs room must run after it.
+#   1. load-command delete  -- deleting load commands SHRINKS the table and
+#                  hands header pad back. Anything that needs room must run
+#                  after it.
 #   2. dylib    -- library ordinals are the delicate part (a wrong ordinal is
 #                  a dyld failure, not a silent mis-bind), so they are settled
 #                  while the image is closest to the one the old tool saw.
@@ -115,19 +137,13 @@
 #   4. segment  -- fix_macho only. A rename changes no sizes, so it cannot
 #                  compete for header pad with anything above.
 #
-# THIS IS NOT EQUIVALENT IN EVERY RESPECT, and docs/PROPOSAL.md says so under
-# "One friction worth designing for". install.sh's production invocation mixes
-# families -- it strips `uuid` and `codesig` to reclaim header bytes and then
-# rewrites three dylib paths, and the stripping is what makes room for the
-# rewriting. As two invocations that still works, but:
+# An invocation that needs only ONE of those still gets that family's own
+# verb, whose flags are applied as a BATCH: there is nothing for a script to
+# sequence, and the verb line is the one a human would type.
 #
-#   * the file is written TWICE, not once; and
-#   * a failure BETWEEN the two leaves a partially-converted binary, where the
-#     C tool left the original untouched.
-#
-# docs/PROPOSAL.md's answer is a `port` verb that does not exist. Until it
-# does, the ordering above is a thing the caller must know, which is exactly
-# why it is encoded here once rather than in each wrapper.
+# WITHIN a family, a batch and a sequence are not automatically the same
+# thing, and mt_tr_change_dylib's emission comment says exactly which order
+# makes them agree and which single shape it refuses because no order can.
 #
 # ---- divergences a wrapper must still handle itself ----------------------
 #
@@ -166,9 +182,14 @@
 #     all five as deliberate changes, with their reasons; this file simply
 #     translates, as it does for every other tool.
 #
-# There is no shape this file refuses outright any more. There used to be one
-# -- `fix_macho -rename_seg A B -rename_seg B C` -- and mt_tr_fix_macho's
-# -rename_seg arm records why it existed and what reversed it.
+# This file refuses exactly one shape of its own: a -change chain on the
+# edit-script path (mt_chain_check, whose comment has the reasoning). There
+# used to be a second -- `fix_macho -rename_seg A B -rename_seg B C` -- and
+# mt_tr_fix_macho's -rename_seg arm records why it existed and what reversed
+# it. The two are not the same question: a rename statement and a `macho9
+# segment` pass chain identically, which is the behaviour that was adopted,
+# while a -change chain is a shape the OLD tool's single batch applied and no
+# sequence reproduces.
 
 # ---- quoting -------------------------------------------------------------
 #
@@ -176,6 +197,16 @@
 # shell-quoting one; note that a path containing a NEWLINE cannot survive the
 # command substitution mt_qargs is used through, and nothing in these tools'
 # grammar has ever accepted one.
+#
+# THE SAME QUOTING SERVES THE EDIT SCRIPT, because ms_split (src/script.c)
+# reads a statement's words by the same rules a shell does: whitespace
+# separates, `'...'` is literal, `"..."` and `\` escape, and an unquoted `#`
+# begins a comment. Every one of those characters is outside the safe set
+# above, so anything that could be read as syntax is already inside single
+# quotes by the time the parser sees it. The one shape the two disagree on is
+# a path carrying a control byte other than tab: a shell passes it through and
+# ms_parse refuses the line ("control character"). No tool in this grammar has
+# ever been handed one.
 mt_quote() {
     case $1 in
         '') printf "''" ;;
@@ -207,6 +238,48 @@ mt_room() {
     [ "$1" -eq "$2" ] || return 0
     printf 'too many %s (max %d)\n' "$3" "$2" >&2
     return 1
+}
+
+# THE ONE SHAPE A SEQUENCE CANNOT REPRODUCE.
+#
+#   mt_chain_check <flag spelling> <pairs>
+#
+# <pairs> is every replacement this family collected, OLD and NEW on
+# alternating lines, in flag order. Refuses when one pair's NEW is another
+# pair's OLD -- a chain (`-change a b -change b c`) or a swap (`-change a b
+# -change b a`).
+#
+# WHY. The old tools apply a whole family's operations as ONE batch against
+# the original image: every command is compared against the paths the image
+# had, so `-change a b -change b c` rewrites the a's to b and the ORIGINAL b's
+# to c, and the b's the first pair just produced are not revisited. An edit
+# script applies its statements in sequence, each seeing what the one before
+# left, so `dylib replace a b` followed by `dylib replace b c` rewrites the
+# new b's as well and lands on c. No emission order fixes it: reversing the
+# two just moves which pair is over-applied.
+#
+# So this is the one place the translation has no equivalent to emit, and it
+# says so rather than emitting something adjacent. It is checked ONLY on the
+# edit-script path: a single-family invocation still uses the verb, whose
+# batch is the old tool's own semantics.
+mt_chain_check() {
+    mt_cc_i=0
+    while IFS= read -r mt_cc_o1 && IFS= read -r mt_cc_n1; do
+        mt_cc_i=$((mt_cc_i + 1))
+        mt_cc_j=0
+        while IFS= read -r mt_cc_o2 && IFS= read -r mt_cc_n2; do
+            mt_cc_j=$((mt_cc_j + 1))
+            [ "$mt_cc_i" -ne "$mt_cc_j" ] || continue
+            [ "$mt_cc_n1" = "$mt_cc_o2" ] || continue
+            mt_die "$1 $mt_cc_o1 $mt_cc_n1 and $1 $mt_cc_n1 $mt_cc_n2 chain: run them as separate invocations"
+            return 1
+        done <<MT_CHAIN_INNER
+$2
+MT_CHAIN_INNER
+    done <<MT_CHAIN_OUTER
+$2
+MT_CHAIN_OUTER
+    return 0
 }
 
 # Caps, from src/rewrite.h. -change/-delete/-reexport SHARE one array of 32,
@@ -250,6 +323,14 @@ mt_tr_change_dylib() {
 
     mt_file=$1; shift
     mt_lc='' mt_dy='' mt_rp=''
+    # The same operations a second time, as edit-script statements, bucketed
+    # by kind so the emission can order them (see the emission comment below).
+    # Collected unconditionally: which of the two forms gets printed is not
+    # known until the argv has been walked.
+    mt_st_lc='' mt_st_dydel='' mt_st_dyrepl='' mt_st_dyapp='' mt_st_dyins=''
+    mt_st_rpdel='' mt_st_rprepl='' mt_st_rpapp=''
+    # Every replacement's OLD and NEW, on alternating lines, for mt_chain_check.
+    mt_pairs_dy='' mt_pairs_rp=''
     mt_nchanges=0 mt_nadds=0 mt_ninserts=0
     mt_nrchanges=0 mt_nradds=0 mt_nstrip=0
     mt_grow=''
@@ -268,68 +349,134 @@ mt_tr_change_dylib() {
             mt_room "$mt_nstrip" "$MT_MAX_STRIP" -strip-lc || return 1
             mt_nstrip=$((mt_nstrip + 1))
             mt_lc="$mt_lc$(mt_qargs -delete "$2")"
+            mt_st_lc="$mt_st_lc$(printf 'load-command delete%s' "$(mt_qargs "$2")")
+"
             shift 2 ;;
         -add)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nadds" "$MT_MAX_OPS" -add || return 1
             mt_nadds=$((mt_nadds + 1))
             mt_dy="$mt_dy$(mt_qargs -append "$2")"
+            mt_st_dyapp="$mt_st_dyapp$(printf 'dylib append%s' "$(mt_qargs "$2")")
+"
             shift 2 ;;
         -insert)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_ninserts" "$MT_MAX_OPS" -insert || return 1
             mt_ninserts=$((mt_ninserts + 1))
             mt_dy="$mt_dy$(mt_qargs -insert "$2")"
+            # PREPENDED, not appended: see the emission comment below. Every
+            # insert goes to the front of the table, so a sequence has to run
+            # them backwards to leave them in the order the batch would.
+            mt_st_dyins="$(printf 'dylib insert%s' "$(mt_qargs "$2")")
+$mt_st_dyins"
             shift 2 ;;
         -change)
             [ $# -ge 3 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -change || return 1
             mt_nchanges=$((mt_nchanges + 1))
             mt_dy="$mt_dy$(mt_qargs -replace "$2" "$3")"
+            mt_st_dyrepl="$mt_st_dyrepl$(printf 'dylib replace%s' "$(mt_qargs "$2" "$3")")
+"
+            mt_pairs_dy="$mt_pairs_dy$2
+$3
+"
             shift 3 ;;
         -delete)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -delete || return 1
             mt_nchanges=$((mt_nchanges + 1))
             mt_dy="$mt_dy$(mt_qargs -delete "$2")"
+            mt_st_dydel="$mt_st_dydel$(printf 'dylib delete%s' "$(mt_qargs "$2")")
+"
             shift 2 ;;
         -reexport)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -reexport || return 1
             mt_nchanges=$((mt_nchanges + 1))
             mt_dy="$mt_dy$(mt_qargs -reexport "$2")"
+            mt_st_dydel="$mt_st_dydel$(printf 'dylib reexport%s' "$(mt_qargs "$2")")
+"
             shift 2 ;;
         -add-rpath)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nradds" "$MT_MAX_OPS" -add-rpath || return 1
             mt_nradds=$((mt_nradds + 1))
             mt_rp="$mt_rp$(mt_qargs -append "$2")"
+            mt_st_rpapp="$mt_st_rpapp$(printf 'rpath append%s' "$(mt_qargs "$2")")
+"
             shift 2 ;;
         -change-rpath)
             [ $# -ge 3 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nrchanges" "$MT_MAX_OPS" -change-rpath || return 1
             mt_nrchanges=$((mt_nrchanges + 1))
             mt_rp="$mt_rp$(mt_qargs -replace "$2" "$3")"
+            mt_st_rprepl="$mt_st_rprepl$(printf 'rpath replace%s' "$(mt_qargs "$2" "$3")")
+"
+            mt_pairs_rp="$mt_pairs_rp$2
+$3
+"
             shift 3 ;;
         -delete-rpath)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nrchanges" "$MT_MAX_OPS" -delete-rpath || return 1
             mt_nrchanges=$((mt_nrchanges + 1))
             mt_rp="$mt_rp$(mt_qargs -delete "$2")"
+            mt_st_rpdel="$mt_st_rpdel$(printf 'rpath delete%s' "$(mt_qargs "$2")")
+"
             shift 2 ;;
         *)
             mt_die "bad arg: $1"; return 1 ;;
         esac
     done
 
+    # ONE FAMILY: that family's verb, whose flags macho9 applies as a BATCH --
+    # the old tool's own semantics, and the line a human would type.
+    #
     # -grow is deliberately dropped from the `lc` line: `macho9 lc` has no
     # --allow-grow, and it does not need one -- deleting load commands only
     # ever shrinks the table, so the growth path change_dylib's allow_grow
     # unlocks is unreachable from a strip-only pass.
     mt_pre="$(mt_pre_word)"
-    [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_lc"
-    [ -n "$mt_dy" ] && printf '%s dylib%s%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_grow" "$mt_dy"
-    [ -n "$mt_rp" ] && printf '%s rpath%s%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_grow" "$mt_rp"
+    mt_nfam=0
+    [ -n "$mt_lc" ] && mt_nfam=$((mt_nfam + 1))
+    [ -n "$mt_dy" ] && mt_nfam=$((mt_nfam + 1))
+    [ -n "$mt_rp" ] && mt_nfam=$((mt_nfam + 1))
+    if [ "$mt_nfam" -le 1 ]; then
+        [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_lc"
+        [ -n "$mt_dy" ] && printf '%s dylib%s%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_grow" "$mt_dy"
+        [ -n "$mt_rp" ] && printf '%s rpath%s%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_grow" "$mt_rp"
+        return 0
+    fi
+
+    # MORE THAN ONE FAMILY: one `macho9 edit FILE -`, statements on stdin.
+    #
+    # WHY THIS ORDER. A verb applies all of one family's operations as a batch
+    # against the ORIGINAL image; an edit script applies statements in
+    # SEQUENCE, each seeing what the one before left. They agree when each
+    # family's statements are emitted like this, and that is what the buckets
+    # above are for:
+    #
+    #   1. every `load-command delete` first, as the verb sequence did it,
+    #      because deleting commands hands header pad back and everything
+    #      else may need the room;
+    #   2. per family (dylib, then rpath): every delete and reexport, then
+    #      every replace, then every append, then every insert IN REVERSE
+    #      FLAG ORDER. Deletes go first because they renumber; appends and
+    #      inserts add nothing for a replace to find. The reversal is the
+    #      one that is not obvious: each insert goes to the FRONT, so as a
+    #      batch `-insert A -insert B` leaves A at ordinal 1 and B at 2,
+    #      and a sequence reproduces that only by inserting B and then A.
+    #
+    # And one shape no order reproduces -- a -change whose NEW is another
+    # -change's OLD -- which mt_chain_check refuses here, and only here.
+    mt_chain_check -change "$mt_pairs_dy" || return 1
+    mt_chain_check -change-rpath "$mt_pairs_rp" || return 1
+    printf '%s edit%s - <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" "$(mt_qargs "$mt_file")"
+    [ -n "$mt_grow" ] && printf 'allow-grow\n'
+    printf '%s%s%s%s%s%s%s%s' "$mt_st_lc" "$mt_st_dydel" "$mt_st_dyrepl" "$mt_st_dyapp" \
+        "$mt_st_dyins" "$mt_st_rpdel" "$mt_st_rprepl" "$mt_st_rpapp"
+    printf 'MACHO9_EDIT\n'
     return 0
 }
 
@@ -345,6 +492,10 @@ mt_tr_fix_macho() {
 
     mt_file=$1; shift
     mt_lc='' mt_dy='' mt_seg=''
+    # The same operations as edit-script statements, and every -change's OLD
+    # and NEW on alternating lines for mt_chain_check -- see
+    # mt_tr_change_dylib, which collects both for the same reason.
+    mt_st_lc='' mt_st_dyrepl='' mt_st_seg='' mt_pairs_dy=''
     mt_nchanges=0 mt_nrenames=0
 
     while [ $# -gt 0 ]; do
@@ -361,12 +512,20 @@ mt_tr_fix_macho() {
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -change || return 1
             mt_nchanges=$((mt_nchanges + 1))
             mt_dy="$mt_dy$(mt_qargs -replace "$2" "$3")"
+            mt_st_dyrepl="$mt_st_dyrepl$(printf 'dylib replace%s' "$(mt_qargs "$2" "$3")")
+"
+            mt_pairs_dy="$mt_pairs_dy$2
+$3
+"
             shift 3 ;;
         -strip_build_version)
             # Only ever one LC kind, and fix_macho's flag is a boolean, so a
             # repeat adds nothing. Emitting `-delete build-version` twice
-            # would be a different command for the same intent.
+            # would be a different command for the same intent -- so both
+            # forms below ASSIGN rather than append.
             mt_lc="$(mt_qargs -delete build-version)"
+            mt_st_lc='load-command delete build-version
+'
             shift ;;
         -rename_seg)
             [ $# -ge 3 ] || { mt_die "Unknown option: $1"; return 1; }
@@ -416,6 +575,8 @@ mt_tr_fix_macho() {
             # its five deliberate divergences.
             mt_seg="$mt_seg$(mt_qargs "$2" "$3")
 "
+            mt_st_seg="$mt_st_seg$(printf 'segment rename%s' "$(mt_qargs "$2" "$3")")
+"
             shift 3 ;;
         *)
             mt_die "Unknown option: $1"; return 1 ;;
@@ -424,21 +585,43 @@ mt_tr_fix_macho() {
 
     mt_pre="$(mt_pre_word)"
     mt_fq="$(mt_qargs "$mt_file")"
-    # No --allow-grow anywhere: fix_macho had no -grow and never enlarged a
-    # header, so nothing in its grammar can ask for one. `macho9 dylib`
-    # without --allow-grow still resizes a command into EXISTING header pad,
-    # which fix_macho refused ("new path ... too long") -- the first of the
-    # five adopted changes listed in compat/fix_macho.sh's header. Growing the
-    # header outright is a further step, and this translation still does not
-    # take it.
-    [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fq" "$mt_lc"
-    [ -n "$mt_dy" ] && printf '%s dylib%s%s\n' "$mt_pre" "$mt_fq" "$mt_dy"
-    if [ -n "$mt_seg" ]; then
-        printf '%s' "$mt_seg" | while IFS= read -r mt_line; do
-            [ -n "$mt_line" ] || continue
-            printf '%s segment%s%s\n' "$mt_pre" "$mt_fq" "$mt_line"
-        done
+    # No allow-grow anywhere, in either form: fix_macho had no -grow and never
+    # enlarged a header, so nothing in its grammar can ask for one. `macho9
+    # dylib` without --allow-grow still resizes a command into EXISTING header
+    # pad, which fix_macho refused ("new path ... too long") -- the first of
+    # the five adopted changes listed in compat/fix_macho.sh's header. Growing
+    # the header outright is a further step, and this translation still does
+    # not take it.
+    #
+    # `macho9 segment` takes ONE pair, so unlike change_dylib's three families
+    # this tool's command count is not its family count: two renames are two
+    # commands on their own. Anything that is more than one command becomes
+    # one edit script, by the same rule and for the same reason.
+    mt_ncmds=$mt_nrenames
+    [ -n "$mt_lc" ] && mt_ncmds=$((mt_ncmds + 1))
+    [ -n "$mt_dy" ] && mt_ncmds=$((mt_ncmds + 1))
+    if [ "$mt_ncmds" -le 1 ]; then
+        [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fq" "$mt_lc"
+        [ -n "$mt_dy" ] && printf '%s dylib%s%s\n' "$mt_pre" "$mt_fq" "$mt_dy"
+        if [ -n "$mt_seg" ]; then
+            printf '%s' "$mt_seg" | while IFS= read -r mt_line; do
+                [ -n "$mt_line" ] || continue
+                printf '%s segment%s%s\n' "$mt_pre" "$mt_fq" "$mt_line"
+            done
+        fi
+        return 0
     fi
+
+    # lc, then dylib, then segment -- mt_tr_change_dylib's emission comment has
+    # the reasoning for the first two, and a rename goes last because it
+    # changes no sizes and so competes for header pad with nothing. Renames
+    # stay in FLAG ORDER: unlike an insert, a rename statement and a `macho9
+    # segment` pass are the same single operation, so a sequence of them is
+    # already what the -rename_seg arm above says this tool now does.
+    mt_chain_check -change "$mt_pairs_dy" || return 1
+    printf '%s edit%s - <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" "$mt_fq"
+    printf '%s%s%s' "$mt_st_lc" "$mt_st_dyrepl" "$mt_st_seg"
+    printf 'MACHO9_EDIT\n'
     return 0
 }
 

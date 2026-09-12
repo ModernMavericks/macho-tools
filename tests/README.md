@@ -112,11 +112,9 @@ all; the code is linked in now, and its exit codes DO make that distinction
 today, which is a real, deliberate behaviour change for the two `compat/`
 wrappers of the same names -- they forward this code verbatim, so a genuine
 operational failure through either one now exits 2 where the old C tool
-always exited a flat 1, apart from two cases that reach `change_dylib`
-only: the fold in the table above's `2` row, and a multi-command
-`change_dylib` run's own copy-aside-and-install steps, which exit 1 when
-they fail. See `compat/README.md`'s "drop-in" section, which names this as
-one of its four known exceptions and spells out both.)
+always exited a flat 1, apart from one case that reaches `change_dylib`
+only: the fold in the table above's `2` row. See `compat/README.md`'s
+"drop-in" section, which names this as one of its known exceptions.)
 
 ## EXPECTED, and what it is for
 
