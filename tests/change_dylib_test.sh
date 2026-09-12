@@ -105,6 +105,10 @@ else
         echo "change_dylib_test: bindir '$BIN' given but change_dylib/fix_macho not found (or not executable) there -- refusing to silently fall back to a from-source build" >&2
         exit 1
     fi
+    if [ ! -x "$BIN/makefat" ] || [ ! -x "$BIN/fatcheck" ]; then
+        echo "change_dylib_test: bindir '$BIN' given but makefat/fatcheck not found (or not executable) there -- refusing to silently fall back to a from-source build" >&2
+        exit 1
+    fi
     echo "change_dylib_test: using the CMake-built binaries in $BIN"
     CHANGE_DYLIB="$BIN/change_dylib"
     FIX_MACHO="$BIN/fix_macho"

@@ -261,8 +261,8 @@ add_test(NAME linkedit_test COMMAND linkedit_test)
 # already given.
 add_executable(makefat tests/makefat.c)
 add_executable(fatcheck tests/fatcheck.c)
-target_compile_options(makefat PRIVATE -O2)
-target_compile_options(fatcheck PRIVATE -O2)
+target_compile_options(makefat PRIVATE -O2 -Wall -Wextra)
+target_compile_options(fatcheck PRIVATE -O2 -Wall -Wextra)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Now

@@ -22,6 +22,7 @@ set -eu
 BIN="${1:?usage: cli_test.sh <bindir>}"
 MACHO9="$BIN/macho9"
 [ -x "$MACHO9" ] || { echo "cli_test: $MACHO9 not found or not executable" >&2; exit 1; }
+[ -x "$BIN/makefat" ] && [ -x "$BIN/fatcheck" ] || { echo "cli_test: need makefat and fatcheck in $BIN" >&2; exit 1; }
 # macho9 needs NOTHING else in $BIN: dylib/rpath/lc/minos used to run
 # change_dylib/add_version_min as subprocesses found next to it, and this
 # script used to refuse to start without them. The "macho9 alone in an empty

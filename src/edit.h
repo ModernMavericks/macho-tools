@@ -37,7 +37,7 @@ typedef struct {
  * below.
  *
  * NOT MR_ERROR: that is (-1), private to src/rewrite.c, and it is
- * mr_process_fat's per-slice status, not an exit code.
+ * mr_fat_slice's per-slice status, not an exit code.
  *
  * INPUT. A thin 64-bit Mach-O, or a fat (universal) file -- see FAT FILES,
  * below. Anything else that is not a readable 64-bit Mach-O is refused too;

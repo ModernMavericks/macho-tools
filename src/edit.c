@@ -597,7 +597,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     }
     int rc = 0;
     const char *rname; uint32_t rct, rcs;
-    for (int r = 0; rc == 0 && ma_row(r, &rname, &rct, &rcs); r++) {
+    for (int r = 0; ma_row(r, &rname, &rct, &rcs); r++) {
         if (!(s->arch_mask & (1u << r))) continue;
         int found = 0, found64 = 0;
         for (uint32_t j = 0; j < narch; j++) {
@@ -628,6 +628,10 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     me_fat_ctx ctx = { s, path, out, log, verbose, selected, last, hits, renamed };
     int modified = 0;
     rc = mfat_rewrite(&buf, &size, narch, swap, me_fat_slice, me_fat_placed, &ctx, &modified);
+    /* me_fat_slice sets *changed for every selected slice, so *modified is
+     * always true here; a fat run writes regardless. Queue item 9 ("macho9
+     * never writes its input") is what will act on it. */
+    (void)modified;
     free(selected); free(hits); free(renamed);
     if (rc != 0) {
         if (rc == MFAT_IO_ERROR || rc == MFAT_MALFORMED) {

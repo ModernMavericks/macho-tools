@@ -148,6 +148,54 @@ static uint8_t *build_image(int flags) {
     return buf;
 }
 
+/* A minimal MH_EXECUTE/MH_PIE image mg_grow_header (src/grow.c) can actually
+ * grow: a __PAGEZERO donating vm space, and a __TEXT segment mapping the
+ * header (fileoff 0) whose one section starts at GROWIMG_SECTOFF -- a small
+ * enough header pad that appending a modest dylib path needs allow-grow to
+ * fit. No LC_FUNCTION_STARTS: with none present mg_plausible (and
+ * mg_grow_header's own leading-delta check) have nothing base-relative to
+ * verify, so this image is plausible as soon as it has a segment mapping
+ * the header. Used only by the fat-reassembly-refusal test below, to make a
+ * slice that `edit` can genuinely grow. */
+#define GROWIMG_SIZE    0x2000
+#define GROWIMG_SECTOFF 0x200
+
+static uint8_t *build_growable_image(void) {
+    uint8_t *buf = (uint8_t *)calloc(1, GROWIMG_SIZE);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+
+    struct segment_command_64 *pz = (struct segment_command_64 *)(buf + sizeof *h);
+    pz->cmd = LC_SEGMENT_64;
+    pz->cmdsize = sizeof *pz;
+    set16(pz->segname, "__PAGEZERO");
+    pz->vmsize = 0x100000000ull;   /* room to lower the base into */
+
+    struct segment_command_64 *tx = (struct segment_command_64 *)((uint8_t *)pz + pz->cmdsize);
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx + sizeof(struct section_64);
+    set16(tx->segname, "__TEXT");
+    tx->vmaddr = 0x100000000ull;
+    tx->vmsize = GROWIMG_SIZE;
+    tx->fileoff = 0;
+    tx->filesize = GROWIMG_SIZE;
+    tx->nsects = 1;
+    struct section_64 *sc = (struct section_64 *)(tx + 1);
+    set16(sc->sectname, "__text");
+    set16(sc->segname, "__TEXT");
+    sc->addr = tx->vmaddr + GROWIMG_SECTOFF;
+    sc->size = 4;
+    sc->offset = GROWIMG_SECTOFF;
+
+    h->ncmds = 2;
+    h->sizeofcmds = (uint32_t)(pz->cmdsize + tx->cmdsize);
+    return buf;
+}
+
 /* ---- file and directory helpers ---------------------------------------- */
 
 static char g_dir[256];
@@ -874,6 +922,35 @@ static void test_fat_missing_or_32bit_arch_is_refused(void) {
     rm_dir();
 }
 
+/* Two missing arch names in one script must both be reported, not just the
+ * first: the validation loop used to stop scanning as soon as one offender
+ * set rc, so a script naming two missing arches got only one refusal line,
+ * and the user learned about the second only after fixing the first. */
+static void test_fat_two_missing_arch_names_are_both_reported(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat");
+    uint8_t *s[1]; size_t l[1];
+    uint32_t ct[1] = { (uint32_t)CPU_TYPE_X86_64 };
+    uint32_t cs[1] = { (uint32_t)CPU_SUBTYPE_X86_64_ALL };
+    s[0] = build_image(0); l[0] = IMG_SIZE;
+    size_t flen;
+    uint8_t *fat = build_fat(1, s, l, ct, cs, &flen);
+    write_file(path, fat, flen, 0755);
+    free(s[0]); free(fat);
+
+    snap before = take(path);
+    int rc = run(path, NULL, "arch arm64\narch i386\nload-command delete uuid\n", 0, 0);
+    CHECK(rc == MR_REFUSED, "fat, two missing arches: refused (got %d)", rc);
+    check_untouched("fat, two missing arches", path, &before);
+    CHECK(strstr(g_log, "has no arm64 slice (it has: x86_64)") != NULL,
+          "fat, two missing arches: arm64's own refusal line appears (log: %s)", g_log);
+    CHECK(strstr(g_log, "has no i386 slice (it has: x86_64)") != NULL,
+          "fat, two missing arches: i386's own refusal line ALSO appears, not just the "
+          "first offender (log: %s)", g_log);
+    rm_dir();
+}
+
 static void test_fat_fatal_warnings_counts_a_match_in_any_slice(void) {
     fresh_dir();
     char path[512];
@@ -934,6 +1011,76 @@ static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
     check_untouched("fat, second slice failed verification", path, &before);
     CHECK(strstr(g_log, "refused at verification of slice arm64") != NULL,
           "fat: the refusal names verification and the slice (log: %s)", g_log);
+    rm_dir();
+}
+
+/* THE COVERAGE GAP: src/edit.c's mapping of mfat_rewrite's own
+ * MFAT_MALFORMED/MFAT_IO_ERROR to MR_REFUSED/MR_FAIL, with the "could not
+ * lay out ...'s slices again" message, and the re-parse of the reassembled
+ * container right after. Every other fat refusal test above is a SLICE
+ * refusing itself (a statement, or that slice's own verify); this is the
+ * one where every slice's own work succeeds and the CONTAINER-level
+ * reassembly is what refuses -- fat_test.c covers that refusal inside
+ * mfat_rewrite itself, but nothing exercises edit.c's translation of it.
+ *
+ * The fixture is fat_test's non-ascending-overlap shape (slice 0 at the
+ * higher file offset, slice 1 at the lower), reused here with two real
+ * Mach-O slices -- so `edit` actually reaches reassembly -- instead of
+ * fat_test's hand-built non-Mach-O bytes. Slice 1 (x86_64-labeled, the low
+ * one) is the growable image just above, placed with no gap below slice 0
+ * (arm64-labeled, untouched): growing slice 1 at all runs it into slice 0,
+ * which mfat_rewrite refuses rather than guess a different layout. */
+static void test_fat_reassembly_refusal_leaves_the_file_untouched(void) {
+    fresh_dir();
+    char path[512];
+    in_dir(path, sizeof path, "fat");
+
+    uint8_t *hi = build_image(0);           /* untouched; any valid slice will do */
+    uint8_t *lo = build_growable_image();   /* the one the script grows */
+    size_t hi_len = IMG_SIZE, lo_len = GROWIMG_SIZE;
+    uint32_t lo_off = 0x1000;
+    uint32_t hi_off = lo_off + (uint32_t)((lo_len + 0xfff) & ~(size_t)0xfff);
+    size_t total = hi_off + hi_len;
+    uint8_t *fat = (uint8_t *)calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)fat;
+    fh->magic = OSSwapHostToBigInt32(FAT_MAGIC);
+    fh->nfat_arch = OSSwapHostToBigInt32(2);
+    struct fat_arch *fa = (struct fat_arch *)(fh + 1);
+    fa[0].cputype = (cpu_type_t)OSSwapHostToBigInt32((uint32_t)CPU_TYPE_ARM64);
+    fa[0].cpusubtype = (cpu_subtype_t)OSSwapHostToBigInt32((uint32_t)CPU_SUBTYPE_ARM64_ALL);
+    fa[0].offset = OSSwapHostToBigInt32(hi_off);
+    fa[0].size = OSSwapHostToBigInt32((uint32_t)hi_len);
+    fa[0].align = OSSwapHostToBigInt32(12);
+    fa[1].cputype = (cpu_type_t)OSSwapHostToBigInt32((uint32_t)CPU_TYPE_X86_64);
+    fa[1].cpusubtype = (cpu_subtype_t)OSSwapHostToBigInt32((uint32_t)CPU_SUBTYPE_X86_64_ALL);
+    fa[1].offset = OSSwapHostToBigInt32(lo_off);
+    fa[1].size = OSSwapHostToBigInt32((uint32_t)lo_len);
+    fa[1].align = OSSwapHostToBigInt32(12);
+    memcpy(fat + hi_off, hi, hi_len);
+    memcpy(fat + lo_off, lo, lo_len);
+    write_file(path, fat, total, 0755);
+    free(hi); free(lo); free(fat);
+
+    /* 300 bytes of path: comfortably past the growable slice's small header
+     * pad (GROWIMG_SECTOFF minus its fixed load commands), so allow-grow
+     * grows it by a page -- which the fixed slice right above it, with no
+     * gap, has no room for. */
+    char longpath[320];
+    memset(longpath, 'x', sizeof longpath);
+    longpath[0] = '/';
+    longpath[300] = '\0';
+    char script[512];
+    snprintf(script, sizeof script, "arch x86_64\nallow-grow\ndylib append %s\n", longpath);
+
+    snap before = take(path);
+    int rc = run(path, NULL, script, 0, 0);
+    CHECK(rc == MR_REFUSED, "fat reassembly: a non-ascending grow that would overlap is "
+          "refused (got %d; log: %s)", rc, g_log);
+    check_untouched("fat reassembly", path, &before);
+    CHECK(strstr(g_log, "could not lay out") != NULL,
+          "fat reassembly: the \"could not lay out\" line is produced (log: %s)", g_log);
+    CHECK(strstr(g_log, "left unmodified") != NULL,
+          "fat reassembly: the line says PATH was left unmodified (log: %s)", g_log);
     rm_dir();
 }
 
@@ -1011,8 +1158,10 @@ int main(void) {
     test_fat_arch_selects_named_slices();
     test_arch_on_a_thin_file();
     test_fat_missing_or_32bit_arch_is_refused();
+    test_fat_two_missing_arch_names_are_both_reported();
     test_fat_fatal_warnings_counts_a_match_in_any_slice();
     test_fat_a_refusal_in_the_second_slice_writes_nothing();
+    test_fat_reassembly_refusal_leaves_the_file_untouched();
     test_fat_with_no_64bit_slice_is_refused();
     test_fat_verbose_accounts_for_every_slice();
     test_fat_dry_run_writes_nothing();
