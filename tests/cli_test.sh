@@ -1024,17 +1024,41 @@ else
     bad "declassify: idempotency" "exited $rc on an already-converted binary: $(cat "$T/again.err")"
 fi
 
-# IN and OUT may be the same path: the whole image is in memory before a byte
-# is written, so this is an in-place conversion and must land the same bytes.
+# IN AND OUT MAY NO LONGER BE THE SAME PATH. This verb used to allow it (the
+# whole image is in memory before a byte is written, so it worked), and now
+# refuses it UP FRONT -- before any read -- because macho9 never writes its
+# input. The same four facts every other converted verb is held to: refused
+# with 2, IN untouched in bytes AND inode, the refusal is the up-front one, and
+# a symlink to IN is caught too. `patch_macho IN IN` still converts IN: its
+# wrapper runs this verb into a temp beside OUT and installs that.
 cp "$T/chained.in" "$T/inplace"
-"$MACHO9" declassify "$T/inplace" "$T/inplace" >/dev/null 2>"$T/inplace.err" && rc=0 || rc=$?
-if [ "$rc" -eq 0 ]; then
-    cmp -s "$T/inplace" "$T/chained.out" \
-        && ok "declassify: IN and OUT may be the same file" \
-        || bad "declassify: IN == OUT" "in-place output differs from the two-file output"
-else
-    bad "declassify: IN == OUT" "exited $rc : $(cat "$T/inplace.err")"
-fi
+dcl_sha=$(sha "$T/inplace"); dcl_ino=$(stat -f %i "$T/inplace")
+rc=0
+"$MACHO9" declassify "$T/inplace" "$T/inplace" >/dev/null 2>"$T/inplace.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/inplace")" = "$dcl_sha" ] \
+    && [ "$(stat -f %i "$T/inplace")" = "$dcl_ino" ] \
+    && ok "declassify: an OUT that is IN is refused (2), IN untouched" \
+    || bad "declassify: OUT=IN" "rc $rc, or IN changed"
+grep -q "never writes its input" "$T/inplace.err" \
+    && ok "declassify: ... refused up front, before any work" \
+    || bad "declassify: OUT=IN" "not the up-front refusal: $(cat "$T/inplace.err")"
+rm -f "$T/inplace_link"; ln -s "$T/inplace" "$T/inplace_link"
+rc=0
+"$MACHO9" declassify "$T/inplace" "$T/inplace_link" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "declassify: an OUT that is a symlink to IN is refused (2)" \
+    || bad "declassify: OUT=link" "rc $rc"
+
+# OUT TAKES IN'S MODE, not the fixed 0755 this verb's own open() used to ask
+# for: wa_write_new copies the input's, like every other converted verb. The C
+# tool's 0755-masked-by-umask is now compat/patch_macho.sh's to restore, and
+# tests/wrapper_test.sh is where that is asserted.
+chmod 640 "$T/inplace"
+rm -f "$T/dcl_mode_out"
+rc=0
+"$MACHO9" declassify "$T/inplace" "$T/dcl_mode_out" >/dev/null 2>"$T/dcl_mode.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$(stat -f %Lp "$T/dcl_mode_out")" = 640 ] \
+    && ok "declassify: OUT is created with IN's mode" \
+    || bad "declassify: OUT mode" "rc $rc, mode $(stat -f %Lp "$T/dcl_mode_out" 2>/dev/null): $(cat "$T/dcl_mode.err")"
 
 # Refusals. Each is a decision macho9 made about the INPUT, so each is
 # EX_REFUSED (1), never EX_FAIL (2), which means "something went wrong running
@@ -1209,7 +1233,12 @@ echo "$info_out" | grep -q "header pad:" && ok "info: shows header pad line" \
 # ============================================================================
 build_main "$T/grow_fixture"
 before=$(wc -c < "$T/grow_fixture")
-"$MACHO9" grow "$T/grow_fixture" 4096 >"$T/grow.out" || bad "grow: exit" "$(cat "$T/grow.out")"
+# m9ip because this verb reads FILE and writes OUT now, and the assertions
+# below (and the "does it still run?" one further down) are about the grown
+# image being AT $T/grow_fixture: the helper runs the verb into a temp beside
+# the file and mv's it over, which is what every caller that wants the old
+# in-place behaviour has to do.
+m9ip grow "$T/grow_fixture" 4096 >"$T/grow.out" || bad "grow: exit" "$(cat "$T/grow.out")"
 after=$(wc -c < "$T/grow_fixture")
 if [ "$after" -eq "$((before + 4096))" ]; then
     ok "grow: file grew by exactly the page-aligned request"
@@ -1219,32 +1248,75 @@ fi
 "$MACHO9" verify "$T/grow_fixture" >/dev/null && ok "grow: result still verifies" \
     || bad "grow: post-grow verify" "failed"
 
-# grow now replaces its target via wa_write_atomic (src/atomic_write.h,
-# mkstemp+rename) -- the same path change_dylib uses -- instead of
-# ftruncate()+write() straight into the open file. Prove the symlink-safety
-# that buys: growing THROUGH a symlink must rewrite the REAL target (fresh
-# inode, since rename() always creates one) and leave the symlink itself
-# intact, not replace the symlink with a plain file the way a naive rename
-# of the symlink PATH itself would.
+# grow NEVER WRITES ITS INPUT: `grow FILE OUT N`. The same five facts every
+# other converted verb is held to (see the nwi block further down, whose
+# wording this follows), with grow's own success line -- `Grew OUT: ...`, not
+# `Wrote OUT (...)` -- and its own proof that OUT carries the change: OUT is
+# exactly N bytes bigger.
+build_main "$T/gnwi"
+gnwi_sha=$(sha "$T/gnwi"); gnwi_ino=$(stat -f %i "$T/gnwi")
+gnwi_before=$(wc -c < "$T/gnwi")
+rm -f "$T/gnwi_out"
+"$MACHO9" grow "$T/gnwi" "$T/gnwi_out" 4096 >"$T/gnwi.out" 2>"$T/gnwi.err" \
+    && ok "grow FILE OUT N: succeeds" \
+    || bad "grow FILE OUT N" "$(cat "$T/gnwi.err")"
+[ "$(sha "$T/gnwi")" = "$gnwi_sha" ] && [ "$(stat -f %i "$T/gnwi")" = "$gnwi_ino" ] \
+    && ok "grow FILE OUT N: FILE is untouched, bytes and inode" \
+    || bad "grow FILE OUT N" "FILE changed"
+[ "$(wc -c < "$T/gnwi_out")" -eq "$((gnwi_before + 4096))" ] \
+    && ok "grow FILE OUT N: OUT is the grown image" \
+    || bad "grow FILE OUT N" "OUT is $(wc -c < "$T/gnwi_out") bytes, want $((gnwi_before + 4096))"
+grep -q "^Grew $T/gnwi_out: " "$T/gnwi.out" \
+    && ok "grow FILE OUT N: says what it wrote, naming OUT" \
+    || bad "grow FILE OUT N" "no Grew line naming OUT: $(cat "$T/gnwi.out")"
+rc=0
+"$MACHO9" grow "$T/gnwi" "$T/gnwi" 4096 >/dev/null 2>"$T/gnwi_same.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/gnwi")" = "$gnwi_sha" ] \
+    && ok "grow: an OUT that is FILE is refused (2), FILE untouched" \
+    || bad "grow OUT=FILE" "rc $rc"
+grep -q "never writes its input" "$T/gnwi_same.err" \
+    && ok "grow: ... refused up front, before any work" \
+    || bad "grow OUT=FILE" "not the up-front refusal: $(cat "$T/gnwi_same.err")"
+rm -f "$T/gnwi_link"; ln -s "$T/gnwi" "$T/gnwi_link"
+rc=0
+"$MACHO9" grow "$T/gnwi" "$T/gnwi_link" 4096 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "grow: an OUT that is a symlink to FILE is refused (2)" \
+    || bad "grow OUT=link" "rc $rc"
+rc=0
+"$MACHO9" grow "$T/gnwi" 4096 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "grow: a missing OUT is an error (2)" \
+    || bad "grow no OUT" "rc $rc"
+
+# grow writes OUT through wa_write_new (src/atomic_write.h, mkstemp+rename).
+# Prove the symlink-safety that buys, which now belongs to OUT rather than to
+# FILE: an OUT that is a symlink is FOLLOWED -- the real target gets the new
+# bytes (a fresh inode, since rename() always creates one) and the symlink
+# stays a symlink, where a naive rename onto the symlink's own path would
+# replace the link with a plain file.
+build_main "$T/grow_link_in"
 build_main "$T/grow_link_target"
 ln -sf grow_link_target "$T/grow_link"
 target_ino_before=$(stat -f %i "$T/grow_link_target")
-"$MACHO9" grow "$T/grow_link" 4096 >"$T/grow_link.out" 2>&1 \
-    || bad "grow: symlink" "exit failed: $(cat "$T/grow_link.out")"
+target_size_before=$(wc -c < "$T/grow_link_target")
+"$MACHO9" grow "$T/grow_link_in" "$T/grow_link" 4096 >"$T/grow_link.out" 2>&1 \
+    || bad "grow: symlinked OUT" "exit failed: $(cat "$T/grow_link.out")"
 if [ -L "$T/grow_link" ]; then
-    ok "grow: growing through a symlink leaves the symlink a symlink"
+    ok "grow: an OUT that is a symlink stays a symlink"
 else
-    bad "grow: symlink" "the symlink itself got replaced by a plain file"
+    bad "grow: symlinked OUT" "the symlink itself got replaced by a plain file"
 fi
 target_ino_after=$(stat -f %i "$T/grow_link_target")
 if [ "$target_ino_after" != "$target_ino_before" ]; then
     ok "grow: the real target was replaced via mkstemp+rename (fresh inode = atomicity kept)"
 else
-    bad "grow: symlink" "target inode unchanged -- wrote in place, not atomically"
+    bad "grow: symlinked OUT" "target inode unchanged -- wrote in place, not atomically"
 fi
+[ "$(wc -c < "$T/grow_link_target")" -ne "$target_size_before" ] \
+    && ok "grow: ... and it is the target that got the grown image" \
+    || bad "grow: symlinked OUT" "the target's size did not change"
 readlink "$T/grow_link" | grep -q "^grow_link_target$" \
     && ok "grow: symlink still points at the same name" \
-    || bad "grow: symlink" "symlink target changed: $(readlink "$T/grow_link")"
+    || bad "grow: symlinked OUT" "symlink target changed: $(readlink "$T/grow_link")"
 
 # Whether a GROWN binary can be EXECUTED, ruling (settled after evidence: a
 # prior round's host-capability probe showed the cross runner runs a
@@ -1279,12 +1351,16 @@ else
             "not the product's target platform (Darwin $darwin_major; the target is Darwin 13 / Mac OS X 10.9) -- mg_grow_header's image-base-lowering trick is only promised to load there. This host's loader says: exit $grow_run_rc: $grow_run_diag"
     fi
 fi
-# N=0 is refused, not silently a no-op.
-if "$MACHO9" grow "$T/grow_fixture" 0 >/dev/null 2>&1; then
+# N=0 is refused, not silently a no-op -- and with a real OUT, so this asks
+# about N rather than about the argument count.
+rm -f "$T/grow_zero_out"
+if "$MACHO9" grow "$T/grow_fixture" "$T/grow_zero_out" 0 >/dev/null 2>&1; then
     bad "grow: N=0" "should be refused"
 else
     ok "grow: N=0 refused"
 fi
+[ -e "$T/grow_zero_out" ] && bad "grow: N=0" "wrote an output for a request it refused" \
+    || ok "grow: N=0 produces no output file"
 
 # ============================================================================
 # minos
@@ -2499,17 +2575,19 @@ nwi segment __DATA __DATA_NWI
 # an output, and nothing here treats a positional as a flag -- so without the
 # check it creates a regular file called "--allow-grow" and exits 0, doing
 # something the caller did not ask for. Every verb that takes an OUT gets the
-# same answer from the same place (m9_bad_out), so all six are asserted.
+# same answer from the same place (m9_bad_out), so all eight are asserted.
 # The operands after OUT are each verb's own, because the argc-exact verbs reach
 # their usage line before m9_bad_out if the count is wrong -- which would make
 # this pass for the wrong reason.
-for nwid_verb in dylib rpath lc segment minos retag-swift; do
+for nwid_verb in dylib rpath lc segment minos retag-swift declassify grow; do
     case $nwid_verb in
         dylib|rpath)  set -- -append /x ;;
         lc)           set -- -delete uuid ;;
         segment)      set -- __DATA __DATX ;;
         minos)        set -- 10.9 ;;
         retag-swift)  set -- ;;
+        declassify)   set -- ;;
+        grow)         set -- 4096 ;;
     esac
     build_main "$T/nwid"
     rm -f -- "$T/--nwid-flag"

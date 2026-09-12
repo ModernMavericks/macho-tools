@@ -10,7 +10,7 @@
  *   macho9 segment FILE OUT OLD NEW
  *   macho9 retag-swift FILE OUT
  *   macho9 lc FILE OUT [--fatal-warnings] -delete KIND
- *   macho9 grow FILE N
+ *   macho9 grow FILE OUT N
  *   macho9 minos FILE OUT 10.9 [--allow-grow]
  *   macho9 info FILE
  *   macho9 verify FILE
@@ -55,18 +55,20 @@
  *
  * `declassify` is the last of them, and the same arrangement again:
  * patch_macho's chained-fixups conversion is src/declassify.h, and that tool
- * keeps only its `IN OUT` grammar, its own open+write of OUT, its messages
- * and its flat exit code. It was the FIRST verb here to read one file and
- * write another rather than rewriting in place, so it writes OUT through
- * wa_write_atomic itself instead of going through mr_apply_file.
+ * keeps only its `IN OUT` grammar, its messages and its flat exit code. It was
+ * the FIRST verb here to read one file and write another rather than rewriting
+ * in place, so it writes OUT itself, through wa_write_new, instead of going
+ * through mr_apply_file.
  *
  * THAT SHAPE IS NOW THE RULE, not declassify's exception: a rewriting verb
  * names OUT as the positional right after FILE and never writes FILE. `minos`
- * and `retag-swift` converted first, and `dylib`, `rpath`, `lc` and `segment`
- * followed together, since all four are one mr_apply_file call. `grow` and
- * `edit` still write the file they are given; the verbs' own comments below
- * say which is which. m9_bad_out holds the refusals every converted verb makes
- * about OUT before it reads anything.
+ * and `retag-swift` converted first, then `dylib`, `rpath`, `lc` and `segment`
+ * together (all four are one mr_apply_file call), then `grow` -- which gained
+ * an OUT -- alongside declassify's own refusal of an OUT that is IN, which it
+ * used to allow. `edit` alone still writes the file it is given, through its
+ * `--output` flag; the verbs' own comments below say which is which.
+ * m9_bad_out holds the refusals every converted verb makes about OUT before it
+ * reads anything.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -187,8 +189,8 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * whose name starts with a dash can spell it `./-name`, which the message says.
  * FILE gets no such check: it is only read, and mi_open's own failure names it.
  *
- * ONE function rather than the same lines in each verb, because the six callers
- * must not drift: both wordings are asserted from the outside, per verb
+ * ONE function rather than the same lines in each verb, because the eight
+ * callers must not drift: both wordings are asserted from the outside, per verb
  * (tests/cli_test.sh greps for "never writes its input" and for "which begins
  * with '-'"), and a verb that grew its own phrasing would be a verb whose
  * refusal reads differently for no reason. `verb` is the grammar's own
@@ -407,7 +409,7 @@ static void usage(const char *prog) {
     fprintf(stderr,
         "usage: %s --capabilities\n"
         "       %s declassify IN OUT                        chained fixups -> LC_DYLD_INFO_ONLY;\n"
-        "                                                    IN is only read, so IN and OUT may match\n"
+        "                                                    IN is only read; OUT must not be IN\n"
         "       %s dylib FILE OUT [--allow-grow] [--fatal-warnings] OP...\n"
         "                                                    -replace OLD NEW | -delete PATH |\n"
         "                                                    -append PATH | -insert PATH | -reexport PATH\n"
@@ -421,7 +423,7 @@ static void usage(const char *prog) {
         "       %s lc FILE OUT [--fatal-warnings] -delete KIND [-delete KIND...]\n"
         "                                                    uuid | codesig | source-version |\n"
         "                                                    build-version | code-sign-drs\n"
-        "       %s grow FILE N\n"
+        "       %s grow FILE OUT N                          FILE is only read; OUT must not be FILE\n"
         "       %s minos FILE OUT 10.9 [--allow-grow]\n"
         "                                                    FILE is only read; OUT must not be FILE\n"
         "       %s info FILE\n"
@@ -552,18 +554,21 @@ static int cmd_info(const char *path) {
  * mg_grow_header already runs mg_verify + mg_plausible internally before it
  * reports success (src/grow.h "Phase 4: prove it"), so there is nothing
  * left for this verb to check on top -- it opens, calls the real primitive,
- * and writes back only on success. On failure mg_grow_header has already
+ * and writes OUT only on success. On failure mg_grow_header has already
  * explained why on stderr and left *pbuf as whatever is safe to discard;
- * the file itself is never touched.
+ * neither file is touched.
  *
- * The write-back goes through wa_write_atomic (src/atomic_write.h), the same
- * mkstemp()+rename() (symlink-safe, hard-link-aware, xattr-preserving) path
- * change_dylib uses -- this used to ftruncate()+write() straight into the
- * open file instead, which a previous review deferred fixing "as consistent
- * with change_dylib" back when change_dylib ALSO did that. That reason went
- * stale the moment change_dylib became atomic and this verb didn't follow;
- * sharing the one implementation is what keeps that from happening again. */
-static int cmd_grow(const char *path, const char *n_str) {
+ * FILE IS ONLY READ. This verb used to grow the file it was given, in place;
+ * now it reads FILE and writes the grown image to OUT, refusing an OUT that is
+ * FILE (m9_bad_out) before anything is read. The write goes through
+ * wa_write_new (src/atomic_write.h): a mkstemp()+rename() in OUT's directory,
+ * with FILE's mode, owner and xattrs, so OUT is either what it was or the
+ * whole grown image, and a symlink at OUT is followed to its target rather
+ * than replaced. A caller that wants the old in-place behaviour does what the
+ * compat wrappers do -- name a temp beside FILE as OUT, then mv it over. */
+static int cmd_grow(const char *path, const char *out, const char *n_str) {
+    /* Before the N check, and before any read -- see m9_bad_out. */
+    if (m9_bad_out("grow", path, out)) return EX_FAIL;
     char *end;
     unsigned long n = strtoul(n_str, &end, 10);
     if (*end != '\0' || n == 0 || n > UINT32_MAX) {
@@ -571,24 +576,21 @@ static int cmd_grow(const char *path, const char *n_str) {
         return EX_FAIL;
     }
 
-    /* Opened O_RDWR up front only to fail fast on an unwritable/missing file
-     * and to learn its mode for the replacement's fchmod -- not held for the
-     * write-back, which wa_write_atomic does via its own mkstemp()+rename(),
-     * same rationale as change_dylib.c's main(). */
-    int fd = open(path, O_RDWR);
+    /* Opened O_RDONLY -- this verb never writes FILE -- and only to fail fast
+     * with open()'s own reason for a missing or unreadable FILE, which mi_open
+     * below reports in less detail. Not held for anything: wa_write_new does
+     * its own opening, of OUT's directory. */
+    int fd = open(path, O_RDONLY);
     if (fd < 0) { perror("macho9 grow: open"); return EX_FAIL; }
-    struct stat st;
-    mode_t mode = (fstat(fd, &st) == 0) ? st.st_mode : 0644;
     close(fd);
 
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        /* The open()/fstat() above only proved this path opens, not that
-         * mi_open's own independent open, read of the whole file, or the
-         * malloc it reads into will succeed too -- any of those, or an
-         * actual TOCTOU race, land here. Not a considered refusal either
-         * way. */
+        /* The open() above only proved this path opens, not that mi_open's own
+         * independent open, read of the whole file, or the malloc it reads into
+         * will succeed too -- any of those, or an actual TOCTOU race, land
+         * here. Not a considered refusal either way. */
         fprintf(stderr, "macho9 grow: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
@@ -614,18 +616,22 @@ static int cmd_grow(const char *path, const char *n_str) {
          * comment on the identical fold in mr_apply_image (the thin-image
          * step mr_apply_file goes through) for why. So a
          * failed mg_grow_header always exits here, EX_REFUSED, never
-         * EX_FAIL. (A failed write-back, below, is EX_FAIL.) */
+         * EX_FAIL. (A failed write, below, is EX_FAIL.) */
         fprintf(stderr, "macho9 grow: %s left unmodified\n", path);
         free(buf);
         return EX_REFUSED;
     }
 
-    if (wa_write_atomic(path, mode, buf, fsize) != 0) {
-        fprintf(stderr, "macho9 grow: %s left unmodified (atomic replace failed)\n", path);
+    if (wa_write_new(path, out, buf, fsize) != 0) {
+        /* wa_write_new already reported which syscall failed (WA_IS_INPUT is
+         * unreachable: m9_bad_out answered it above, and it would have said so
+         * too). An operational failure, not a refusal: nothing about the input
+         * was wrong. */
+        fprintf(stderr, "macho9 grow: %s not written\n", out);
         free(buf);
         return EX_FAIL;
     }
-    printf("Grew %s: header pad enlarged, file now %zu bytes\n", path, fsize);
+    printf("Grew %s: header pad enlarged, file now %zu bytes\n", out, fsize);
     free(buf);
     return 0;
 }
@@ -1043,16 +1049,19 @@ static int cmd_retag_swift(const char *path, const char *out) {
  * disagree with: the output file's bytes are identical by construction rather
  * than by two implementations happening to agree.
  *
- * IN OUT, not in place: this is the one verb that reads one file and writes
+ * IN OUT, not in place: this was the FIRST verb to read one file and write
  * another, because that is the grammar docs/PROPOSAL.md settled on and what
  * patch_macho's callers pass. IN is only ever read (the whole image is in
- * memory before a byte is written), so `macho9 declassify F F` is safe and
- * behaves as an in-place conversion.
+ * memory before a byte is written), but `macho9 declassify F F` is no longer
+ * allowed on that account: every rewriting verb here refuses an OUT that is its
+ * FILE, up front, and this one is not an exception to a rule it started. The
+ * wrapper is what still gives patch_macho's callers an IN == OUT conversion,
+ * by naming a temp beside OUT and installing it.
  *
- * FOUR DELIBERATE DIVERGENCES FROM patch_macho, all of which a wrapper author
+ * FIVE DELIBERATE DIVERGENCES FROM patch_macho, all of which a wrapper author
  * has to know about, because reproducing patch_macho's observable behaviour on
  * top of this verb means accounting for each. compat/patch_macho.sh closes the
- * first and the third and enumerates the other two:
+ * first, the third and the fifth and enumerates the other two:
  *
  *   - EXIT CODES. patch_macho returns a flat 1 for everything that goes
  *     wrong. This verb returns EX_REFUSED where it examined the input and
@@ -1068,12 +1077,15 @@ static int cmd_retag_swift(const char *path, const char *out) {
  *     unlike dylib/rpath/lc/minos it has never forwarded another program's
  *     exit code, so there is nothing to preserve. A wrapper that must look
  *     like patch_macho maps both nonzero codes to 1.
- *   - THE WRITE. patch_macho creates OUT with open(O_CREAT|O_TRUNC, 0755) and
- *     writes into it; a write that fails partway leaves a truncated OUT
- *     behind. This verb goes through wa_write_atomic (src/atomic_write.h) --
- *     a temp file in OUT's directory, chmod 0755, renamed over OUT -- so a
- *     failed run leaves no half-written output, and an OUT that already
- *     exists keeps its xattrs. The BYTES written are identical either way.
+ *   - THE WRITE, AND OUT'S MODE. patch_macho creates OUT with
+ *     open(O_CREAT|O_TRUNC, 0755) and writes into it; a write that fails
+ *     partway leaves a truncated OUT behind, a fresh OUT gets 0755 masked by
+ *     the umask, and an existing OUT keeps whatever mode it had. This verb goes
+ *     through wa_write_new (src/atomic_write.h) -- a temp file in OUT's
+ *     directory carrying IN's mode, owner and xattrs, renamed over OUT -- so a
+ *     failed run leaves no half-written output, OUT always gets a new inode,
+ *     and its mode is IN's rather than any of the three the C tool produced.
+ *     The BYTES written are identical either way.
  *   - "Wrote ..." ON THE PASS-THROUGH PATH. patch_macho prints its "Wrote %s
  *     (%zu bytes)" line only when it actually converted something; a
  *     pass-through says "Already patched ... passing through." and nothing
@@ -1085,12 +1097,19 @@ static int cmd_retag_swift(const char *path, const char *out) {
  *     64-bit Mach-O"; this verb prefixes it, as every other verb here does.
  *     md_declassify deliberately prints nothing for that case so each
  *     front-end can name the file in its own words.
+ *   - OUT MAY NOT BE IN. patch_macho allowed it -- same inode, so its hard
+ *     links and xattrs survived an in-place conversion -- and this verb refuses
+ *     it (EX_FAIL, m9_bad_out) before reading anything. The wrapper reproduces
+ *     the old behaviour the way it reproduces every other tool's in-place edit:
+ *     a temp beside OUT as this verb's OUT, then mv.
  *
  * The MDCL_ codes are tested BY NAME below, never as `rc < 0` or `rc != 0` --
  * declassify.h says why: MDCL_PASSTHROUGH is a nonzero SUCCESS, and a code
  * added later must not silently become either a success or the wrong kind of
  * failure. */
 static int cmd_declassify(const char *in, const char *out) {
+    /* Before any read -- see m9_bad_out. */
+    if (m9_bad_out("declassify", in, out)) return EX_FAIL;
     uint8_t *buf = NULL;
     size_t len = 0;
     int rc = md_declassify(in, &buf, &len);
@@ -1121,10 +1140,11 @@ static int cmd_declassify(const char *in, const char *out) {
         return EX_FAIL;
     }
 
-    if (wa_write_atomic(out, 0755, buf, len) != 0) {
-        /* wa_write_atomic already reported which syscall failed. This is an
-         * operational failure, not a refusal: nothing about the input was
-         * wrong. */
+    if (wa_write_new(in, out, buf, len) != 0) {
+        /* wa_write_new already reported which syscall failed (WA_IS_INPUT is
+         * unreachable: m9_bad_out answered it above, and it would have said so
+         * too). This is an operational failure, not a refusal: nothing about
+         * the input was wrong. */
         free(buf);
         return EX_FAIL;
     }
@@ -1315,8 +1335,8 @@ int main(int argc, char **argv) {
         return cmd_info(argv[2]);
     }
     if (strcmp(verb, "grow") == 0) {
-        if (argc != 4) { fprintf(stderr, "usage: %s grow FILE N\n", argv[0]); return EX_FAIL; }
-        return cmd_grow(argv[2], argv[3]);
+        if (argc != 5) { fprintf(stderr, "usage: %s grow FILE OUT N\n", argv[0]); return EX_FAIL; }
+        return cmd_grow(argv[2], argv[3], argv[4]);
     }
     if (strcmp(verb, "minos") == 0) {
         int allow_grow = (argc == 6 && strcmp(argv[5], "--allow-grow") == 0);

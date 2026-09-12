@@ -32,11 +32,12 @@
 #   * A CONVERTED VERB NAMES AN OUTPUT of its own, because it no longer writes
 #     the file it is given. macho9's rewriting verbs are being converted one
 #     at a time: `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc`
-#     and `segment` together. So every translation here names an output except
-#     `patch_macho`'s `declassify`, which has always taken IN and OUT, and the
-#     `edit` script both multi-command tools fall back to -- that verb still
-#     writes the file it is given, so the output is named with its `--output`
-#     flag rather than as a positional, and OUT being FILE is not yet refused.
+#     and `segment` together, then `grow`. So every translation here names an
+#     output, including `patch_macho`'s `declassify`, which has always taken IN
+#     and OUT and now refuses an OUT that is IN. The one exception is the `edit`
+#     script both multi-command tools fall back to -- that verb still writes the
+#     file it is given, so the output is named with its `--output` flag rather
+#     than as a positional, and OUT being FILE is not yet refused.
 #     Which output depends on who is reading:
 #     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
 #     command writes exactly that and nothing follows it; without it -- the
@@ -139,6 +140,7 @@
 #
 #   add_version_min FILE          minos       FILE OUT 10.9
 #   patch_macho IN OUT            declassify  IN OUT
+#     (IN and OUT the same)       declassify  IN OUT.new, then mv
 #   rename_segment FILE O N       segment     FILE OUT O N
 #   retag_swift_classes F1 F2 F3  retag-swift F1 OUT1
 #                                 retag-swift F2 OUT2
@@ -198,8 +200,9 @@
 #   macho9 declassify uses exit 2 (EX_FAIL) for an operational failure where
 #     patch_macho returns its same flat 1 -- a considered refusal, unlike
 #     that case, now exits 1 on both sides, by coincidence, not construction
-#     -- writes atomically, and names the file it wrote even on the
-#     pass-through.
+#     -- writes atomically, gives OUT the INPUT's mode where the C tool used a
+#     fixed 0755, refuses an OUT that is IN where the C tool converted in
+#     place, and names the file it wrote even on the pass-through.
 #   fix_macho is the one tool whose divergences are NOT closed by its wrapper,
 #     because the repo owner ruled them improvements to ADOPT: a longer
 #     replacement path is now rewritten using header pad instead of refused, a
@@ -703,7 +706,23 @@ mt_tr_add_version_min() {
 mt_tr_patch_macho() {
     # `argc != 3`.
     [ $# -eq 2 ] || { printf 'Usage: %s input output\n' "$MT_PROG" >&2; return 1; }
-    printf '%s declassify%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$2")"
+    # THE ONE TOOL WHOSE GRAMMAR ALREADY NAMED ITS OUTPUT, so the teaching form
+    # is the command the caller typed: there is no in-place edit to show an
+    # install step for. The exception is IN and OUT being the same file, which
+    # patch_macho allowed and `macho9 declassify` now refuses like every other
+    # rewriting verb -- so that form gets the same OUT-plus-install treatment
+    # the five in-place tools get, and reads as a pasteable equivalent instead
+    # of a command that would be refused. Compared AS STRINGS, because that is
+    # all this file can do: it opens nothing, so "the same file by another name"
+    # (a symlink, a hard link, `./f` for `f`) is not a question it can ask --
+    # macho9 answers that one at the write, and the wrapper never asks it at
+    # all, since it always names a temp of its own.
+    if [ -z "${MT_OUT:-}" ] && [ "$1" != "$2" ]; then
+        printf '%s declassify%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$2")"
+        return 0
+    fi
+    printf '%s declassify%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$(mt_out_for "$2")")"
+    mt_install_line "$2"
 }
 
 mt_tr_rename_segment() {

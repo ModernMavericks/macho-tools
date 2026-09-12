@@ -155,7 +155,7 @@ macho9 lc FILE OUT OP...
     -delete   KIND        uuid | codesig | source-version | build-version
                           | code-sign-drs
 
-macho9 grow FILE N                                          (macho_grow)
+macho9 grow FILE OUT N                                      (macho_grow)
 macho9 minos FILE OUT 10.9 [--allow-grow]                   (add_version_min)
 macho9 segment FILE OUT OLD NEW                             (rename_segment)
 macho9 retag-swift FILE OUT                                 (retag_swift_classes)

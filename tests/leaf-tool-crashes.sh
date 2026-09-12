@@ -316,8 +316,8 @@ done
 #   -- runs `macho9 VERB <copy> [OUT] ARG...`
 #
 # TAKES-OUT is `out` for a verb that reads FILE and writes an output (dylib,
-# rpath, lc, segment) and `-` for one that still rewrites the file it is given
-# (grow, edit). For the first kind the OUT is removed beforehand and must still
+# rpath, lc, segment, grow) and `-` for one that still rewrites the file it is
+# given (edit). For the first kind the OUT is removed beforehand and must still
 # be absent afterwards: a refusal writes nothing, which is a second fact worth
 # having here -- the input being untouched is no longer the whole of it.
 sectionless_case() {
@@ -364,7 +364,7 @@ sectionless_case "$rewrite_refusal" dylib out --allow-grow -append /x
 sectionless_case "$rewrite_refusal" rpath out -append /x
 sectionless_case "$rewrite_refusal" lc out -delete uuid
 sectionless_case "$rewrite_refusal" segment out __TEXT __TEXX
-sectionless_case "$grow_refusal" grow - 4096
+sectionless_case "$grow_refusal" grow out 4096
 printf 'dylib append /x\n' >"$T/sl.edits"
 sectionless_case "$rewrite_refusal" edit - "$T/sl.edits"
 
@@ -390,12 +390,14 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
         continue
     fi
     cp "$T/oobgrow.macho" "$T/og.macho"
+    rm -f "$T/og.out.macho"
     rc=0
     if [ -n "$gm" ]; then
-        DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" grow "$T/og.macho" 4096 \
+        DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" grow "$T/og.macho" "$T/og.out.macho" 4096 \
             >"$T/og.out" 2>"$T/og.err" || rc=$?
     else
-        "$BIN/macho9" grow "$T/og.macho" 4096 >"$T/og.out" 2>"$T/og.err" || rc=$?
+        "$BIN/macho9" grow "$T/og.macho" "$T/og.out.macho" 4096 \
+            >"$T/og.out" 2>"$T/og.err" || rc=$?
     fi
     if [ "$rc" -gt 127 ]; then
         bad "$what" "killed by a signal (exit $rc) -- the out-of-bounds move this fixture exists to catch"
@@ -409,6 +411,9 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
     else
         bad "$what" "the file changed"
     fi
+    [ ! -e "$T/og.out.macho" ] \
+        && ok "$what: writes no output either" \
+        || bad "$what" "a refused run left an output behind"
 done
 
 # --- macho9 dylib and info: a first section past the end of the image --------

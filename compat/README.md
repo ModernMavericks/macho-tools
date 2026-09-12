@@ -13,7 +13,7 @@ The six original entry points, kept for compatibility. All six are now
 
 | installed name | what it is now |
 |---|---|
-| `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT` |
+| `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT`, installed over `OUT` |
 | `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
 | `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
 | `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OUT OLD NEW` |
@@ -69,13 +69,13 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with three known exceptions, truthfully not all the same KIND of
+check them, with four known exceptions, truthfully not all the same KIND of
 known: one reproduced on a real file (one out of 300 in the differential
 corpus, below), one argued unreachable in practice rather than observed, and
-the third true by construction rather than by measurement -- it follows
-directly from reading what two of the wrappers' code does, not from a corpus
-row that exhibits it, so no file "reproduces" it and no argument is needed
-for why it would be rare:
+two true by construction rather than by measurement -- they follow
+directly from reading what the wrappers' code does, not from a corpus
+row that exhibits them, so no file "reproduces" them and no argument is needed
+for why they would be rare:
 
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its
@@ -83,6 +83,19 @@ for why it would be rare:
     renumber. `compat/rename_segment.sh`'s header has the measurement. It is
     one file out of 300 in `tests/differential.sh`'s corpus, and closing it
     means changing `macho9`.
+  * `patch_macho`'s `OUT` gets a NEW INODE where the C tool's
+    `open(O_WRONLY|O_CREAT|O_TRUNC)` wrote through the path and kept it. The
+    install is `mv`, like every other wrapper's, which is what makes `OUT`
+    wholly old or wholly new rather than possibly half-written (neither the C
+    tool's write nor the `cat TEMP > OUT` that first replaced it was atomic).
+    Its MODE is still exactly what the C tool left -- `0755 & ~umask` for an
+    `OUT` that did not exist, `OUT`'s own mode for one that did -- and an
+    unchanged run (the pass-through, including `patch_macho IN IN`) installs
+    nothing, so that case keeps its inode too. What a rename cannot keep is
+    `OUT`'s other HARD LINKS, so an `OUT` carrying any is refused (exit 1)
+    instead of being silently split, exactly as `FILE` is for the other five;
+    a dangling symlink at `OUT` is refused as well, where the C tool created
+    the link's target. `compat/patch_macho.sh`'s header has all of it.
   * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
@@ -96,8 +109,9 @@ for why it would be rare:
     macho9 exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
     header has it) and is likewise unaffected by this. (EVERY wrapper whose
-    verb now writes an output the wrapper installs over `FILE` -- all of them
-    but `patch_macho`, whose grammar has always named its own output --
+    verb now writes an output the wrapper installs -- all six, `patch_macho`
+    included: its verb's output goes to a temp beside the `OUT` it was asked
+    for, and is installed onto it --
     has refusals of its OWN on top of that,
     exiting 1, made before macho9 runs for the argument in question: an
     absent or unwritable `FILE`, a `FILE` carrying other hard links, and a

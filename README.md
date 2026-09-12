@@ -200,10 +200,11 @@ to a temporary file beside `FILE`, which is then renamed over it, keeping
 `FILE`'s mode. So a read-only (`0444`) `FILE` in a writable directory is
 replaced, and the run exits 0. (A `FILE` with more than one hard link is
 written through in place instead, so that every name sees the change; see
-`src/atomic_write.h`.) `macho9 dylib`, `rpath`, `lc` and `segment` do not do
-this at all any more: each takes `FILE OUT` and never writes `FILE`, so
-whether `FILE` is writable is not a question they ask. `edit` is the verb this
-section is about and still rewrites the file it is given.
+`src/atomic_write.h`.) `macho9 dylib`, `rpath`, `lc`, `segment`, `grow` and
+`declassify` do not do this at all any more: each takes `FILE OUT` and never
+writes `FILE`, so whether `FILE` is writable is not a question they ask.
+`edit` is the verb this section is about, and the last one that still rewrites
+the file it is given.
 
 ### File format
 
@@ -239,7 +240,7 @@ The statements mirror `macho9`'s other rewriting verbs, most spelled as that
 verb with its `FILE OUT` dropped — `macho9 dylib FILE OUT -replace A B` is the same edit
 as the line `dylib replace A B`. Four are renamed: `lc` is `load-command`,
 `minos` is `version-min`, `retag-swift` is `swift-abi`, and `declassify` is
-`fixups`. One rewriting verb has no statement at all: `grow FILE N` (enlarge
+`fixups`. One rewriting verb has no statement at all: `grow FILE OUT N` (enlarge
 the header pad by an exact byte count) is not expressible as a line here —
 `allow-grow`, below, is the directive that lets a `dylib`, `rpath` or
 `version-min set` statement grow the pad on its own as a side effect, which

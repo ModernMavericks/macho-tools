@@ -488,12 +488,19 @@ cmp -s "$T/f" "$T/o" \
     && ok "patch_macho: the pass-through output is the input, byte for byte" \
     || bad "patch_macho pass-through" "output differs from input"
 
-# THE FOURTH OBSERVABLE: OUT's MODE AND INODE. patch_macho created OUT with
-# open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755); `macho9 declassify` writes
-# through wa_write_atomic, which always produces 0755 and always a new inode.
-# The wrapper installs macho9's output through OUT's own path so all four cases
-# below match the C tool. Every expected value here was measured against the
-# pre-wrapper binary.
+# THE FOURTH OBSERVABLE: OUT's MODE. patch_macho created OUT with
+# open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755); `macho9 declassify` writes OUT
+# through wa_write_new, which gives it the INPUT's mode and always a new inode.
+# The wrapper installs macho9's output onto OUT with `mv` -- atomic, like every
+# other wrapper on the install path -- after chmod'ing it to the mode the C tool
+# would have left: `0755 & ~umask` for an OUT that did not exist, and OUT's own
+# current mode for one that did (open() changes neither). Every expected mode
+# here was measured against the pre-wrapper binary.
+#
+# WHAT THE ATOMIC INSTALL TRADES AWAY, and it is asserted below rather than
+# described: OUT's INODE. `cat TEMP > OUT` kept it (and with it OUT's hard links
+# and xattrs); `mv` cannot, so an OUT with other hard links is REFUSED instead of
+# silently split -- the one new behaviour, shared with all five other wrappers.
 #
 # `stat -f` with an explicit format is a machine-readable request, not
 # human-readable output being parsed -- same category as this file's
@@ -501,54 +508,96 @@ cmp -s "$T/f" "$T/o" \
 mode_of() { stat -f '%Lp' "$1"; }
 ino_of()  { stat -f '%i' "$1"; }
 
-# 1. a FRESH OUT takes 0755 masked by the umask, not a bare 0755.
+# 1. a FRESH OUT takes 0755 masked by the umask, not a bare 0755 and not IN's
+#    mode (which is what macho9 alone would give it).
 fresh
+chmod 640 "$T/f"
 rm -f "$T/o"
 ( cd "$T" && umask 077 && "$BIN/patch_macho" f o ) >/dev/null 2>&1
 [ "$(mode_of "$T/o")" = 700 ] \
     && ok "patch_macho: a fresh OUT gets 0755 masked by the umask (0700 under 077)" \
     || bad "patch_macho fresh mode" "mode $(mode_of "$T/o"), want 700"
 fresh
+chmod 640 "$T/f"
 rm -f "$T/o"
 ( cd "$T" && umask 022 && "$BIN/patch_macho" f o ) >/dev/null 2>&1
 [ "$(mode_of "$T/o")" = 755 ] \
-    && ok "patch_macho: and 0755 under umask 022" \
+    && ok "patch_macho: and 0755 under umask 022, not the input's own mode" \
     || bad "patch_macho fresh mode" "mode $(mode_of "$T/o"), want 755"
 
-# 2. an EXISTING OUT keeps its own mode and its own inode: open() changes
-#    neither, and neither may this wrapper.
+# 2. an EXISTING OUT keeps its own mode -- open() did not change one, so the
+#    wrapper chmods the temp to it before installing. Its INODE is new: that is
+#    the `mv`, and it is what makes OUT wholly old or wholly new rather than
+#    half-written.
 fresh
 : > "$T/o"; chmod 600 "$T/o"; before_ino=$(ino_of "$T/o")
 run patch_macho f o
-[ "$rc" -eq 0 ] && [ "$(mode_of "$T/o")" = 600 ] && [ "$(ino_of "$T/o")" = "$before_ino" ] \
-    && ok "patch_macho: an existing OUT keeps its mode and its inode" \
-    || bad "patch_macho existing OUT" "exit $rc, mode $(mode_of "$T/o") (want 600), inode changed=$([ "$(ino_of "$T/o")" = "$before_ino" ] && echo no || echo YES)"
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/o")" = 600 ] \
+    && ok "patch_macho: an existing OUT keeps its mode" \
+    || bad "patch_macho existing OUT" "exit $rc, mode $(mode_of "$T/o"), want 600"
+[ "$(ino_of "$T/o")" != "$before_ino" ] \
+    && ok "patch_macho: ... and is installed atomically, so its inode is new" \
+    || bad "patch_macho existing OUT" "inode unchanged -- the install was not a rename"
 
-# 3. IN == OUT is the same inode, so a hard link to it must see the new bytes.
+# 3. IN == OUT still converts IN, which the C tool allowed and `macho9
+#    declassify` now refuses outright: the wrapper is what provides it, running
+#    macho9 into a temp beside OUT so macho9 itself never sees OUT == IN. This
+#    fixture is already converted, so the pass-through's bytes are IN's own and
+#    mw_finish installs nothing at all -- mode AND inode survive, exactly as
+#    they did when the C tool wrote through the path.
 fresh
-chmod 640 "$T/f"; rm -f "$T/flink"; ln "$T/f" "$T/flink"; before_ino=$(ino_of "$T/f")
+chmod 640 "$T/f"; before_ino=$(ino_of "$T/f"); before_sha=$(sha "$T/f")
 run patch_macho f f
-[ "$rc" -eq 0 ] && [ "$(mode_of "$T/f")" = 640 ] && [ "$(ino_of "$T/f")" = "$before_ino" ] \
-    && cmp -s "$T/f" "$T/flink" \
-    && ok "patch_macho: IN == OUT keeps the inode, the mode and every hard link" \
-    || bad "patch_macho IN == OUT" "exit $rc, mode $(mode_of "$T/f"), inode changed=$([ "$(ino_of "$T/f")" = "$before_ino" ] && echo no || echo YES)"
-rm -f "$T/flink"
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/f")" = 640 ] && [ "$(sha "$T/f")" = "$before_sha" ] \
+    && ok "patch_macho: IN == OUT still converts IN, keeping its mode" \
+    || bad "patch_macho IN == OUT" "exit $rc, mode $(mode_of "$T/f"), bytes changed=$([ "$(sha "$T/f")" = "$before_sha" ] && echo no || echo YES)"
+[ "$(ino_of "$T/f")" = "$before_ino" ] \
+    && ok "patch_macho: ... and an unchanged pass-through installs nothing, so the inode stands" \
+    || bad "patch_macho IN == OUT" "the inode changed even though the bytes did not"
 
-# 4. an existing OUT that is not writable FAILS, even where the directory is.
+# 3b. A HARD-LINKED OUT IS REFUSED (1), both names untouched -- the wrapper's
+#     own refusal, before macho9 runs. The C tool wrote through OUT's path and
+#     every link saw the new content; `mv` would leave the siblings on the old
+#     content, so this is refused rather than silently split. Same refusal every
+#     other wrapper on the install path makes, from the same mw_prepare.
+rm -rf "$T/pmhl"; mkdir "$T/pmhl"
+cp "$FIXTURE" "$T/pmhl/o"; ln "$T/pmhl/o" "$T/pmhl/o2"
+cp "$FIXTURE" "$T/pmhl/in"
+pmhl_sha=$(sha "$T/pmhl/o")
+pmhl_rc=0
+( cd "$T/pmhl" && "$BIN/patch_macho" in o ) >"$T/pmhl.out" 2>"$T/pmhl.err" || pmhl_rc=$?
+[ "$pmhl_rc" -eq 1 ] && grep -q 'hard link' "$T/pmhl.err" \
+    && [ "$(sha "$T/pmhl/o")" = "$pmhl_sha" ] && [ "$(sha "$T/pmhl/o2")" = "$pmhl_sha" ] \
+    && ok "patch_macho: a hard-linked OUT is refused (1), both names untouched" \
+    || bad "patch_macho hard-linked OUT" "exit $pmhl_rc: $(cat "$T/pmhl.err")"
+ls -a "$T/pmhl" | grep -q 'macho9-compat' \
+    && bad "patch_macho hard-linked OUT" "a temp file was left beside OUT" \
+    || ok "patch_macho: ... and no temp was left beside it"
+rm -rf "$T/pmhl"
+
+# 4. an existing OUT that is not writable FAILS, even where the directory is --
+#    the C tool's open(O_WRONLY) failed on it, and mw_prepare's pre-check
+#    answers for it now, in the words every wrapper's pre-check uses (the C
+#    tool's own perror said "create output: Permission denied"; only the label
+#    differs). Exit 1 either way, which is all a caller ever saw.
 fresh
 : > "$T/o"; chmod 444 "$T/o"
 run patch_macho f o
-[ "$rc" -eq 1 ] \
+[ "$rc" -eq 1 ] && grep -q 'Permission denied' "$T/err" \
     && ok "patch_macho: an unwritable existing OUT fails, as open(O_WRONLY) did" \
-    || bad "patch_macho unwritable OUT" "exit $rc, want 1"
+    || bad "patch_macho unwritable OUT" "exit $rc (want 1), stderr: $(cat "$T/err")"
+[ "$(wc -c < "$T/o" | tr -d ' ')" = 0 ] \
+    && ok "patch_macho: ... and the unwritable OUT was not touched" \
+    || bad "patch_macho unwritable OUT" "OUT was written anyway"
 chmod 644 "$T/o"; rm -f "$T/o"
 
-# 5. a fresh OUT the wrapper CANNOT create -- the path that creates it with the
-#    C tool's mode. Checked under ksh as well as sh, because the bug this
-#    guards against was a POSIX SPECIAL BUILTIN rule: a redirection failure on
-#    `:` exits a non-interactive shell on the spot, so under ksh the wrapper's
-#    own message never printed. Asserted as "exactly this one line", which is
-#    what fails if the shell's own diagnostic leaks out beside it.
+# 5. a fresh OUT that cannot be created, because its directory is not writable.
+#    The temp macho9 writes lives beside OUT, so macho9's own mkstemp is what
+#    fails and what reports -- ONE line, and the wrapper maps its EX_FAIL to
+#    patch_macho's flat 1. Asserted as "exactly one line" (the C tool printed
+#    one perror too), which is what fails if a shell diagnostic ever leaks out
+#    beside it, and re-run under ksh because every wrapper must behave the same
+#    under both shells.
 fresh
 rm -rf "$T/ro"; mkdir "$T/ro"; chmod 555 "$T/ro"
 for pm_sh in /bin/sh /bin/ksh; do
@@ -558,11 +607,60 @@ for pm_sh in /bin/sh /bin/ksh; do
     # The teaching message is two lines; the tool's own diagnostic is the rest.
     sed '1,2d' "$T/err" > "$T/err.rest"
     [ "$rc" -eq 1 ] && [ "$(wc -l < "$T/err.rest" | tr -d ' ')" = 1 ] \
-        && grep -qxF 'create output: cannot create ro/out' "$T/err.rest" \
-        && ok "patch_macho: an uncreatable OUT reports once, and only its own words ($pm_sh)" \
+        && grep -qxF 'mkstemp: Permission denied' "$T/err.rest" \
+        && ok "patch_macho: an uncreatable OUT reports once, and exits 1 ($pm_sh)" \
         || bad "patch_macho uncreatable OUT ($pm_sh)" "exit $rc, stderr after the teaching message: $(cat "$T/err.rest")"
+    [ ! -e "$T/ro/out" ] \
+        && ok "patch_macho: ... and created nothing ($pm_sh)" \
+        || bad "patch_macho uncreatable OUT ($pm_sh)" "OUT exists after a failed run"
 done
 chmod 755 "$T/ro"; rm -rf "$T/ro"
+
+# 5b. AN OUT THAT IS A DIRECTORY is refused, in the C tool's own perror words.
+#     Neither layer below would refuse it: macho9 writes a temp BESIDE OUT and
+#     never looks at OUT, and `mv` given a directory destination moves the temp
+#     INTO it and succeeds -- exit 0, with `adir/.adir.macho9-compat.PID`
+#     created and nothing the caller asked for. Measured before the guard
+#     existed, which is why this assertion is here.
+fresh
+rm -rf "$T/adir"; mkdir "$T/adir"
+adir_before=$(ls -a "$T/adir")
+run patch_macho f adir
+[ "$rc" -eq 1 ] && grep -qxF 'create output: Is a directory' "$T/err" \
+    && [ "$(ls -a "$T/adir")" = "$adir_before" ] \
+    && ok "patch_macho: an OUT that is a directory is refused (1), as open() did" \
+    || bad "patch_macho directory OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -rf "$T/adir"
+
+# 5c. AN OUT WHOSE NAME BEGINS WITH A DASH is still a file name, as it was for
+#     the C tool's open(). `macho9 declassify` refuses such an OUT now
+#     (m9_bad_out, since `-flag`-looking positionals are the mistake its own
+#     grammar change invites), and the wrapper is unaffected because the OUT it
+#     hands macho9 is the temp -- whose name starts with a dot. Pinned so that
+#     refusal cannot migrate down here, where it would break a caller the C tool
+#     served.
+fresh
+rm -f "$T/-dashout"
+run patch_macho f -dashout
+[ "$rc" -eq 0 ] && cmp -s "$T/f" "$T/-dashout" \
+    && ok "patch_macho: an OUT beginning with a dash is a file name, as open() had it" \
+    || bad "patch_macho dashed OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/-dashout"
+
+# 6. THE INSTALL LEAVES NOTHING BEHIND, on the path that succeeds: the temp
+#    beside OUT is mv'd or removed, never left. Measured in a directory of its
+#    own, by whole-listing equality, for the reason the change_dylib stray-file
+#    assertion above gives.
+rm -rf "$T/pmdir"; mkdir "$T/pmdir"
+cp "$FIXTURE" "$T/pmdir/in"
+pmdir_before=$(ls -a "$T/pmdir")
+pmdir_rc=0
+( cd "$T/pmdir" && "$BIN/patch_macho" in out ) >"$T/pmdir.out" 2>"$T/pmdir.err" || pmdir_rc=$?
+pmdir_want=$(printf '%s\nout\n' "$pmdir_before" | LC_ALL=C sort)
+[ "$pmdir_rc" -eq 0 ] && [ "$(ls -a "$T/pmdir" | LC_ALL=C sort)" = "$pmdir_want" ] \
+    && ok "patch_macho: a successful run creates OUT and nothing else" \
+    || bad "patch_macho strays" "exit $pmdir_rc; the directory holds [$(ls -a "$T/pmdir" | tr '\n' ' ')]"
+rm -rf "$T/pmdir"
 
 # ---- add_version_min ----------------------------------------------------
 #

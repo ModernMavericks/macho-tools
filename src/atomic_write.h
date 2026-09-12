@@ -2,7 +2,7 @@
  * half-written.
  *
  * Extracted from change_dylib.c, where this logic first shipped, so that
- * `macho9 grow` can share it instead of carrying its own copy. Before this,
+ * `macho9 grow` could share it instead of carrying its own copy. Before this,
  * `macho9 grow` wrote its result via ftruncate()+write() directly into the
  * open file -- a write failing partway (disk full, killed mid-write) left
  * the file truncated with only part of the new content in it, exactly the
@@ -10,6 +10,11 @@
  * two tools do the same thing (replace a Mach-O file's bytes on disk after
  * successfully rewriting it in memory) and had no reason to do it two
  * different ways, let alone one safer than the other.
+ *
+ * THAT WHOLE QUESTION IS GOING AWAY: a verb that writes an OUT of its own
+ * replaces nothing, so wa_write_new (below) is what every converted verb --
+ * `macho9 grow` included, now -- calls instead. src/edit.c is the last caller
+ * wa_write_atomic has left.
  */
 
 #ifndef MACHO9_ATOMIC_WRITE_H

@@ -331,8 +331,29 @@ if [ "$mt_out_got" = 'macho9 minos f /tmp/t.tmp 10.9' ]; then
 else
     printf 'FAIL avm-mt-out: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
 fi
+# patch_macho is the one tool whose grammar always named its own output, so the
+# teaching form is the command the user typed -- there is nothing to install.
 ok pm      'macho9 declassify in out'        -- patch_macho in out
-ok pm-same 'macho9 declassify f f'           -- patch_macho f f
+# ... EXCEPT when IN and OUT are the same file, which patch_macho allowed and
+# `macho9 declassify` now refuses. The teaching form has to be a pasteable
+# equivalent of that in-place conversion, so it names an output of its own and
+# installs it, exactly as the five in-place tools' forms do.
+ok pm-same 'macho9 declassify f f.new
+mv -f f.new f'                               -- patch_macho f f
+# MT_OUT is how the wrapper names the temp it installs onto the user's OUT --
+# for both shapes, since the wrapper installs onto OUT either way.
+mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" patch_macho in out )
+if [ "$mt_out_got" = 'macho9 declassify in /tmp/t.tmp' ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL pm-mt-out: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
+fi
+mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" patch_macho f f )
+if [ "$mt_out_got" = 'macho9 declassify f /tmp/t.tmp' ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL pm-mt-out-same: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
+fi
 ok rs      'macho9 segment f f.new __DATA __DATA2
 mv -f f.new f' -- rename_segment f __DATA __DATA2
 ok rs-16   'macho9 segment f f.new __DATA 1234567890123456

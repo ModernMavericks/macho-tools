@@ -9,9 +9,11 @@
 # back to what the C tool it replaced would have produced. A wrapper whose
 # verb has been converted to write an OUTPUT instead of rewriting its input
 # has two more steps -- run it into a temp beside the caller's file, then
-# install that temp over the file. All of them take those two steps now except
-# patch_macho.sh, whose grammar has always named its own output; see "the
-# install path" below.
+# install that temp over the file. ALL SIX take those two steps now, including
+# patch_macho.sh, whose grammar has always named its own output: the temp goes
+# beside that output and is installed onto it, which is also how `patch_macho
+# IN IN` keeps working now that macho9 refuses an OUT that is its input. See
+# "the install path" below.
 #
 # WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. Task 1 put the whole
 # old-grammar-to-macho9 translation in ONE file (compat/translate.sh) so that
@@ -277,10 +279,10 @@ mw_require_writable() {
 # macho9's rewriting verbs are being converted, one at a time, so that none of
 # them writes the file it is given: each becomes `macho9 VERB FILE OUT ...`.
 # `minos` went first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
-# `segment` together. `declassify` already had the shape; `grow` and `edit`
-# still write the file they are given -- `edit` takes its output as a
-# `--output` flag, which is all this path needs from it. The historical tools
-# DID
+# `segment` together, then `grow`. `declassify` already had the shape and now
+# refuses an OUT that is its IN as well. `edit` alone still writes the file it
+# is given -- it takes its output as a `--output` flag, which is all this path
+# needs from it. The historical tools DID
 # edit FILE in place, and their callers still expect that, so a wrapper whose
 # verb has moved reproduces it in the only way that is safe: write a temp
 # beside the real target, then mv it over. The five functions below are that
