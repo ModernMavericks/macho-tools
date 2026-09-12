@@ -125,9 +125,16 @@
 #
 #          old:  Changed: /tmp/aaa/libfoo.dylib -> /tmp/bbb/libfoo.dylib
 #                File updated: a.dylib          rc=0   otool -D -> /tmp/bbb/libfoo.dylib
-#          new:  machotool: /tmp/aaa/libfoo.dylib matched nothing
+#          new:  macho9: /tmp/aaa/libfoo.dylib matched nothing
 #                b.dylib: nothing to change.    rc=0   otool -D -> /tmp/aaa/libfoo.dylib
 #          cmp a.dylib b.dylib -> differ
+#
+#      That transcript is the measurement AS TAKEN and is left exactly as it
+#      was read off the two runs. Since 2026-09-12 the tool names itself in
+#      everything it prints, so today that line reads `machotool: ... matched
+#      nothing`; only the name moved. Updating the transcript in place would
+#      falsify a record rather than refresh a description -- the same reason
+#      tests/compat-matrix.tsv still names the tools it measured.
 #
 #      BOTH SIDES EXIT 0 AND THE BYTES DIFFER, and nothing on stderr named
 #      the reason -- which is exactly the invisible edit this whole plan
