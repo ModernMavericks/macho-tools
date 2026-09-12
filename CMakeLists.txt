@@ -6,11 +6,21 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 10.9 CACHE STRING "runs on 10.9")
 set(CMAKE_OSX_ARCHITECTURES x86_64 CACHE STRING "Intel-only (10.9)")
 
-# Versioning: this repo is its OWN upstream, in ed25519's sense of the phrase --
-# the thing it exists to port is itself. So UPSTREAM_VERSION is the family's
-# usual file and the family's usual `<version>-mavericks.N` shape still applies;
-# what differs is only that no Renovate customManager watches it, because nothing
-# external releases and bumps it. Bumped by hand; the release cuts the -mavericks.N.
+# Versioning: this repo is its OWN upstream -- but not in mavericks-ed25519's
+# sense. ed25519 is a PORT: date-versioned, `<date>-mavericks.N`, where the
+# -mavericks.N counts this family's repackagings of someone else's ed25519
+# release. This repo has no someone-else -- the thing it exists to port is
+# itself -- so there is no external upstream to repackage and no -mavericks.N
+# axis to carry. The right analogue is mavericks-porthole: a self-upstream repo
+# drops the -mavericks suffix and versions itself directly. UPSTREAM_VERSION
+# stays as the family's usual file, holding this repo's own version, bumped by
+# hand; no Renovate customManager watches it, because nothing external releases
+# and bumps it.
+#
+# Semver (X.Y.Z), not a date: this product's user-visible surface is a CLI
+# grammar that consumers probe -- `--capabilities` exists precisely so a wrapper
+# and the tool need not move in lockstep -- and that grammar is about to change
+# materially. A date says when; semver says whether your script still runs.
 #
 # Read from the file rather than duplicated here: the conventions gate requires a
 # computable version, and two declarations would be one too many.

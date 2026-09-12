@@ -10,12 +10,19 @@ not a port of somebody else's project — they were written for this problem, an
 
 | Ingredient | Pinned in | Renovate | On a bump |
 |---|---|---|---|
-| the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump plus a `*-mavericks.*` tag cuts the release |
+| the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump plus a matching `X.Y.Z` tag cuts the release |
 | MacOSX10.9 SDK, CMake helpers, compat guard, test runner | `ModernMavericks/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
 | `tests/fixture.macho` + `tests/EXPECTED` | committed | **untrackable** — a characterization reference, deliberately frozen | never bumped by a bot; changing it is a deliberate commit that says why |
 
 Not ingredients: `CMakeLists.txt`, the test scripts and the workflows are this
 repo's own recipe. A change there is a repackage you cut deliberately.
+
+## Conformance deviations
+
+`check-artifact-conformance.sh`'s `scheme` check is repo-wide, not per-artifact, so it is declared
+unscoped (`- scheme: <reason>`), the same way `mavericks-shipyard`'s own self-upstream deviation is:
+
+- scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as X.Y.Z per the self-upstream rule, and there is no -mavericks.N axis to carry.
 
 ## Why there is no Renovate customManager for the own upstream
 

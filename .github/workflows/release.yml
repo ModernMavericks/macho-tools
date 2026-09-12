@@ -4,8 +4,8 @@ name: release
 # equivalent to a native 10.9 build. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
-#   - *-mavericks.* tag: tag-only-publish, because this repo is its own upstream
-#     -- there is no external bump to auto-cut on, so a release is deliberate
+#   - X.Y.Z tag: tag-only-publish, because this repo is its own upstream -- there
+#     is no external bump to auto-cut on, so a release is deliberate
 #
 # There is no 10.9 runner here, or anywhere in the family. What makes that safe
 # is the "Prove build equivalence" step below, not optimism.
@@ -13,31 +13,25 @@ name: release
 on:
   push:
     branches: [main]
-    tags: ['*-mavericks.*']   # the family's tag shape
+    tags: ['[0-9]*.[0-9]*.[0-9]*']   # this repo's own X.Y.Z, not the family's -mavericks.N shape
   pull_request:
     branches: [main]          # the status check Renovate automerge waits on
-  workflow_dispatch:
-    inputs:
-      local_release:
-        description: "Cut the next -mavericks.(N+1) for the current UPSTREAM_VERSION"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 # Only a pull_request supersedes -- keyed per ref, so a force-push replaces its own predecessor.
-# Everything else (a branch push, a *-mavericks.* tag, a workflow_dispatch) is keyed per RUN and is
-# therefore alone in its group: never queued, never evicted, never cancelled.
+# Everything else (a branch push, an X.Y.Z tag) is keyed per RUN and is therefore alone in its
+# group: never queued, never evicted, never cancelled.
 #
 # cancel-in-progress:false was never the protection it looked like: it protects the RUNNING job and
 # not the QUEUED one -- GitHub keeps only the newest pending run per group and cancels the rest -- so
 # the old shared group discarded runs silently. golang lost one on 2026-09-09, 13 seconds after the
 # run that evicted it.
 #
-# This repo publishes only from a tag or a dispatch, but keeps the family's one shape: eight of the
-# thirteen product repos auto-cut on a push to main, and a rule that holds only in some of them is a
-# rule nobody can apply from memory.
+# This repo publishes only from a tag, but keeps the family's one shape: eight of the thirteen
+# product repos auto-cut on a push to main, and a rule that holds only in some of them is a rule
+# nobody can apply from memory.
 concurrency:
   group: >-
     release-${{ github.event_name == 'pull_request'

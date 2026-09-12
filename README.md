@@ -458,9 +458,10 @@ machotool edit "$REAL" "$T" claude.edits
 - Not yet a drop-in replacement for `insert_dylib` on 32-bit input, refused
   deliberately. See `docs/prior-art.md`.
 - This repo is its **own upstream**: the tools are not a port of somebody else's
-  project. `UPSTREAM_VERSION` is still the family's file and the version is still
-  `<version>-mavericks.N`; what differs is that no Renovate customManager watches
-  it, because nothing external releases it. See `INGREDIENTS.md`.
+  project. `UPSTREAM_VERSION` is still the family's file, but the version is
+  `X.Y.Z` with no `-mavericks.N` suffix — there is no external thing to
+  repackage, so there is no repackaging axis to carry. No Renovate customManager
+  watches it either, because nothing external releases it. See `INGREDIENTS.md`.
 
 ## Provenance
 
