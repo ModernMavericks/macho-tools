@@ -4,8 +4,9 @@ name: release
 # equivalent to a native 10.9 build. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
-#   - X.Y.Z tag: tag-only-publish, because this repo is its own upstream -- there
-#     is no external bump to auto-cut on, so a release is deliberate
+#   - X.Y.Z tag: build, then publish the binaries as a GitHub Release through
+#     shipyard's publish-release.yml. Tag-only, because this repo is its own
+#     upstream -- there is no external bump to auto-cut on, so a release is deliberate
 #
 # There is no 10.9 runner here, or anywhere in the family. What makes that safe
 # is the "Prove build equivalence" step below, not optimism.
@@ -42,10 +43,13 @@ jobs:
   build:
     name: build
     runs-on: macos-26   # Apple Silicon; cross-builds the x86_64/10.9 slice. Use macos-15 if 26 is unavailable.
+    outputs:
+      version: ${{ steps.ver.outputs.full }}
+      publish: ${{ steps.ver.outputs.release }}
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0   # a release counts existing tags to pick N
+          fetch-depth: 0   # the notes generator refuses a shallow clone, and reads the tags to pick its compare baseline
 
       - name: Install mavericks-shipyard
         uses: ModernMavericks/shipyard/.github/actions/install@v1
@@ -54,6 +58,39 @@ jobs:
         run: |
           [ -d "$SHIPYARD_SCRIPTS" ] || { echo "::error::SHIPYARD_SCRIPTS not set by install@v1"; exit 1; }
           echo "shipyard scripts: $SHIPYARD_SCRIPTS"
+
+      # Nothing external to derive from -- this repo is its own upstream -- so the version
+      # IS UPSTREAM_VERSION, hand-bumped, and a release is the X.Y.Z tag someone pushes on
+      # purpose. Computed here rather than through shipyard's version.sh or
+      # resolve-version.sh: both only ever emit the <upstream>-mavericks.N shape a PORT
+      # needs, which is exactly the suffix this repo does not carry. mavericks-porthole,
+      # the family's other self-upstream repo, computes inline for the same reason.
+      - name: Version (X.Y.Z) + publish decision
+        id: ver
+        run: |
+          set -eu
+          want="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            full="$GITHUB_REF_NAME"; tag="$GITHUB_REF_NAME"; rel=yes
+            # The tag and the committed version must agree. CMakeLists.txt stamps the tools
+            # from UPSTREAM_VERSION, so a tag that disagrees publishes a release whose own
+            # binaries report a different version -- green the whole way, wrong at the end.
+            # A release here is a hand bump plus a matching tag; this is the half that
+            # would otherwise be forgotten quietly.
+            [ "$full" = "$want" ] || {
+              echo "::error::tag $full disagrees with UPSTREAM_VERSION ($want), which is what the binaries are stamped with -- bump the file and re-tag, or tag $want"
+              exit 1
+            }
+          else
+            # Tag-only-publish: with no external upstream there is no bump to auto-cut on,
+            # so every non-tag run -- main, a branch, a pull request -- builds and publishes
+            # nothing. Stricter than the family's "only main may release" guard and
+            # subsuming it: a pull request cannot reach rel=yes, because nothing but a tag can.
+            full="$want"; tag="$want"; rel=no
+          fi
+          printf '%s\n' "$full" > VERSION
+          { echo "full=$full"; echo "tag=$tag"; echo "release=$rel"; } >> "$GITHUB_OUTPUT"
+          echo "version=$full tag=$tag release=$rel"
 
       # The cross preset asserts it is NOT on 10.9 and pins CMAKE_OSX_SYSROOT to
       # the fetched 10.9 SDK. Building against the runner's own SDK with only
@@ -109,20 +146,61 @@ jobs:
       # list names FILES in build-cross/, not CMake targets, and CMake stages
       # every wrapper there under its historical name -- so build-cross/
       # fix_macho exists either way. Verified, not assumed.
+      #
+      # Staged FLAT into dist/, because that is what publishing needs: the shared
+      # publisher downloads this artifact into one directory and attaches the files
+      # sitting directly in it. Anything a directory deep is not published at all --
+      # release-assets.sh would see only the notes and refuse the release.
+      - name: Stage the release artifact
+        run: |
+          set -eu
+          mkdir -p dist
+          for f in machotool machotool-compat.sh machotool-translate.sh \
+                   patch_macho change_dylib add_version_min fix_macho \
+                   rename_segment retag_swift_classes; do
+            cp "build-cross/$f" dist/
+          done
+          ls -l dist
+
+      # The Release body travels IN the artifact: publish-release.yml never checks this
+      # repo out, and it refuses an empty body. Generated on every run rather than only a
+      # publishing one, so a broken notes pipeline costs a pull request instead of a release.
+      - name: Collect the release-notes body into the artifact
+        run: |
+          set -eu
+          cp "$(sh build/release-notes-file.sh '${{ steps.ver.outputs.tag }}' '${{ steps.ver.outputs.full }}')" \
+             dist/RELEASE_NOTES.md
+          echo "=== RELEASE_NOTES.md ==="; cat dist/RELEASE_NOTES.md
+
+      # Do the artifacts about to be published agree with each other and with the family's
+      # schemes? Gated like the publish itself: this asks about a release, and a run that is
+      # not releasing has not produced the thing to ask about. The X.Y.Z scheme is a DECLARED
+      # deviation (INGREDIENTS.md) -- the shared check hard-requires <upstream>-mavericks.N
+      # and has no self-upstream exemption -- which is what this step reads that declaration for.
+      - name: Artifact conformance
+        if: steps.ver.outputs.release == 'yes'
+        run: |
+          sh "$SHIPYARD_SCRIPTS/artifact-facts.sh" dist "${{ steps.ver.outputs.full }}" \
+            | sh "$SHIPYARD_SCRIPTS/check-artifact-conformance.sh"
+
       - uses: actions/upload-artifact@v7
         with:
           name: macho-tools
-          path: |
-            build-cross/machotool
-            build-cross/machotool-compat.sh
-            build-cross/machotool-translate.sh
-            build-cross/patch_macho
-            build-cross/change_dylib
-            build-cross/add_version_min
-            build-cross/fix_macho
-            build-cross/rename_segment
-            build-cross/retag_swift_classes
+          path: dist/*
 
-  # No publish job yet: there is no .pkg or Sparkle updater to ship. When there
-  # is, it goes here gated on `github.ref_type == 'tag'`, calling shipyard's
-  # publish-release.yml the way ed25519 does.
+  # The only writer to Releases, and only a tag reaches it: nothing else sets release=yes.
+  # The shared workflow regenerates SHA256SUMS, uses RELEASE_NOTES.md from the artifact as the
+  # Release body, and fails if those notes are missing or empty.
+  #
+  # What ships is the binaries and the two files the wrappers source. There is still no .pkg
+  # and no Sparkle updater; when there are, they join the staged artifact above and this job
+  # publishes them unchanged.
+  publish:
+    needs: [build]
+    if: needs.build.outputs.publish == 'yes'
+    permissions:
+      contents: write
+    uses: ModernMavericks/shipyard/.github/workflows/publish-release.yml@v1
+    with:
+      version: ${{ needs.build.outputs.version }}
+      artifact: macho-tools
