@@ -16,6 +16,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | **done**, pushed, `b76ddf1..9ae6835` |
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
 | 12 | An `insert_dylib` wrapper | — | — | not started; not yet designed |
+| 13 | What real app backports need and we lack | — | — | not started; researched 2026-09-11, see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -201,6 +202,99 @@ equivalent at all (`--weak` means `LC_LOAD_WEAK_DYLIB`, which the `dylib` verb
 does not emit today), and what the repo owner's actual use of the fork is —
 the answer decides whether this is a full wrapper or one worked example in the
 README. Runs after item 9, since it inherits the `FILE OUT` grammar.
+
+## Item 13: what real app backports need and we lack
+
+Researched 2026-09-11 after the repo owner recalled a project running newer
+iLife/iWork on Mavericks. Full report, with sources and line references, in
+`.superpowers/research-ilife-iwork-backports.md` (git-ignored; move it into
+`docs/` if item 13 gets a spec).
+
+**What exists.** One direct hit:
+`nfzerox/MavericksAppCompatibilityLayer`, which patches Keynote 6.6.2 / Pages
+5.6.2 / Numbers 3.6.2 to run on 10.9.5 — published once in May 2016 and
+abandoned (one squashed commit, no issues, no forks). Its relatives run the same
+direction without being Apple apps: `Wowfunhappy/Celeste-64-Patched-For-Mavericks`,
+whose `COMPAT_WRITEUP.md` is the best operation-by-operation source found and
+whose `patch_macho.c` is this repo's own ancestor, and `landonf/XcodePostFacto`,
+which does the equivalent work **in memory** at image-state-change time and so
+never writes or re-signs anything. No iMovie, GarageBand or Photos backport
+appears to exist. `Wowfunhappy/Pages-Mavericks-Workaround` looks like a hit and
+is not — it patches iWork '09 on Mavericks, an old app on a newer OS.
+
+**The gaps, ranked.** The first two are one subsystem and are what their whole
+approach rests on:
+
+1. **Edit an existing `LC_DYLD_INFO[_ONLY]` bind stream** — OR
+   `BIND_SYMBOL_FLAGS_WEAK_IMPORT` into a named symbol's trailing-flags byte, so
+   a missing symbol becomes a weak import instead of a load failure. Size
+   preserving, so no `grow` or `__LINKEDIT` interaction. We already write that
+   exact byte in `src/declassify.c` when synthesising a stream; what is missing
+   is any way to reach into one that already exists.
+2. **Rewrite a bind entry's dylib ordinal to `BIND_SPECIAL_DYLIB_FLAT_LOOKUP`**,
+   padding the shortened ULEB with `SET_TYPE_IMM(BIND_TYPE_POINTER)` (`0x51`)
+   no-ops to keep the stream's byte length identical. Same walker and selectors
+   as gap 1; the filler trick is worth lifting verbatim. Together, 1 and 2 are
+   the difference between making a modern image *loadable* and making it
+   *satisfiable by a stub dylib*.
+3. **`LC_LOAD_WEAK_DYLIB`** — emit it on `dylib append`/`insert`, and flip an
+   existing `LC_LOAD_DYLIB` to weak and back. The flip is one `uint32_t` write
+   with no size change and no ordinal movement, since `mo_is_dylib_lc` already
+   counts both kinds. This is also the last flag-axis gap against
+   `insert_dylib --weak`, so it belongs with item 12.
+4. **`minos set`** — rewrite an existing `LC_VERSION_MIN_MACOSX.version` or
+   `LC_BUILD_VERSION.minos` rather than only appending or deleting. Their
+   `patch_min_version.py` exists because Keynote 9's bundled frameworks each
+   declare 10.13 in a load command that is otherwise 10.9-parseable; our
+   `minos` is a no-op when one is present, and `lc delete build-version` throws
+   the information away instead of correcting it.
+5. **`section retype`** — normalize `S_NON_LAZY_SYMBOL_POINTERS` /
+   `S_SYMBOL_STUBS` to `S_REGULAR`. One `flags` write per section, but resolve a
+   tension first: `grow` refuses an unrecognized section type, so the two
+   features must agree on ordering.
+6. **Relative → absolute ObjC method lists.** Not a statement, a subsystem: new
+   segment and section, 12 → 24-byte entries, `entsize` change, fresh rebase
+   entries in a writable segment. Per Celeste's writeup this is what stands
+   between `declassify` succeeding and a modern Obj-C binary actually running.
+   Wants its own spec.
+7. **Machine-readable import reporting.** Both projects' hardest work is the
+   *diff*, not the patch — enumerate every `(install_name, symbol)` a binary
+   imports and ask the live 10.9 loader which are missing. Our `info` is
+   structural. Emitting the import list as parseable output is also the natural
+   on-ramp to gaps 1 and 2, since that manifest is exactly their selector list.
+
+**Where their practice bears on our refusals:**
+
+- **`FAT_MAGIC_64`: they parse it, and for their operation class they are right
+  — because every edit they make preserves byte length inside a slice.** That
+  argues for accepting `fat_arch_64` for the size-preserving statements while
+  keeping it refused for `grow`, `declassify`, and any append that overflows
+  slack, which genuinely need `fat_arch_64.offset`/`.size` rewritten. Caveat
+  worth carrying: nothing in their corpus actually is `fat_arch_64`, so their
+  support is untested.
+- **32-bit: no challenge.** Their code path exists but every target is
+  x86_64-only and nothing exercises it. Dead code on their side; our refusal
+  stands. (The condition that *would* reopen it is recorded in
+  `docs/prior-art.md`.)
+- **One place we are already right where they are wrong:** their
+  `--prepend-dylib` path shifts load commands down without renumbering
+  `SET_DYLIB_ORDINAL` opcodes — a latent bug no shipped script of theirs
+  invokes. Our `dylib insert` renumbers.
+
+**A documentation gap this turned up, for item 6.** Ad-hoc re-signing
+(`codesign --force --deep --sign -`) is **mandatory** in their flow, not
+optional: their installer aborts when `codesign --verify` fails, because a
+modified bundle carrying Apple's original signature is rejected at exec. Since
+`macho9 lc delete codesig` makes re-signing unavoidable, our README's
+capability list has an undocumented dependency — a user could follow it
+exactly and end up with a bundle the kernel kills. The README should say that
+re-signing is a required external step, and what it costs: ad-hoc signing drops
+private entitlements (their iCloud sync does not work, and CloudKit had to be
+neutered at runtime because amfid rejects an ad-hoc binary that keeps iCloud
+entitlements). Note SIP and Gatekeeper never obstructed them, by design —
+everything is written inside the `.app`, and the one system-framework
+substitution is bundled and reached through an injected `@executable_path`
+`LC_LOAD_DYLIB` rather than replacing the system copy.
 
 ## Outstanding owner actions
 
