@@ -74,6 +74,55 @@ about code the review is about to change.
 - Also: the Layout section explains `compat/` at a length that belongs in
   `compat/README.md`, which already exists and says it.
 
+**Comment density is the other named input to item 6**, raised by the repo
+owner 2026-09-12 after the rename: *"my eyes glaze over attempting to skim the
+compat wrappers, several screens of comments away from finding where they
+actually happen."* Measured that day:
+
+| file | total | comments | code | first code at |
+|---|---|---|---|---|
+| `fix_macho.sh` | 284 | 259 (91%) | **20** | line 251 |
+| `change_dylib.sh` | 221 | 196 (88%) | **20** | line 184 |
+| `rename_segment.sh` | 232 | 190 (81%) | 31 | line 168 |
+| `patch_macho.sh` | 205 | 156 (76%) | 40 | line 128 |
+| `translate.sh` | 808 | 469 (58%) | 311 | line 240 |
+
+A 284-line wrapper where 20 lines do anything, reached after 250 lines of
+prose. That is a defect in placement, not a matter of taste.
+
+**The expensive class is narration**, not comments as such: measured
+transcripts, repro steps, quotations of earlier comment text, accounts of what
+a retired tool did on a particular day. It goes stale silently, and the rename
+(item 3) paid a fix round for it at nearly every task — most of one whole task
+was spent classifying comments as "describes the tool now" versus "reports what
+happened then", and getting it wrong is invisible to a grep, because a
+substitution erases the tell.
+
+**Prefer a test to a comment.** Item 3 demonstrated the asymmetry: the comments
+went stale repeatedly and nothing caught them, while every mutation thrown at
+the tests failed loudly. A test named for a quirk fails when someone "fixes"
+the quirk; a comment describing the quirk merely becomes wrong. This repo's
+tests are strong enough that much of the narration describes something already
+pinned.
+
+**The order to apply, per passage:** can it be a test? Then can it be a commit
+message — history belongs in history? Then can it be `compat/README.md`, which
+already exists and is where divergence tables and measured transcripts belong?
+Only what survives all three stays inline, and only what a reader must see *at
+that line* to avoid breaking it: a sentence, not a screen.
+
+What is worth keeping inline, on the evidence: the short load-bearing kind. The
+comment explaining why the tool's own diagnostics carry its name is what made
+the rename mandatory rather than optional. The one-liner saying to pass a value
+through `ENVIRON` rather than `awk -v` prevents a bug that had already shipped
+once. Both are a sentence at the point of danger.
+
+**A note on how it got this way, so the pass does not just blame the past.**
+Dense comments are cheap to write and their cost lands later, on whoever reads
+or renames. The assistant added prose at nearly every review cycle of items 9
+and 3; the trend was worsening, not historical. Whatever rule item 6 lands on
+should bind new work, not only clean up old.
+
 One known input to that pass, raised by the repo owner while approving item 5's
 design: **the module prefixes** (`mi_`, `mr_`, `mg_`, `mo_`, `mseg_`, `mswift_`,
 `wa_`, `ms_`, `me_`) mean nothing to a reader who has not learned them. That is a
