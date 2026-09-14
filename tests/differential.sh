@@ -17,10 +17,10 @@
 # a rewrite is reached and want to show the rewrite itself did not move:
 #
 #   git stash                                  # or: git worktree add of the ref
-#   cmake -S . -B /tmp/ref -DMAVERICKS_EXPECTED_MODE=native
-#   cmake --build /tmp/ref
+#   shipyard-cmake -S . -B /tmp/ref -DMAVERICKS_EXPECTED_MODE=native
+#   shipyard-cmake --build /tmp/ref
 #   git stash pop
-#   cmake --preset native-local && cmake --build --preset native-local
+#   shipyard-cmake --preset native-local && shipyard-cmake --build --preset native-local
 #   sh tests/differential.sh /tmp/ref <native-local bindir>
 #
 # WHAT IT SWEEPS. There are ~86,000 regular files under the default roots on a

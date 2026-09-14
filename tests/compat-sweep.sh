@@ -30,7 +30,7 @@
 # families of binaries built, it takes minutes, and Task 2 removes half of what
 # it drives. Run it by hand, on real 10.9, when the translation changes:
 #
-#   cmake --preset native-local && cmake --build --preset native-local
+#   shipyard-cmake --preset native-local && shipyard-cmake --build --preset native-local
 #   MACHO_SWEEP_NEW_BIN=/private/tmp/mm-build/schmonz/macho-tools/native \
 #       sh tests/compat-sweep.sh /path/to/a/build-of-91b30b3
 #

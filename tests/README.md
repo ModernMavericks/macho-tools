@@ -277,7 +277,7 @@ reproducing the failure in new shapes:
   force the rebuild and confirm it actually happened — compile the test
   directly with `cc` (as this repo's hermetic tests' own header comments
   already suggest, e.g. `trie_test.c`'s), or `touch` the source and use
-  `cmake --build --clean-first`, or otherwise check the object's mtime
+  `shipyard-cmake --build --clean-first`, or otherwise check the object's mtime
   genuinely advanced past the edit. Never trust a mutation result from a
   build you did not affirmatively force.
 

@@ -96,12 +96,12 @@ jobs:
       # the fetched 10.9 SDK. Building against the runner's own SDK with only
       # -mmacosx-version-min=10.9 would accept declarations 10.9 never had.
       - name: Configure (cross, against the pinned 10.9 SDK)
-        run: cmake --preset cross
+        run: shipyard-cmake --preset cross
 
       # Every tool is gated POST_BUILD by shipyard's compat guard: fails if a
       # binary declares a floor above 10.9 or imports a symbol 10.9 lacks.
       - name: Build + compat guard
-        run: cmake --build --preset cross
+        run: shipyard-cmake --build --preset cross
 
       # The shared runner takes the whole suite, so a newly added test runs the
       # day it lands rather than when someone remembers a CI line. Includes

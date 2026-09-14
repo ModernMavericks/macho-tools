@@ -45,23 +45,22 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 ## Building
 
 ```sh
-cmake -S . -B build && cmake --build build && ctest --test-dir build
+shipyard-cmake -S . -B build && shipyard-cmake --build build && shipyard-ctest --test-dir build
 ```
 
 Needs [shipyard](https://github.com/ModernMavericks/shipyard), the family's
-shared CMake helpers — install it once and it self-registers, so `find_package`
-finds it with no `CMAKE_PREFIX_PATH`:
-
-```sh
-cmake -S ../mavericks-shipyard -B /tmp/sy -DCMAKE_INSTALL_PREFIX="$HOME/.local"
-cmake --install /tmp/sy
-```
+shared CMake helpers. Install its pkg once; among other things it puts
+`shipyard-cmake`, `shipyard-ctest` and `shipyard-cpack` in `/usr/local/bin`.
+**`shipyard-cmake` is the only cmake that configures this repo** — it supplies
+the prefix `find_package(MavericksShipyard)` resolves from, and
+`MavericksShipyardConfig.cmake` refuses any other cmake. Use `shipyard-ctest`
+and `shipyard-cpack` for the same reason: same rule, same commands.
 
 Presets pick the build mode:
 
 ```sh
-cmake --preset native   # on 10.9, with its own clang
-cmake --preset cross    # on a modern host, against the pinned 10.9 SDK
+shipyard-cmake --preset native   # on 10.9, with its own clang
+shipyard-cmake --preset cross    # on a modern host, against the pinned 10.9 SDK
 ```
 
 Every tool is gated by shipyard's compat guard, which fails the build if a
